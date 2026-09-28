@@ -252,7 +252,7 @@ is held by a live foreign lease, meaning another commander such as rw2 is attach
 | CHK-13 | MoveAbsolute to TravelMin + 10 | Command semantics: MoveAbsolute | 03, 12 | Target `TravelMin + 10`, velocity 10 % of `MaxVelocity`, acceleration 0. | Ack with `State == 3` in ≤ 500 ms. Then `State == 1` with `InPosition`, and `abs(ActualPosition − target) ≤ --tolerance`. The error and duration are reported. |
 | CHK-14 | Stop mid-move | Command semantics: Stop; FR-11 priority | 13 | MoveAbsolute toward `TravelMin + (TravelMax − TravelMin)/2` at 10 %. Once `abs(ActualVelocity)` ≥ 90 % of the commanded speed (or after 2 s), write Stop. | Ack in ≤ 500 ms. `ActualVelocity == 0` and `State == 1` within **200 ms** of the Stop write. The time is reported. |
 | CHK-15 | MoveVelocity | Command semantics: MoveVelocity | 13 | MoveVelocity at +1 % of `MaxVelocity` (away from `TravelMin`) for 1 s, then Stop. | Ack with `State == 4`, `ActualVelocity > 0` during the run, then `State == 1` after Stop within 200 ms. |
-| CHK-16 | Kill test | FR-11 | 15 | MoveVelocity at +1 %, then stop beating. The connection stays open, and polling continues. | Trip (`FaultCode 4`, `State 7`) within 1.0–1.5 s of the last beat. `ActualVelocity == 0` within 200 ms of the trip. `Homed` is still set. Both times are reported. |
+| CHK-16 | Kill test | FR-11 | 08, 15 | MoveVelocity at +1 %, then stop beating. The connection stays open, and polling continues. | Trip (`FaultCode 4`, `State 7`) within 1.0–1.5 s of the last beat. `ActualVelocity == 0` within 200 ms of the trip. `Homed` is still set. Both times are reported. |
 
 ### Report schema
 
