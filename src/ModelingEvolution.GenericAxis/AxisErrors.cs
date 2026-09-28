@@ -15,15 +15,15 @@ internal readonly record struct RegisterRead(string Name, string Address, string
 
 /// <summary>
 /// Builds every <see cref="MotionException"/> message in the protocol's shape (§ Errors and debugging, rule 1):
-/// <c>&lt;axis&gt;: &lt;Class&gt;/&lt;MotionError&gt;: &lt;what happened&gt;. Read &lt;Register&gt; (&lt;address&gt;) =
+/// <c>&lt;axis&gt;: &lt;MotionError&gt;: &lt;what happened&gt;. Read &lt;Register&gt; (&lt;address&gt;) =
 /// &lt;value&gt;[, expected &lt;value&gt;].</c> No message is built anywhere else.
 /// </summary>
 internal static class AxisErrors
 {
-    /// <summary><c>&lt;axis&gt;: &lt;Class&gt;/&lt;MotionError&gt;: &lt;what&gt;[. Read …].</c></summary>
+    /// <summary><c>&lt;axis&gt;: &lt;MotionError&gt;: &lt;what&gt;[. Read …].</c></summary>
     public static string Message(string axis, MotionError error, string what, params ReadOnlySpan<RegisterRead> reads)
     {
-        var text = $"{axis}: {MotionErrorClasses.Of(error)}/{error}: {what.TrimEnd('.')}";
+        var text = $"{axis}: {error}: {what.TrimEnd('.')}";
         if (reads.Length == 0) return text + ".";
 
         var parts = new string[reads.Length];
@@ -42,7 +42,7 @@ internal static class AxisErrors
     public static MotionException Command(string axis, MotionError error, string what, ushort seq, ushort ack,
         ushort state, string? ackQualifier = null) =>
         new(error,
-            $"{axis}: {MotionErrorClasses.Of(error)}/{error}: {what.TrimEnd('.')}. CommandSeq {seq} written, CommandAck {ack} "
+            $"{axis}: {error}: {what.TrimEnd('.')}. CommandSeq {seq} written, CommandAck {ack} "
             + $"read{(ackQualifier is null ? "" : " " + ackQualifier)}, State {state} read.",
             axis);
 

@@ -13,7 +13,7 @@ namespace ModelingEvolution.GenericAxis.Tests;
 public class ErrorMessageTests
 {
     private static readonly Regex Shape = new(
-        @"^carriage: (Transport|Protocol|Machine|Commander)/[A-Za-z]+: .+\. Read [A-Za-z]+ \((C|S)\+[0-9]+ = [0-9]+\) = [^,]+",
+        @"^carriage: [A-Za-z]+: .+\. Read [A-Za-z]+ \((C|S)\+[0-9]+ = [0-9]+\) = [^,]+",
         RegexOptions.Compiled);
 
     [Fact(DisplayName = "GA-U-67 Messages state what was seen (Machine, Commander, Protocol)")]
@@ -32,7 +32,7 @@ public class ErrorMessageTests
         var protocol = rig.Axis.HomeAsync();
         for (var i = 0; i < 8 && !protocol.IsCompleted; i++) await rig.TickAsync();
         var notAck = (await protocol.Invoking(p => p).Should().ThrowAsync<MotionException>()).Which;
-        notAck.Message.Should().StartWith("carriage: Protocol/NotAcknowledged: ")
+        notAck.Message.Should().StartWith("carriage: NotAcknowledged: ")
             .And.MatchRegex("CommandSeq [0-9]+ written, CommandAck [0-9]+ read after 500 ms, State [0-9]+ read\\.$");
 
         foreach (var m in new[] { machine.Message, commander.Message, notAck.Message })
@@ -133,7 +133,7 @@ public class ChannelRetryTests
             .Should().ThrowAsync<MotionException>()).Which;
 
         ex.Error.Should().Be(MotionError.CommunicationLost);
-        ex.Message.Should().StartWith("carriage: Transport/CommunicationLost: read status block (read S+0…S+14 (100…114)) "
+        ex.Message.Should().StartWith("carriage: CommunicationLost: read status block (read S+0…S+14 (100…114)) "
                                       + $"on 127.0.0.1:{plc.Port} unit 1 failed twice (reconnected once): ");
         ex.Message.Should().NotEndWith("(reconnected once): .", "the exception's own message is quoted");
         plc.AcceptedConnections.Should().Be(2);
@@ -151,6 +151,6 @@ public class ChannelRetryTests
             .Should().ThrowAsync<MotionException>()).Which;
 
         ex.Error.Should().Be(MotionError.CommunicationLost);
-        ex.Message.Should().StartWith($"carriage: Transport/CommunicationLost: connect on 127.0.0.1:{port} unit 0 failed twice");
+        ex.Message.Should().StartWith($"carriage: CommunicationLost: connect on 127.0.0.1:{port} unit 0 failed twice");
     }
 }

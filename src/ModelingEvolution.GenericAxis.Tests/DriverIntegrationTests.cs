@@ -305,7 +305,7 @@ public class DriverIntegrationTests(ITestOutputHelper output)
 
         output.WriteLine($"GA-I-14 CommunicationLost after {thrownS * 1000:F0} ms, halted after {haltS * 1000:F0} ms");
         ex.Which.Error.Should().Be(MotionError.CommunicationLost);
-        ex.Which.Message.Should().StartWith("carriage: Transport/CommunicationLost: ")
+        ex.Which.Message.Should().StartWith("carriage: CommunicationLost: ")
             .And.Contain($"127.0.0.1:{rig.Plc.Port} unit 1 failed twice (reconnected once): ")
             .And.MatchRegex(@"\((read|write) (C|S)\+[0-9]+");
         rig.Logs.GetSnapshot().Should().Contain(r => r.Level == LogLevel.Warning && r.Exception != null
@@ -321,7 +321,7 @@ public class DriverIntegrationTests(ITestOutputHelper output)
         var ticks = track.Heartbeat.TickCount;
         await DriverRig.Until(() => track.Heartbeat.TickCount > ticks + 1, "ticks succeed again");
         rig.Logs.GetSnapshot().Should().Contain(r => r.Level == LogLevel.Error
-                                                     && r.Message.StartsWith("carriage: Machine/WatchdogTripped: "),
+                                                     && r.Message.StartsWith("carriage: WatchdogTripped: "),
             "the trip the PLC reports after the link returns is its own Machine error");
         track.Carriage.Status.Error.Should().Be(MotionError.CommunicationLost, "the loss stays latched until Reset");
         await track.Carriage.ResetAsync().WaitAsync(T);

@@ -36,7 +36,7 @@ public class StateAndLimitTests
 
         rig.Axis.State.Should().Be(AxisState.ErrorStop);
         rig.Axis.Status.Error.Should().Be(MotionError.ProtocolMismatch);
-        rig.LogsAt(LogLevel.Error).Should().Contain(r => r.Message.StartsWith("carriage: Protocol/ProtocolMismatch: ")
+        rig.LogsAt(LogLevel.Error).Should().Contain(r => r.Message.StartsWith("carriage: ProtocolMismatch: ")
             && r.Message.Contains($"Read State (S+0 = 100) = {raw}, expected 0–4, 6, 7."));
     }
 
@@ -56,7 +56,7 @@ public class StateAndLimitTests
         var ex = AxisEngine.FaultException("carriage", RegisterMap.Default, snapshot);
         ex.Error.Should().Be(expected);
         MotionErrorClasses.Of(ex.Error).Should().Be(ErrorClass.Machine);
-        ex.Message.Should().StartWith($"carriage: Machine/{expected}: ").And.Contain($"Read FaultCode (S+6 = 106) = {code}");
+        ex.Message.Should().StartWith($"carriage: {expected}: ").And.Contain($"Read FaultCode (S+6 = 106) = {code}");
 
         await using var rig = await new DriverRig().ConnectAsync();
         rig.Plc.State = 7;
@@ -204,7 +204,7 @@ public class StateAndLimitTests
 
         var ex = (await DriverRig.Bounded(connect).Should().ThrowAsync<MotionException>()).Which;
         ex.Error.Should().Be(MotionError.ProtocolMismatch);
-        ex.Message.Should().StartWith("carriage: Protocol/ProtocolMismatch: attach refused")
+        ex.Message.Should().StartWith("carriage: ProtocolMismatch: attach refused")
             .And.Contain($"TravelMin (S+8 = 108) = {min}").And.Contain($"TravelMax (S+10 = 110) = {max}")
             .And.Contain($"MaxVelocity (S+12 = 112) = {maxVelocity}");
         rig.LogsAt(LogLevel.Error).Should().Contain(r => r.Message == ex.Message);
@@ -223,7 +223,7 @@ public class StateAndLimitTests
         var ex = (await DriverRig.Bounded(() => rig.Device.ConnectAsync()).Should().ThrowAsync<MotionException>()).Which;
 
         ex.Error.Should().Be(MotionError.OutOfRange);
-        ex.Message.Should().StartWith("carriage: Commander/OutOfRange: attach refused: configured Read")
+        ex.Message.Should().StartWith("carriage: OutOfRange: attach refused: configured Read")
             .And.Contain(readMin is null ? "Read TravelMax (S+10 = 110) = 10000000." : "Read TravelMin (S+8 = 108) = 0.");
         rig.LogsAt(LogLevel.Error).Should().Contain(r => r.Message == ex.Message);
         rig.Plc.Writes.Should().BeEmpty();

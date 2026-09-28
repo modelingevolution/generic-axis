@@ -98,7 +98,7 @@ public class OptionsAndHygieneTests
             m => m.Should().Contain("Standstill → DiscreteMotion"),
             m => m.Should().Contain("DiscreteMotion → Standstill"),
             m => m.Should().Contain("Standstill → ErrorStop").And.Contain("FaultCode (S+6 = 106) = 4"));
-        rig.LogsAt(LogLevel.Error).Should().ContainSingle(r => r.Message.StartsWith("carriage: Machine/WatchdogTripped: "),
+        rig.LogsAt(LogLevel.Error).Should().ContainSingle(r => r.Message.StartsWith("carriage: WatchdogTripped: "),
             "the PLC's own fault is logged once, in the protocol's shape");
         rig.LogsAt(LogLevel.Trace).Should().Contain(r => r.Message.Contains("Heartbeat (C+8 = 8) ="));
         rig.Logs.GetSnapshot().Where(r => r.Message.Contains("Heartbeat (C+8"))

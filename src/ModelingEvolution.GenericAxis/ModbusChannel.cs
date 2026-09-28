@@ -165,14 +165,14 @@ internal sealed class ModbusChannel : IModbusChannel
                 if (attempt == 0)
                 {
                     _logger?.LogWarning(failure,
-                        "{Label}: Transport: {What}{Range} on {Host}:{Port} unit {Unit} failed ({Message}); reconnecting "
+                        "{Label}: {What}{Range} on {Host}:{Port} unit {Unit} failed ({Message}); reconnecting "
                         + "and retrying once", _label, what, range is null ? "" : " " + range, Host, Port, unit, reason);
                     await Task.Delay(RetryPause, ct);
                     continue;
                 }
 
                 throw new MotionException(MotionError.CommunicationLost,
-                    $"{_label}: {ErrorClass.Transport}/{MotionError.CommunicationLost}: {what}"
+                    $"{_label}: {MotionError.CommunicationLost}: {what}"
                     + $"{(range is null ? "" : " " + range)} on {Host}:{Port} unit {unit} failed twice "
                     + $"(reconnected once): {reason}.");
             }
@@ -184,7 +184,7 @@ internal sealed class ModbusChannel : IModbusChannel
 
     private MotionException Disposed(string what, string? range) =>
         new(MotionError.CommunicationLost,
-            $"{_label}: {ErrorClass.Transport}/{MotionError.CommunicationLost}: {what}"
+            $"{_label}: {MotionError.CommunicationLost}: {what}"
             + $"{(range is null ? "" : " " + range)} on {Host}:{Port} not sent: the channel was disposed.");
 
     private string Range(string op, ushort address, int count) =>
