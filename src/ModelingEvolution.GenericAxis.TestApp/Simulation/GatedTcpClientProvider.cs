@@ -33,7 +33,9 @@ public sealed class GatedTcpClientProvider(IPEndPoint endpoint, ILogger logger) 
         {
             if (_disposed || _open) return;
             var listener = new TcpListener(new IPEndPoint(endpoint.Address, _port));
-            listener.Server.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            // No ReuseAddress: on Linux .NET it also sets SO_REUSEPORT, which lets a second simulator bind the same port
+            // and the kernel then splits clients between two PLCs. Closing resets accepted sockets (linger 0), so no
+            // TIME_WAIT is left on our side to block the re-open.
             listener.Start();
             _port = ((IPEndPoint)listener.LocalEndpoint).Port;
             _listener = listener;

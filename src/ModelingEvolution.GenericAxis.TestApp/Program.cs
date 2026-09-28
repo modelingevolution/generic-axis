@@ -13,6 +13,7 @@ var simulator = builder.Configuration.GetSimulatedAxisOptions();
 builder.Services.AddGenericAxisSimulator(simulator);
 builder.Services.AddRazorComponents().AddInteractiveServerComponents();
 builder.Services.AddMudServices();
+builder.Services.AddScoped<ModelingEvolution.GenericAxis.TestApp.Driver.DriverSession>();
 
 var app = builder.Build();
 

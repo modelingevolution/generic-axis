@@ -1,0 +1,119 @@
+@page "/driver"
+@inherits LiveComponentBase
+@inject DriverSession Session
+
+<PageTitle>Driver &middot; Generic Axis</PageTitle>
+
+@{
+    var device = Session.Device;
+    var connected = Session.IsConnected;
+    var status = device?.Axis.Status;
+    var snap = device?.LastSnapshot;
+    var unit = Session.Unit;
+}
+
+<h1 class="mud-typography mud-typography-h5 mb-1">Driver panel</h1>
+<MudText Typo="Typo.body2" Class="mud-text-secondary mb-4">
+    The <code>ModelingEvolution.GenericAxis</code> driver, built from this form. Point it at the in-app simulator or at a real PLC.
+</MudText>
+
+<MudGrid>
+    <MudItem xs="12" md="5">
+        <MudPaper Class="pa-4" Elevation="1">
+            <MudText Typo="Typo.subtitle2" Class="mb-2">Connection</MudText>
+            <div class="d-flex flex-wrap gap-2">
+                <MudTextField T="string" @bind-Value="Session.Form.Host" Label="Host" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="connected" Style="max-width:180px" data-testid="driver-host"/>
+                <MudNumericField T="int" @bind-Value="Session.Form.Port" Label="Port" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="connected" Style="max-width:110px" data-testid="driver-port"/>
+                <MudNumericField T="int" @bind-Value="Session.Form.Unit" Label="Unit" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="connected" Style="max-width:90px"/>
+                <MudNumericField T="int" @bind-Value="Session.Form.CommandBase" Label="Command base" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="connected" Style="max-width:130px"/>
+                <MudNumericField T="int" @bind-Value="Session.Form.StatusBase" Label="Status base" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="connected" Style="max-width:130px"/>
+                <MudSelect T="SimAxisKind" @bind-Value="Session.Form.Kind" Label="Kind" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="connected" Style="max-width:130px">
+                    <MudSelectItem Value="SimAxisKind.Linear">Linear</MudSelectItem>
+                    <MudSelectItem Value="SimAxisKind.Rotary">Rotary</MudSelectItem>
+                </MudSelect>
+                <MudNumericField T="int" @bind-Value="Session.Form.OwnerId" Label="Owner id" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="connected" Style="max-width:110px"/>
+                <MudNumericField T="double?" @bind-Value="Session.Form.LeaseTimeoutSeconds" Label="Lease timeout, s" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="connected" Style="max-width:140px"/>
+            </div>
+            <MudText Typo="Typo.caption" Class="mud-text-secondary mt-2 d-block">Configured limits — used only when the PLC publishes none</MudText>
+            <div class="d-flex flex-wrap gap-2">
+                <MudNumericField T="double?" @bind-Value="Session.Form.ConfiguredTravelMin" Label="@($"TravelMin, {unit}")" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="connected" Style="max-width:140px"/>
+                <MudNumericField T="double?" @bind-Value="Session.Form.ConfiguredTravelMax" Label="@($"TravelMax, {unit}")" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="connected" Style="max-width:140px"/>
+                <MudNumericField T="double?" @bind-Value="Session.Form.ConfiguredMaxVelocity" Label="@($"MaxVelocity, {unit}/s")" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="connected" Style="max-width:160px"/>
+            </div>
+            <div class="d-flex gap-2 mt-3">
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(connected || Session.Busy)" OnClick="Session.ConnectAsync" data-testid="driver-connect">Connect</MudButton>
+                <MudButton Variant="Variant.Outlined" Disabled="@(device is null)" OnClick="Session.DisconnectAsync" data-testid="driver-disconnect">Disconnect</MudButton>
+                @if (Session.Running == "Connect")
+                {
+                    <MudButton Variant="Variant.Text" Color="Color.Warning" OnClick="Session.Cancel">Cancel</MudButton>
+                }
+            </div>
+        </MudPaper>
+    </MudItem>
+
+    <MudItem xs="12" md="7">
+        <MudPaper Class="pa-4" Elevation="1">
+            <div class="d-flex align-center mb-2">
+                <MudText Typo="Typo.subtitle2">Axis</MudText>
+                <MudSpacer/>
+                <MudButton Variant="Variant.Filled" Color="Color.Error" Size="Size.Large" Disabled="@(!connected)" OnClick="Session.StopAsync" data-testid="driver-stop">STOP</MudButton>
+            </div>
+            <div class="d-flex flex-wrap" data-testid="driver-status">
+                <Reading Label="Connection" Value="@(connected ? device!.Address.ToString() : device is null ? "not connected" : "connecting…")"/>
+                <Reading Label="State" Value="@(status?.State.ToString() ?? "—")"/>
+                <Reading Label="Error" Value="@(status?.Error?.ToString() ?? "—")"/>
+                <Reading Label="@($"Position, {unit}")" Value="@(status?.Position is { } p ? F(p) : "unhomed / —")"/>
+                <Reading Label="@($"Speed, {unit}/s")" Value="@(status is { } st ? F(st.Speed) : "—")"/>
+                <Reading Label="Limit switches" Value="@(status?.Limits.ToString() ?? "—")"/>
+                <Reading Label="Limits" Value="@(device is null ? "—" : $"{F(device.Limits.TravelMin)}..{F(device.Limits.TravelMax)}, max {F(device.Limits.MaxVelocity)} ({device.Limits.SourceText})")"/>
+                <Reading Label="LeaseOwner" Value="@(snap?.LeaseOwner.ToString() ?? "—")"/>
+                <Reading Label="WatchdogFault / trips" Value="@(snap is { } s ? $"{s.WatchdogFault} / {s.WatchdogTrips}" : "—")"/>
+            </div>
+
+            <div class="d-flex flex-wrap gap-2 mt-3">
+                <MudButton Variant="Variant.Filled" Color="Color.Success" Disabled="@(!connected || Session.Busy)" OnClick="() => Session.PowerAsync(true)">Power on</MudButton>
+                <MudButton Variant="Variant.Outlined" Disabled="@(!connected || Session.Busy)" OnClick="() => Session.PowerAsync(false)">Power off</MudButton>
+                <MudButton Variant="Variant.Filled" Color="Color.Info" Disabled="@(!connected || Session.Busy)" OnClick="Session.HomeAsync" data-testid="driver-home">Home</MudButton>
+                <MudButton Variant="Variant.Outlined" Color="Color.Warning" Disabled="@(!connected || Session.Busy)" OnClick="Session.ResetAsync">Reset</MudButton>
+            </div>
+
+            <div class="d-flex flex-wrap align-center gap-2 mt-3">
+                <MudNumericField T="double" @bind-Value="_target" Label="@($"Target / delta, {unit}")" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:160px" data-testid="driver-target"/>
+                <MudNumericField T="double?" @bind-Value="_speed" Label="@($"Speed, {unit}/s (blank = default)")" Variant="Variant.Outlined" Margin="Margin.Dense" Style="min-width:280px;max-width:300px"/>
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(!connected || Session.Busy)" OnClick="() => Session.MoveAbsoluteAsync(_target, _speed)" data-testid="driver-move-absolute">MoveAbsolute</MudButton>
+                <MudButton Variant="Variant.Outlined" Color="Color.Primary" Disabled="@(!connected || Session.Busy)" OnClick="() => Session.MoveRelativeAsync(_target, _speed)">MoveRelative</MudButton>
+            </div>
+
+            <div class="d-flex flex-wrap align-center gap-2 mt-3">
+                <MudNumericField T="double" @bind-Value="_jogSpeed" Label="@($"Jog speed, {unit}/s")" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:160px"/>
+                <MudButton Variant="Variant.Outlined" Disabled="@(!connected)" @onpointerdown="() => Session.JogStart(-_jogSpeed)" @onpointerup="Session.JogStop" @onpointerleave="JogRelease">Jog &minus;</MudButton>
+                <MudButton Variant="Variant.Outlined" Disabled="@(!connected)" @onpointerdown="() => Session.JogStart(_jogSpeed)" @onpointerup="Session.JogStop" @onpointerleave="JogRelease">Jog +</MudButton>
+                <MudText Typo="Typo.caption" Class="mud-text-secondary">hold to move, release to stop</MudText>
+            </div>
+
+            <MudAlert Class="mt-3" Dense="true" Severity="@(Session.LastFailed ? Severity.Error : Severity.Normal)" data-testid="driver-last-result">
+                @(Session.Running is { } r ? $"{r}…" : Session.LastResult)
+            </MudAlert>
+        </MudPaper>
+    </MudItem>
+
+    <MudItem xs="12">
+        <MudPaper Class="pa-4" Elevation="1">
+            <MudText Typo="Typo.subtitle2" Class="mb-2">Driver log (last @InMemoryLog.Capacity lines)</MudText>
+            <pre class="register-value" style="max-height:320px;overflow:auto;font-size:12px;margin:0" data-testid="driver-log">@string.Join('\n', Session.Log.Lines.Reverse())</pre>
+        </MudPaper>
+    </MudItem>
+</MudGrid>
+
+@code {
+    private double _target = 1000;
+    private double? _speed;
+    private double _jogSpeed = 50;
+
+    private async Task JogRelease()
+    {
+        if (Session.Running?.StartsWith("Jog", StringComparison.Ordinal) == true) await Session.JogStop();
+    }
+
+    private static string F(double v) => v.ToString("F3", CultureInfo.InvariantCulture);
+}
