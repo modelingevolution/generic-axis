@@ -1,0 +1,7 @@
+<MudChip T="string" Size="Size.Small" Variant="@(On ? Variant.Filled : Variant.Outlined)" Color="@(On ? OnColor : Color.Default)">@Text</MudChip>
+
+@code {
+    [Parameter, EditorRequired] public string Text { get; set; } = "";
+    [Parameter] public bool On { get; set; }
+    [Parameter] public Color OnColor { get; set; } = Color.Primary;
+}
