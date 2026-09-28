@@ -10,6 +10,7 @@ positioner that carries the part, fronted by any PLC that can serve the register
 | `src/ModelingEvolution.GenericAxis.Plugin` | rw2 device plugin (`[RocketWelderPlugin("RocketWelder.Motion.Generic")]`): declares the axis and builds the device from the devices hub's values. |
 | `src/ModelingEvolution.GenericAxis.TestApp` | **One app for testing**, three roles: (1) the PLC **simulator** (the register map with physics, watchdog, lease, fault injection); (2) a **driver panel** that connects to the simulator or to a real PLC; (3) the **PLC conformance check** — `--check <host>[:port] [--allow-motion]` runs `docs/protocol.md` as a checklist against a real PLC (transport, word order, command/ack, watchdog trip and re-arm, lease; motion and kill-test only with an operator present) and writes a pass/fail report the PLC developer can act on. The simulator must pass the same check. |
 | `python/generic_axis_check/` | **The PLC conformance check in Python** (pymodbus): the same checklist as the C# `--check`, same ids and report, for a PLC developer's laptop without .NET. `python -m generic_axis_check <host>[:port] [--allow-motion] [--report out.md]`. Both checkers must pass against the simulator in CI. |
+| `src/ModelingEvolution.GenericAxis.Plugin.Tests` | Plugin unit tests (declaration, property table, factory, prefix handler, connector). |
 | `src/ModelingEvolution.GenericAxis.Tests` | Unit tests (lease vectors, heartbeat, packing) and live tests against the in-process simulator (home, move, stop, kill-test). |
 
 Requirements: `docs/epics/epic-065-external-axis-motion/features/feature-007-pamet-track-direct-plc/` in the docs repo.
@@ -20,3 +21,21 @@ dotnet build src/GenericAxis.sln
 dotnet test  src/GenericAxis.sln
 dotnet run --project src/ModelingEvolution.GenericAxis.TestApp   # http://localhost:5070
 ```
+
+## Cross-test: the simulator against both checkers
+
+```bash
+# 1. the PLC simulator, headless, on port 5023
+dotnet src/ModelingEvolution.GenericAxis.TestApp/bin/Debug/net10.0/ModelingEvolution.GenericAxis.TestApp.dll --headless --port 5023 &
+
+# 2. the C# checker (same binary)
+dotnet src/ModelingEvolution.GenericAxis.TestApp/bin/Debug/net10.0/ModelingEvolution.GenericAxis.TestApp.dll --check 127.0.0.1:5023 --allow-motion --report cs.md
+
+# 3. the Python checker (no .NET needed on the machine that runs it)
+python3 -m venv .venv && . .venv/bin/activate && pip install ./python
+python -m generic_axis_check 127.0.0.1:5023 --allow-motion --report py.md
+```
+
+Both must end with `RESULT: PASS`, exit code 0, CHK-01…CHK-16. Point either checker at a real PLC by replacing
+`127.0.0.1:5023` with its address; leave out `--allow-motion` unless an operator is at the machine and the travel is
+clear. Details and exit codes: [`python/README.md`](python/README.md) and `docs/protocol.md` § Conformance checks.

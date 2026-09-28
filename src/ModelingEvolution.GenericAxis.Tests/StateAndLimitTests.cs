@@ -149,11 +149,11 @@ public class StateAndLimitTests
         var before = rig.Plc.CommandWritesSince(0).Count;
 
         var abs = () => rig.Linear.MoveAbsoluteAsync(new(100));
-        (await abs.Should().ThrowAsync<MotionException>()).Which.Should()
+        (await DriverRig.Bounded(abs).Should().ThrowAsync<MotionException>()).Which.Should()
             .Match<MotionException>(e => e.Error == MotionError.OutOfRange && e.Message.Contains("no limit source")
                                                                              && e.Message.Contains("TravelMin"));
         var vel = () => rig.Linear.MoveVelocityAsync(new(10));
-        (await vel.Should().ThrowAsync<MotionException>()).Which.Error.Should().Be(MotionError.OutOfRange);
+        (await DriverRig.Bounded(vel).Should().ThrowAsync<MotionException>()).Which.Error.Should().Be(MotionError.OutOfRange);
         rig.Plc.CommandWritesSince(0).Count.Should().Be(before, "a refusal writes nothing");
 
         var home = rig.Axis.HomeAsync();
@@ -175,7 +175,7 @@ public class StateAndLimitTests
 
         var connect = () => rig.Device.ConnectAsync();
 
-        var ex = (await connect.Should().ThrowAsync<MotionException>()).Which;
+        var ex = (await DriverRig.Bounded(connect).Should().ThrowAsync<MotionException>()).Which;
         ex.Error.Should().Be(MotionError.CommunicationLost);
         ex.Message.Should().Contain("S+8…S+13");
         rig.Plc.Ops.Should().NotBeEmpty("anchor: the status block was read");

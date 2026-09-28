@@ -123,6 +123,10 @@ internal sealed class DriverRig : IAsyncDisposable
         : (bits & CommandBits.Enable) != 0 ? (state == 0 ? (ushort)1 : state)
         : state is 1 ? (ushort)0 : state;
 
+    /// <summary>Bounds an act in real time, so a guard that stops refusing fails with a timeout instead of hanging
+    /// on an ack wait nobody advances.</summary>
+    public static Func<Task> Bounded(Func<Task> act) => () => act().WaitAsync(RealTimeout);
+
     public IReadOnlyList<FakeLogRecord> LogsAt(LogLevel level) =>
         Logs.GetSnapshot().Where(r => r.Level == level).ToArray();
 
