@@ -6,8 +6,9 @@ import json
 from datetime import UTC, datetime
 
 from generic_axis_check.context import Options
+from generic_axis_check.errors import ErrorClass
 from generic_axis_check.report import to_json, to_json_text, to_markdown
-from generic_axis_check.runner import CheckResult, Report
+from generic_axis_check.runner import CheckResult, LastRead, Report
 
 TOP_KEYS = {
     "schema",
@@ -21,7 +22,7 @@ TOP_KEYS = {
     "checks",
     "cleanup",
 }
-CHECK_KEYS = {"id", "title", "section", "result", "durationMs", "message", "observed"}
+CHECK_KEYS = {"id", "title", "section", "result", "durationMs", "message", "errorClass", "observed"}
 
 
 def sample() -> Report:
@@ -33,7 +34,15 @@ def sample() -> Report:
         [
             CheckResult("CHK-01", "Transport and unit", "Transport", "PASS", 3, "ok", {"roundTripMs": 1}),
             CheckResult(
-                "CHK-02", "Map version", "Status block", "FAIL", 1, "MapVersion 2, expected 1", {"mapVersion": 2}
+                "CHK-02",
+                "Map version",
+                "Status block",
+                "FAIL",
+                1,
+                "Protocol/ProtocolMismatch: MapVersion not 1. Read MapVersion (S+14 = 114) = 2, expected 1.",
+                {"mapVersion": 2},
+                ErrorClass.PROTOCOL,
+                LastRead([None] * 12, [0, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]),
             ),
             CheckResult(
                 "CHK-03",
@@ -57,7 +66,14 @@ def test_json_has_exactly_the_schema_fields() -> None:
     assert doc["target"] == {"host": "192.168.58.20", "port": 502, "unit": 1, "commandBase": 0, "statusBase": 100}
     assert doc["summary"] == {"result": "FAIL", "pass": 1, "fail": 1, "skipped": 1}
     assert doc["startedAt"] == "2026-09-29T10:15:02Z"
-    assert all(set(c) == CHECK_KEYS for c in doc["checks"])
+    assert set(doc["checks"][0]) == CHECK_KEYS
+    assert set(doc["checks"][1]) == CHECK_KEYS | {"lastRead"}
+    assert set(doc["checks"][2]) == CHECK_KEYS
+    assert [c["errorClass"] for c in doc["checks"]] == [None, "Protocol", None]
+    assert doc["checks"][1]["lastRead"] == {
+        "command": [None] * 12,
+        "status": [0, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2],
+    }
     assert doc["checks"][2]["observed"] == {}
     assert doc["cleanup"] == ["C+9 = 0 (release lease)"]
 
@@ -77,7 +93,15 @@ def test_markdown_has_the_table_columns_cleanup_and_ends_with_the_result() -> No
     assert "2026-09-29T10:15:02Z" in lines[0]
     assert "| Id | Title | Result | Observed | Protocol section |" in lines
     assert "- C+9 = 0 (release lease)" in lines
-    assert "| CHK-02 | Map version | FAIL | MapVersion 2, expected 1; mapVersion=2 | Status block |" in lines
+    assert any(
+        line.startswith("| CHK-02 | Map version | FAIL | Protocol/ProtocolMismatch: MapVersion not 1.")
+        for line in lines
+    )
+    failures = lines.index("Failures:")
+    assert failures < lines.index("Cleanup:")
+    assert lines[failures + 2].startswith("CHK-02 Map version: Protocol/ProtocolMismatch: MapVersion not 1.")
+    assert "S+14     114  MapVersion             0x0002  2" in lines
+    assert "C+0        0  Command                —       not read" in lines
     assert lines[-1] == "RESULT: FAIL"
 
 

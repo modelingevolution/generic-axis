@@ -9,7 +9,7 @@ import time
 from pymodbus.client import AsyncModbusTcpClient
 from pymodbus.exceptions import ModbusException
 
-from .registers import STATUS_LENGTH, RegisterMap, StatusBlock
+from .registers import STATUS_LENGTH, RegisterMap, StatusBlock, describe_range
 
 CONNECT_ATTEMPTS = 2
 CONNECT_ATTEMPT_S = 1.5
@@ -41,13 +41,20 @@ def _failure(what: str, exc: BaseException) -> BaseException:
 class PlcClient:
     """Holding-register access to one unit. FC03 reads, FC06 for one register, FC16 for several (protocol.md)."""
 
-    def __init__(self, host: str, port: int, unit: int) -> None:
+    def __init__(self, host: str, port: int, unit: int, registers: RegisterMap | None = None) -> None:
         self.host = host
         self.port = port
         self.unit = unit
+        self.registers = registers or RegisterMap()
+        """Only for naming register ranges in error messages (protocol.md § Errors and debugging, rule 1)."""
         self._client: AsyncModbusTcpClient | None = None
-        self.writes = 0
-        """Count of write requests sent, for tests that must prove "nothing written"."""
+        self.last_read: dict[int, int] = {}
+        """The last value read from each register: the fallback ``lastRead`` evidence when a fresh read fails."""
+
+    def _where(self, operation: str, address: int, count: int) -> str:
+        return (
+            f"{operation} {describe_range(self.registers, address, count)} on {self.host}:{self.port} unit {self.unit}"
+        )
 
     @property
     def connected(self) -> bool:
@@ -85,7 +92,7 @@ class PlcClient:
 
     def _require(self) -> AsyncModbusTcpClient:
         if self._client is None:
-            raise PlcError("not connected")
+            raise PlcError(f"not connected to {self.host}:{self.port}")
         return self._client
 
     async def read(self, address: int, count: int) -> list[int]:
@@ -93,26 +100,29 @@ class PlcClient:
         try:
             response = await client.read_holding_registers(address, count=count, device_id=self.unit)
         except (OSError, ModbusException) as exc:
-            raise _failure(f"FC03 {address}+{count}", exc) from exc
+            raise _failure(self._where("read", address, count) + " failed", exc) from exc
         if response.isError():
-            raise PlcError(f"FC03 {address}+{count}: Modbus exception {response}")
+            raise PlcError(f"{self._where('read', address, count)} failed: Modbus exception {response}")
         registers = list(response.registers)
         if len(registers) != count:
-            raise PlcError(f"FC03 {address}+{count}: answered {len(registers)} registers")
+            raise PlcError(f"{self._where('read', address, count)} failed: answered {len(registers)} registers")
+        for offset, value in enumerate(registers):
+            self.last_read[address + offset] = value
         return registers
 
     async def write(self, address: int, values: list[int]) -> None:
         client = self._require()
-        self.writes += 1
         try:
             if len(values) == 1:
                 response = await client.write_register(address, values[0], device_id=self.unit)
             else:
                 response = await client.write_registers(address, values, device_id=self.unit)
         except (OSError, ModbusException) as exc:
-            raise _failure(f"write {address}={values}", exc) from exc
+            raise _failure(f"{self._where('write', address, len(values))} = {values} failed", exc) from exc
         if response.isError():
-            raise PlcError(f"write {address}={values}: Modbus exception {response}")
+            raise PlcError(
+                f"{self._where('write', address, len(values))} = {values} failed: Modbus exception {response}"
+            )
         log.debug("wrote %d = %s", address, values)
 
     async def read_status(self, registers: RegisterMap) -> StatusBlock:

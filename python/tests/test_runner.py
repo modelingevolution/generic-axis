@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import re
 
 import pytest
 
@@ -45,7 +46,15 @@ async def test_run_failed_map_version_skips_every_dependant_and_writes_nothing()
         report = await run(options(plc, motion=True))
     results = by_id(report)
     assert results["CHK-01"][0] == PASS
-    assert results["CHK-02"] == (FAIL, "MapVersion 2, expected 1")
+    assert results["CHK-02"] == (
+        FAIL,
+        "Protocol/ProtocolMismatch: MapVersion not 1. Read MapVersion (S+14 = 114) = 2, expected 1.",
+    )
+    chk02 = report.checks[1]
+    assert chk02.error_class == "Protocol"
+    assert chk02.last_read is not None
+    assert chk02.last_read.status[14] == 2
+    assert len(chk02.last_read.command) == 12
     assert all(results[f"CHK-{n:02d}"][0] == SKIPPED for n in range(3, 17))
     assert results["CHK-03"][1] == "needs CHK-02, which FAILED"
     assert results["CHK-07"][1] == "needs CHK-06, which SKIPPED"
@@ -97,7 +106,12 @@ async def test_run_catches_a_plc_that_never_acknowledges() -> None:
         report = await run(options(plc), checks=upto("CHK-08"))
     results = by_id(report)
     assert results["CHK-06"][0] == FAIL
-    assert "no CommandAck within 500 ms" in results["CHK-06"][1]
+    assert re.fullmatch(
+        r"Protocol/NotAcknowledged: Enable 1 not accepted\. CommandSeq 1 written, CommandAck 0 read after \d+ ms, "
+        r"State 0 read\.",
+        results["CHK-06"][1],
+    )
+    assert report.checks[5].observed == {"commandSeq": 1, "commandAck": 0, "state": 0}
     assert results["CHK-07"] == (SKIPPED, "needs CHK-06, which FAILED")
     assert results["CHK-08"] == (SKIPPED, "needs CHK-06, which FAILED")
 
@@ -108,7 +122,9 @@ async def test_run_catches_a_plc_without_the_watchdog() -> None:
         report = await run(options(plc), checks=upto("CHK-10"))
     results = by_id(report)
     assert results["CHK-08"][0] == FAIL
-    assert results["CHK-08"][1].startswith("stalled beat: no trip within 1.5 s of the last beat")
+    assert results["CHK-08"][1].startswith(
+        "Protocol/ProtocolMismatch: stalled beat: no trip within 1.5 s of the last beat. Read State (S+0 = 100) = 0, "
+    )
     assert results["CHK-09"][0] == SKIPPED
     assert results["CHK-10"][0] == SKIPPED
 
@@ -119,7 +135,8 @@ async def test_run_catches_swapped_word_order_in_chk03() -> None:
         report = await run(options(plc), checks=upto("CHK-03"))
     chk03 = report.checks[2]
     assert chk03.result == FAIL
-    assert "TravelMin is not < TravelMax" in chk03.message
+    assert chk03.message.startswith("Protocol/ProtocolMismatch: limits not sane: TravelMin is not < TravelMax")
+    assert "Read TravelMin (S+8 = 108) = 0, TravelMax (S+10 = 110) = " in chk03.message
     assert chk03.observed["travelMax"] < 0
 
 
@@ -129,7 +146,10 @@ async def test_run_catches_unpublished_limits_in_chk03() -> None:
         report = await run(options(plc), checks=upto("CHK-03"))
     chk03 = report.checks[2]
     assert chk03.result == FAIL
-    assert chk03.message == "limits not published: TravelMin 0, TravelMax 0, MaxVelocity 0"
+    assert chk03.message == (
+        "Protocol/ProtocolMismatch: limits not published (all zero). Read TravelMin (S+8 = 108) = 0, "
+        "TravelMax (S+10 = 110) = 0, MaxVelocity (S+12 = 112) = 0."
+    )
 
 
 @pytest.mark.timeout(120)
@@ -155,7 +175,8 @@ async def test_run_interrupted_mid_move_stops_the_axis_and_journals_the_cleanup(
     report = await task
     assert report.interrupted
     assert report.exit_code == 1
-    assert "interrupted" in by_id(report)["CHK-13"][1]
+    assert by_id(report)["CHK-13"][1] == "Commander/Cancelled: interrupted (Ctrl-C) during this check."
+    assert report.checks[12].error_class == "Commander"
     assert by_id(report)["CHK-16"] == (SKIPPED, "interrupted")
     await asyncio.sleep(0.2)
     assert stub.axis.state in (0, 1)

@@ -218,3 +218,49 @@ class StatusBlock:
     @property
     def in_position(self) -> bool:
         return Flags.IN_POSITION in self.flags
+
+
+REGISTERS: tuple[tuple[str, str, int, bool], ...] = (
+    # (name, block, offset, int32) — protocol.md § Command block and § Status block.
+    ("Command", "C", 0, False),
+    ("CommandSeq", "C", 1, False),
+    ("TargetPosition", "C", 2, True),
+    ("Velocity", "C", 4, True),
+    ("Acceleration", "C", 6, True),
+    ("Heartbeat", "C", 8, False),
+    ("LeaseOwner", "C", 9, False),
+    ("WatchdogFault", "C", 10, False),
+    ("WatchdogTrips", "C", 11, False),
+    ("State", "S", 0, False),
+    ("Flags", "S", 1, False),
+    ("ActualPosition", "S", 2, True),
+    ("ActualVelocity", "S", 4, True),
+    ("FaultCode", "S", 6, False),
+    ("CommandAck", "S", 7, False),
+    ("TravelMin", "S", 8, True),
+    ("TravelMax", "S", 10, True),
+    ("MaxVelocity", "S", 12, True),
+    ("MapVersion", "S", 14, False),
+)
+_BY_NAME = {name: (block, offset) for name, block, offset, _ in REGISTERS}
+
+
+def register_ref(registers: RegisterMap, name: str) -> tuple[str, int]:
+    """``("S+14", 114)`` for ``"MapVersion"`` with the default bases."""
+    block, offset = _BY_NAME[name]
+    base = registers.command_base if block == "C" else registers.status_base
+    return f"{block}+{offset}", base + offset
+
+
+def describe_range(registers: RegisterMap, address: int, count: int) -> str:
+    """``S+0…S+14 (100…114)`` for a range inside a block, else the absolute range."""
+    last = address + count - 1
+    span = f"{address}" if count == 1 else f"{address}…{last}"
+    for block, base, length in (
+        ("C", registers.command_base, COMMAND_LENGTH),
+        ("S", registers.status_base, STATUS_LENGTH),
+    ):
+        if base <= address and last < base + length:
+            rel = f"{block}+{address - base}" if count == 1 else f"{block}+{address - base}…{block}+{last - base}"
+            return f"{rel} ({span})"
+    return span

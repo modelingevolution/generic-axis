@@ -1,5 +1,6 @@
 """``python -m generic_axis_check <host>[:port] [--unit N] [--command-base N] [--status-base N] [--owner-id N]
-[--allow-motion] [--tolerance X] [--report PATH]`` (protocol.md § Conformance checks, "Command line")."""
+[--allow-motion] [--tolerance X] [--dump [--watch]] [--report PATH]`` (protocol.md § Conformance checks, "Command
+line")."""
 
 from __future__ import annotations
 
@@ -10,7 +11,10 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from .client import PlcClient, PlcError
 from .context import FOREIGN_OWNER_ID, Options
+from .dump import dump
+from .errors import COMMUNICATION_LOST, ErrorClass, format_message
 from .registers import RegisterMap
 from .report import to_json_text, to_markdown
 from .runner import run
@@ -34,6 +38,8 @@ class Invocation:
     options: Options
     report_md: Path | None
     report_json: Path | None
+    dump: bool = False
+    watch: bool = False
 
 
 def _u16(text: str) -> int:
@@ -59,6 +65,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="run CHK-12…16. Only with an operator at the machine and the travel clear",
     )
     p.add_argument("--tolerance", type=float, default=0.1, help="CHK-13 position tolerance in axis units")
+    p.add_argument(
+        "--dump",
+        action="store_true",
+        help="print the decoded register dump and run no checks; writes nothing, takes no lease",
+    )
+    p.add_argument("--watch", action="store_true", help="with --dump: repeat at 5 Hz until Ctrl-C")
     p.add_argument("--report", type=Path, help="*.md: Markdown there plus JSON next to it; *.json: JSON only")
     return p
 
@@ -79,6 +91,10 @@ def parse(argv: list[str]) -> Invocation:
         raise UsageError(f"--owner-id {a.owner_id}: 0 means unowned and {FOREIGN_OWNER_ID} is CHK-11's foreign id")
     if a.tolerance <= 0:
         raise UsageError("--tolerance must be > 0")
+    if a.watch and not a.dump:
+        raise UsageError("--watch needs --dump")
+    if a.dump and a.report is not None:
+        raise UsageError("--report applies to a check run, not to --dump")
     report_md = report_json = None
     if a.report is not None:
         match a.report.suffix.lower():
@@ -102,7 +118,27 @@ def parse(argv: list[str]) -> Invocation:
         RegisterMap(options.command_base, options.status_base)
     except ValueError as exc:
         raise UsageError(str(exc)) from exc
-    return Invocation(options, report_md, report_json)
+    return Invocation(options, report_md, report_json, dump=a.dump, watch=a.watch)
+
+
+async def run_dump(options: Options, watch: bool) -> int:
+    """Rule 4: exit 0 when both blocks were read (and on Ctrl-C while watching), 1 on a Transport error."""
+    registers = RegisterMap(options.command_base, options.status_base)
+    client = PlcClient(options.host, options.port, options.unit, registers)
+    try:
+        await client.connect()
+        await dump(client, registers, lambda text: print(text, flush=True), watch=watch)
+        return 0
+    except PlcError as exc:
+        print(format_message(ErrorClass.TRANSPORT, COMMUNICATION_LOST, str(exc), registers), file=sys.stderr)
+        return 1
+    except asyncio.CancelledError:
+        task = asyncio.current_task()
+        if task is not None:
+            task.uncancel()
+        return 0
+    finally:
+        client.close()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -114,6 +150,8 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr, format="%(message)s")
     logging.getLogger("pymodbus").setLevel(logging.CRITICAL)  # the checker reports every failure itself
 
+    if invocation.dump:
+        return asyncio.run(run_dump(invocation.options, invocation.watch))
     print(BANNER, file=sys.stderr)
     report = asyncio.run(run(invocation.options, progress=lambda line: print(line, file=sys.stderr, flush=True)))
     markdown = to_markdown(report)

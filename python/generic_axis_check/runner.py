@@ -15,9 +15,30 @@ from .beat import BEAT_PERIOD_S, Beater
 from .checks import CHECKS, FAIL, PASS, SKIPPED, Check, Outcome
 from .client import PlcClient, PlcError
 from .context import AckTimeout, CheckContext, Options
+from .errors import (
+    CANCELLED,
+    COMMUNICATION_LOST,
+    LEASE_HELD,
+    NOT_ACKNOWLEDGED,
+    PROTOCOL_MISMATCH,
+    ErrorClass,
+    Read,
+    format_message,
+    machine_error,
+)
 from .lease import LeaseHeld
 from .poll import ms
-from .registers import EDGE_BITS, MOVING_STATES, AxisState, Command, FaultCode, RegisterMap, next_nonzero
+from .registers import (
+    COMMAND_LENGTH,
+    EDGE_BITS,
+    MOVING_STATES,
+    STATUS_LENGTH,
+    AxisState,
+    Command,
+    FaultCode,
+    RegisterMap,
+    next_nonzero,
+)
 
 PREFLIGHT_WATCH_S = 1.0
 """protocol.md "Pre-flight": read ``LeaseOwner`` and watch ``Heartbeat`` for 1 s."""
@@ -29,6 +50,14 @@ log = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
+class LastRead:
+    """Raw C+0…C+11 and S+0…S+14; ``None`` for a register never read (protocol.md § Report schema, ``lastRead``)."""
+
+    command: list[int | None]
+    status: list[int | None]
+
+
+@dataclass(slots=True)
 class CheckResult:
     id: str
     title: str
@@ -37,6 +66,8 @@ class CheckResult:
     duration_ms: int
     message: str
     observed: dict[str, int] = field(default_factory=dict)
+    error_class: ErrorClass | None = None
+    last_read: LastRead | None = None
 
 
 @dataclass(slots=True)
@@ -99,12 +130,12 @@ async def preflight(client: PlcClient, registers: RegisterMap, owner_id: int) ->
     return None
 
 
-async def restore(ctx: CheckContext) -> str | None:
+async def restore(ctx: CheckContext) -> Outcome | None:
     """protocol.md "Each check restores": State 0 or 1, no latched fault, lease held and beat running.
 
-    Returns why it could not, or None.
+    Returns a FAIL outcome saying why it could not, or None.
     """
-    status = await ctx.recover()
+    await ctx.recover()
     ctx.caused_trip = False
     if ctx.session_lease:
         (owner,) = await ctx.client.read(ctx.registers.lease_owner, 1)
@@ -115,9 +146,22 @@ async def restore(ctx: CheckContext) -> str | None:
     fault, _ = await ctx.watchdog()
     status = await ctx.status()
     if status.state not in (AxisState.DISABLED, AxisState.STANDSTILL) or status.fault_code != FaultCode.NONE:
-        return f"axis left in State {status.state}, FaultCode {status.fault_code}"
+        error_class, motion_error = machine_error(status)
+        reads = (Read("State", status.state), Read("FaultCode", status.fault_code))
+        message = format_message(
+            error_class, motion_error, "restore: the axis stayed out of State 0/1", ctx.registers, reads
+        )
+        return Outcome(FAIL, message, {}, error_class)
     if fault:
-        return "WatchdogFault still 1 after writing 0"
+        read = Read("WatchdogFault", fault, 0)
+        message = format_message(
+            ErrorClass.PROTOCOL,
+            PROTOCOL_MISMATCH,
+            "restore: WatchdogFault stayed 1 after " "writing 0",
+            ctx.registers,
+            (read,),
+        )
+        return Outcome(FAIL, message, {}, ErrorClass.PROTOCOL)
     return None
 
 
@@ -187,7 +231,7 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
     """Run the checklist against ``options.host``. Never raises for a PLC problem: every problem is a FAIL."""
     say = progress or (lambda _line: None)
     registers = RegisterMap(options.command_base, options.status_base)
-    client = PlcClient(options.host, options.port, options.unit)
+    client = PlcClient(options.host, options.port, options.unit, registers)
     ctx = CheckContext(client, registers, options, Beater(client, registers))
     started_at = datetime.now(UTC)
     results: dict[str, CheckResult] = {}
@@ -219,20 +263,19 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
                 continue
             say(f"{check.id} {check.title} ...")
             began = time.monotonic()
+            last_read: LastRead | None = None
             try:
                 outcome = await _run_one(check, ctx)
+                if outcome.result == FAIL:
+                    last_read = await capture(ctx)
                 if check.id >= FIRST_LEASED_CHECK:
                     why = await _restore(ctx)
                     if why is not None:
-                        outcome = Outcome(
-                            FAIL,
-                            (
-                                f"{outcome.message}; restore failed: {why}"
-                                if outcome.result == FAIL
-                                else f"restore failed: {why}"
-                            ),
-                            outcome.observed,
-                        )
+                        if outcome.result != FAIL:
+                            outcome = why
+                            last_read = ctx_last_read(ctx)
+                        else:
+                            outcome.message += f" Restore failed: {why.message}"
                         abort = f"restore after {check.id} failed"
             except asyncio.CancelledError:
                 task = asyncio.current_task()
@@ -240,7 +283,11 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
                     task.uncancel()
                 interrupted = True
                 abort = "interrupted"
-                outcome = Outcome(FAIL, "interrupted (Ctrl-C) during this check")
+                message = format_message(
+                    ErrorClass.COMMANDER, CANCELLED, "interrupted (Ctrl-C) during this check", registers
+                )
+                outcome = Outcome(FAIL, message, {}, ErrorClass.COMMANDER)
+                last_read = ctx_last_read(ctx)
             result = CheckResult(
                 check.id,
                 check.title,
@@ -249,9 +296,14 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
                 ms(time.monotonic() - began),
                 outcome.message,
                 outcome.observed,
+                outcome.error_class,
+                last_read,
             )
             results[check.id] = result
-            say(f"{check.id} {result.result} ({result.duration_ms} ms) {result.message}")
+            if result.result == FAIL:
+                say(f"{check.id}: {result.message} ({result.duration_ms} ms)")
+            else:
+                say(f"{check.id} {result.result} ({result.duration_ms} ms) {result.message}")
     except asyncio.CancelledError:
         task = asyncio.current_task()
         if task is not None:
@@ -277,17 +329,53 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
     )
 
 
+def exception_outcome(exc: PlcError | AckTimeout | LeaseHeld, registers: RegisterMap) -> Outcome:
+    """One cause, one class (protocol.md § Errors and debugging, rule 2)."""
+    if isinstance(exc, AckTimeout):
+        message = format_message(ErrorClass.PROTOCOL, NOT_ACKNOWLEDGED, exc.what, registers, (), exc.detail)
+        observed = {"commandSeq": exc.seq, "commandAck": exc.status.command_ack, "state": exc.status.state}
+        return Outcome(FAIL, message, observed, ErrorClass.PROTOCOL)
+    if isinstance(exc, LeaseHeld):
+        read = Read("LeaseOwner", exc.owner)
+        message = format_message(ErrorClass.COMMANDER, LEASE_HELD, str(exc), registers, (read,))
+        return Outcome(FAIL, message, {"leaseOwner": exc.owner}, ErrorClass.COMMANDER)
+    message = format_message(ErrorClass.TRANSPORT, COMMUNICATION_LOST, str(exc), registers)
+    return Outcome(FAIL, message, {}, ErrorClass.TRANSPORT)
+
+
 async def _run_one(check: Check, ctx: CheckContext) -> Outcome:
     try:
         return await check.run(ctx)
     except (PlcError, AckTimeout, LeaseHeld) as exc:
-        return Outcome(FAIL, str(exc))
+        return exception_outcome(exc, ctx.registers)
 
 
-async def _restore(ctx: CheckContext) -> str | None:
+def ctx_last_read(ctx: CheckContext) -> LastRead:
+    """The last value read from each register, ``None`` where none was read."""
+    shadow = ctx.client.last_read
+    base_c, base_s = ctx.registers.command_base, ctx.registers.status_base
+    return LastRead(
+        [shadow.get(base_c + i) for i in range(COMMAND_LENGTH)],
+        [shadow.get(base_s + i) for i in range(STATUS_LENGTH)],
+    )
+
+
+async def capture(ctx: CheckContext) -> LastRead:
+    """Evidence for a FAIL (rule 5): read both blocks now, before any restore write; if that read fails, fall back
+    to the last values read."""
+    if ctx.client.connected:
+        with contextlib.suppress(PlcError):
+            await ctx.client.read(ctx.registers.command_base, COMMAND_LENGTH)
+            await ctx.client.read(ctx.registers.status_base, STATUS_LENGTH)
+    return ctx_last_read(ctx)
+
+
+async def _restore(ctx: CheckContext) -> Outcome | None:
     if not ctx.client.connected:
-        return "connection lost"
+        message = format_message(ErrorClass.TRANSPORT, COMMUNICATION_LOST, "restore: not connected", ctx.registers)
+        return Outcome(FAIL, message, {}, ErrorClass.TRANSPORT)
     try:
-        return await restore(ctx)
+        why = await restore(ctx)
     except (PlcError, AckTimeout, LeaseHeld) as exc:
-        return str(exc)
+        return exception_outcome(exc, ctx.registers)
+    return why

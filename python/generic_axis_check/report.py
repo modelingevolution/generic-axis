@@ -8,8 +8,9 @@ from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
 from .checks import FAIL, PASS, SKIPPED
-from .registers import MAP_VERSION
-from .runner import Report
+from .dump import render
+from .registers import COMMAND_LENGTH, MAP_VERSION, STATUS_LENGTH, RegisterMap
+from .runner import CheckResult, Report
 
 SCHEMA = "generic-axis-conformance/1"
 TOOL_NAME = "generic-axis-check"
@@ -50,20 +51,30 @@ def to_json(report: Report) -> dict[str, Any]:
             "fail": sum(c.result == FAIL for c in report.checks),
             "skipped": sum(c.result == SKIPPED for c in report.checks),
         },
-        "checks": [
-            {
-                "id": c.id,
-                "title": c.title,
-                "section": c.section,
-                "result": c.result,
-                "durationMs": c.duration_ms,
-                "message": c.message,
-                "observed": dict(c.observed),
-            }
-            for c in report.checks
-        ],
+        "checks": [_check(c) for c in report.checks],
         "cleanup": list(report.cleanup),
     }
+
+
+def _check(c: CheckResult) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "id": c.id,
+        "title": c.title,
+        "section": c.section,
+        "result": c.result,
+        "durationMs": c.duration_ms,
+        "message": c.message,
+        "errorClass": str(c.error_class) if c.result == FAIL and c.error_class is not None else None,
+        "observed": dict(c.observed),
+    }
+    if c.result == FAIL:
+        # "A FAIL also carries lastRead" (protocol.md § Report schema); null marks a register never read.
+        last = c.last_read
+        entry["lastRead"] = {
+            "command": list(last.command) if last else [None] * COMMAND_LENGTH,
+            "status": list(last.status) if last else [None] * STATUS_LENGTH,
+        }
+    return entry
 
 
 def to_json_text(report: Report) -> str:
@@ -91,6 +102,15 @@ def to_markdown(report: Report) -> str:
         observed = ", ".join(f"{k}={v}" for k, v in c.observed.items())
         detail = c.message if not observed else f"{c.message}; {observed}"
         lines.append(f"| {c.id} | {_cell(c.title)} | {c.result} | {_cell(detail)} | {_cell(c.section)} |")
+    failures = [c for c in report.checks if c.result == FAIL]
+    if failures:
+        # "Each FAIL is followed by its message and the decoded dump of lastRead" (protocol.md § Report schema).
+        registers = RegisterMap(o.command_base, o.status_base)
+        lines += ["", "Failures:"]
+        for c in failures:
+            last = c.last_read
+            dump = render(registers, last.command, last.status) if last else "no register was read"
+            lines += ["", f"{c.id} {c.title}: {c.message}", "", "```", dump, "```"]
     lines += ["", "Cleanup:"]
     lines += [f"- {entry}" for entry in report.cleanup] or ["- nothing to undo"]
     lines += ["", f"RESULT: {report.result}"]
