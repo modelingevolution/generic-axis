@@ -345,7 +345,7 @@ public class DriverIntegrationTests(ITestOutputHelper output)
         output.WriteLine($"GA-I-15 {sw.Elapsed.TotalMilliseconds:F0} ms: {ex.Message}");
         sw.Elapsed.TotalMilliseconds.Should().BeLessThanOrEqualTo(700);
         ex.Error.Should().Be(MotionError.NotAcknowledged);
-        MotionErrorClasses.Of(ex).Should().Be(ErrorClass.Protocol);
+        MotionErrorClasses.Of(ex.Error).Should().Be(ErrorClass.Protocol);
         ex.Message.Should().MatchRegex("CommandSeq [0-9]+ written, CommandAck [0-9]+ read after 500 ms, State [0-9]+ read");
         var beat = rig.Plc.Truth.Heartbeat;
         await Task.Delay(1500);

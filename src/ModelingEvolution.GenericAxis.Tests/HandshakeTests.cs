@@ -55,7 +55,7 @@ public class HandshakeTests
 
         var ex = (await home.Invoking(h => h).Should().ThrowAsync<MotionException>()).Which;
         ex.Error.Should().Be(MotionError.NotAcknowledged);
-        MotionErrorClasses.Of(ex).Should().Be(ErrorClass.Protocol);
+        MotionErrorClasses.Of(ex.Error).Should().Be(ErrorClass.Protocol);
         ex.Message.Should().Be("carriage: Protocol/NotAcknowledged: Home not accepted. CommandSeq 1 written, "
                                + "CommandAck 0 read after 500 ms, State 1 read.");
         (rig.Time.GetUtcNow() - started).Should().BeGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(500))

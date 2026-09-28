@@ -55,7 +55,7 @@ public class StateAndLimitTests
         var snapshot = new PlcSnapshot(new StatusBlock(7, StatusFlags.None, 0, 0, code, 0, 0, 0, 0, 1), 1, 1, 3, 0);
         var ex = AxisEngine.FaultException("carriage", RegisterMap.Default, snapshot);
         ex.Error.Should().Be(expected);
-        MotionErrorClasses.Of(ex).Should().Be(ErrorClass.Machine);
+        MotionErrorClasses.Of(ex.Error).Should().Be(ErrorClass.Machine);
         ex.Message.Should().StartWith($"carriage: Machine/{expected}: ").And.Contain($"Read FaultCode (S+6 = 106) = {code}");
 
         await using var rig = await new DriverRig().ConnectAsync();
@@ -71,7 +71,7 @@ public class StateAndLimitTests
         var ex = AxisEngine.FaultException("carriage", RegisterMap.Default,
             new PlcSnapshot(new StatusBlock(7, StatusFlags.None, 0, 0, 0, 0, 0, 0, 0, 1), 1, 0, 0, 0));
         ex.Error.Should().Be(MotionError.ProtocolMismatch);
-        MotionErrorClasses.Of(ex).Should().Be(ErrorClass.Protocol);
+        MotionErrorClasses.Of(ex.Error).Should().Be(ErrorClass.Protocol);
         ex.Message.Should().Contain("Read State (S+0 = 100) = 7, FaultCode (S+6 = 106) = 0, expected 1–7 or ≥ 100.");
 
         await using var rig = await new DriverRig().ConnectAsync();

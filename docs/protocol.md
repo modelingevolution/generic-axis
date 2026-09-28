@@ -157,7 +157,10 @@ an error from one class into another.
 | **Transport** | The link failed: the TCP connect failed or was refused, the socket closed, a request got no answer within 500 ms, or the PLC returned a Modbus exception. | `CommunicationLost` | Network, IP, port, unit id. |
 | **Protocol** | The PLC answered, but not per this document. | `ProtocolMismatch`: `MapVersion ≠ 1` · limits partial or not sane · `State` is 5 or above 7 · `State = 7` with `FaultCode = 0` · the PLC changed a driver-owned register. `NotAcknowledged`: a command was written, and `CommandAck` did not echo `CommandSeq` within 500 ms. | PLC programmer. |
 | **Machine** | The PLC reports a fault, or the machine did not do what the PLC accepted. | `FaultCode` 1 → `DriveFault` · 2 → `LimitTripped` · 3 → `MotionFailed` · 4 → `WatchdogTripped` · 5 → `HomeLatchFailed` · 6 → `DriveFault` (drive link) · 7 → `SafetyStop` · ≥ 100 → `DriveFault` (vendor code in the message). An accepted command that misses the driver's budget: no Standstill after Enable → `DriveFault`; homing not finished → `HomeLatchFailed`; stopped outside the in-position window, or not arrived, or still moving after Stop → `MotionFailed`. | Maintenance or operator. |
-| **Commander** | The driver refused before writing anything. | `Busy`, `NotHomed`, `OutOfRange`, `UnreachableSpeed`, `UnsupportedSense`, `LeaseHeld` | The caller, or the other commander. |
+| **Commander** | The driver refused before writing anything. | `Busy`, `NotHomed`, `OutOfRange`, `UnreachableSpeed`, `UnsupportedSense`, `LeaseHeld`, `UnknownAxis`, `WrongAxisKind` (binding refusals) | The caller, or the other commander. |
+
+Every `MotionError` member of SDK 2.30.0 appears in exactly one row. A member added later is unmapped until this
+table names its class.
 
 **Rules**
 
@@ -210,13 +213,18 @@ compares its ids with this table.
 | `--dump` [`--watch`] | off | Prints the decoded register dump (§ Errors and debugging, rule 4) and runs no checks. |
 | `--report PATH` | none | `*.md`: writes the Markdown report there and the JSON report next to it as `*.json`. `*.json`: writes the JSON report only. Any other extension is a usage error (exit 2). The Markdown report always goes to stdout. |
 
-Exit codes: 0 = no FAIL (SKIPPED allowed) · 1 = at least one FAIL · 2 = usage error · 3 = refused to start (the axis
-is held by a live foreign lease, meaning another commander such as rw2 is attached; stop it first).
+Exit codes: 0 = no FAIL (SKIPPED allowed) · 1 = at least one FAIL · 2 = usage error · 3 = refused to start (another commander is beating
+— rw2, a station, or a second tool; see Pre-flight; stop it first) · 4 = interrupted by
+the operator (Ctrl-C / SIGINT) before the list finished.
 
 ### Rules for every run
 
-- **Pre-flight.** Read `LeaseOwner` and watch `Heartbeat` for 1 s. If a foreign owner is beating, exit 3, write nothing,
-  and report every check SKIPPED.
+- **Pre-flight.** Before its own first beat, the tool reads `LeaseOwner` and watches `Heartbeat` (C+8) for 1 s. Any
+  change of `Heartbeat` in that window, whatever `LeaseOwner` holds (0, a station id, or the tool's own id), means
+  another commander is live. The tool then writes nothing, reports every check SKIPPED, names the observed beat values
+  and `LeaseOwner` in the message, and exits 3. This also catches a second conformance tool using the same owner id.
+- **Isolation.** Each tool run uses its own working directory for logs and reports. A run against a simulator uses a
+  simulator on its own port. Two concurrent runs never share a PLC, a simulator or a report path.
 - **Order.** Checks run in id order. A check whose prerequisite FAILED or was SKIPPED is SKIPPED, and its message names
   the prerequisite.
 - **Timing.** Timing checks poll the status block every **20 ms**. Every duration is measured from the completion of
@@ -254,6 +262,60 @@ is held by a live foreign lease, meaning another commander such as rw2 is attach
 | CHK-15 | MoveVelocity | Command semantics: MoveVelocity | 13 | MoveVelocity at +1 % of `MaxVelocity` (away from `TravelMin`) for 1 s, then Stop. | Ack with `State == 4`, `ActualVelocity > 0` during the run, then `State == 1` after Stop within 200 ms. |
 | CHK-16 | Kill test | FR-11 | 08, 15 | MoveVelocity at +1 %, then stop beating. The connection stays open, and polling continues. | Trip (`FaultCode 4`, `State 7`) within 1.0–1.5 s of the last beat. `ActualVelocity == 0` within 200 ms of the trip. `Homed` is still set. Both times are reported. |
 
+### Error class of a FAIL
+
+Every FAIL carries one class, decided by what the checker saw, in this order (§ Errors and debugging):
+
+| Seen | Class / name |
+|---|---|
+| A request got no answer, the connect failed, the socket closed, or the PLC returned a Modbus exception (after the one retry) | Transport / `CommunicationLost` |
+| A command was written and `CommandAck` did not echo `CommandSeq` within 500 ms | Protocol / `NotAcknowledged` |
+| `State` is 5 or above 7, or `State = 7` with `FaultCode = 0` | Protocol / `ProtocolMismatch` |
+| The PLC reports `State = 7` with a `FaultCode` ≠ 0 where the check did not expect a fault | Machine / the `FaultCode` map (for example 1 → `DriveFault`) |
+| The PLC answered, but against this document: CHK-02, 03, 04 (an invalid State, or the slowest round trip over 100 ms), 05, 07 (Reset changed the axis); any watchdog behaviour in CHK-08, 09, 10 and CHK-16's trip (no trip, early or late trip, a trip while latched or after release, `Homed` cleared by a trip); CHK-11 when a register does not hold what was written, or `Heartbeat` keeps changing after the incumbent stopped writing it; an ack read without the command's state (CHK-12…15, "ack in the scan that enters the state") | Protocol / `ProtocolMismatch` |
+| An accepted command whose effect never came: no Standstill after Enable 1 or no Disabled after Enable 0 (CHK-06) → `DriveFault`; not homed within 120 s (CHK-12) → `HomeLatchFailed`; not arrived, outside `--tolerance`, left ContinuousMotion, no velocity, or a halt over 200 ms (CHK-13…16) → `MotionFailed` | Machine |
+
+There is no Commander class in a checker FAIL: the checker writes raw registers and refuses nothing.
+
+- **The one retry.** A checker performs the one reconnect-and-retry the driver performs, logs it at Warning, and
+  counts it in that check's `retries` (§ Observed values). A second failure is a Transport FAIL.
+- **`lastRead`** is a fresh read of both blocks, taken when the failure is detected and before any restore write. If
+  that read fails, it holds the last values read, with `null` for a register never read.
+- **Interruption** is not a FAIL. The running check and every later one are `SKIPPED`, with the message
+  "interrupted by the operator during CHK-nn". Cleanup runs, `summary.result` is `INTERRUPTED`, and the exit code is 4.
+
+### Observed values
+
+`observed` is exactly the keys listed here for the check, in this order: nothing more, nothing less. Every value is
+an integer or `null`. `null` means the value was never observed, for example because the check failed before
+reaching it. A SKIPPED check has `observed: {}`. Every non-skipped check ends with `retries`, the number of
+reconnect-and-retries performed during it (normally 0).
+
+Units: **ms**, a duration measured as in § Rules for every run. **raw**, an int32 register value (0.001 axis unit, or
+0.001 unit/s for velocities). **reg**, a uint16 register value as read. **count**, a number of events.
+
+| Id | Keys (unit) |
+|---|---|
+| CHK-01 | `connectMs` (ms), `readMs` (ms), `retries` (count) |
+| CHK-02 | `mapVersion` (reg), `retries` |
+| CHK-03 | `travelMin` (raw), `travelMax` (raw), `maxVelocity` (raw), `retries` |
+| CHK-04 | `reads` (count answered), `slowestMs` (ms), `invalidStates` (count), `retries` |
+| CHK-05 | `firstReadBack` (raw, after writing 65 538), `secondReadBack` (raw, after writing −2), `secondReadBackAfter1s` (raw), `retries` |
+| CHK-06 | `enableAckMs` (ms), `enableStateMs` (ms to State 1), `disableAckMs` (ms), `disableStateMs` (ms to State 0), `retries` |
+| CHK-07 | `ackMs` (ms), `state` (reg, after), `faultCode` (reg, after), `retries` |
+| CHK-08 | `tripAfterMs` (ms from the last beat), `watchdogTrips` (reg, after the trip), `faultCode` (reg), `state` (reg), `retries` |
+| CHK-09 | `setupTripAfterMs` (ms), `tripsWhileLatched` (count), `tripsWhileBeating` (count), `secondTripAfterMs` (ms), `watchdogTrips` (reg, at the end), `retries` |
+| CHK-10 | `tripsAfterRelease` (count), `watchdogFault` (reg, 2 s after release), `retries` |
+| CHK-11 | `ownIdReadBack` (reg), `refusedAfterMs` (ms until LeaseHeld), `leaseOwnerAfterRefusal` (reg), `takenAfterMs` (ms from the incumbent's last beat), `retries` |
+| CHK-12 | `ackMs` (ms), `homedAfterMs` (ms), `faultCode` (reg, at the end), `retries` |
+| CHK-13 | `target` (raw), `ackMs` (ms), `arrivedAfterMs` (ms), `position` (raw ActualPosition at rest), `positionError` (raw, absolute), `retries` |
+| CHK-14 | `commandedVelocity` (raw), `velocityAtStop` (raw ActualVelocity at the Stop write), `ackMs` (ms), `haltMs` (ms), `retries` |
+| CHK-15 | `commandedVelocity` (raw), `ackMs` (ms), `maxVelocitySeen` (raw), `stopAckMs` (ms), `haltMs` (ms), `retries` |
+| CHK-16 | `commandedVelocity` (raw), `tripAfterMs` (ms from the last beat), `haltAfterTripMs` (ms), `homedAfterTrip` (0 or 1), `retries` |
+
+Anything else a tool wants to say goes into `message`. The id-parity test on each side also compares these key lists
+with the tool's output.
+
 ### Report schema
 
 JSON (`schema: "generic-axis-conformance/1"`). Both tools emit exactly these fields:
@@ -272,11 +334,11 @@ JSON (`schema: "generic-axis-conformance/1"`). Both tools emit exactly these fie
     { "id": "CHK-08", "title": "Watchdog trips on a stalled beat", "section": "FR-11",
       "result": "PASS", "durationMs": 3140,
       "message": "trip after 1.12 s", "errorClass": null,
-      "observed": { "tripAfterMs": 1120, "watchdogTrips": 3, "faultCode": 4, "state": 7 } },
+      "observed": { "tripAfterMs": 1120, "watchdogTrips": 3, "faultCode": 4, "state": 7, "retries": 0 } },
     { "id": "CHK-06", "title": "Enable handshake (level)", "section": "Command semantics: Handshake, Enable",
       "result": "FAIL", "durationMs": 612, "errorClass": "Protocol",
       "message": "Protocol/NotAcknowledged: Enable 1 not accepted. CommandSeq 7 written, CommandAck 6 read after 500 ms, State 0 read.",
-      "observed": { "commandSeq": 7, "commandAck": 6, "state": 0 },
+      "observed": { "enableAckMs": null, "enableStateMs": null, "disableAckMs": null, "disableStateMs": null, "retries": 0 },
       "lastRead": { "command": [1, 7, 0, 0, 0, 0, 0, 0, 12, 65535, 0, 2],
                     "status": [0, 32, 0, 0, 0, 0, 0, 6, 0, 0, 38528, 152, 41248, 7, 1] } },
     { "id": "CHK-12", "title": "Home", "section": "Command semantics: Home",
@@ -286,15 +348,21 @@ JSON (`schema: "generic-axis-conformance/1"`). Both tools emit exactly these fie
 }
 ```
 
-- `result` is `PASS`, `FAIL` or `SKIPPED`. `summary.result` is `FAIL` if any check failed, otherwise `PASS`.
+- `result` is `PASS`, `FAIL` or `SKIPPED`. `summary.result` is `INTERRUPTED` if the operator interrupted the run,
+  otherwise `FAIL` if any check failed, otherwise `PASS`.
 - `errorClass` is `Transport`, `Protocol`, `Machine` or `Commander` on a FAIL, and `null` otherwise. A FAIL also
-  carries `lastRead`, the raw values of C+0…C+11 and S+0…S+14 from the last read before the failure.
-- `observed` keys are camelCase. Numbers are raw integers or durations in ms. `language` is `python` or `csharp`.
+  carries `lastRead`, the raw values of C+0…C+11 and S+0…S+14 taken as § Error class of a FAIL says: a fresh read
+  when the failure is detected, before any restore write. If that read fails, the last values read, with `null` for a
+  register never read.
+- `observed` follows § Observed values exactly. `language` is `python` or `csharp`.
 
-The Markdown report has three parts. A heading gives the tool, the target and the UTC time. A table follows with the
-columns `Id | Title | Result | Observed | Protocol section`. Each FAIL is followed by its message and the decoded
-dump of `lastRead`. Last comes the cleanup list. The last line is
-`RESULT: PASS` or `RESULT: FAIL`.
+The Markdown report has four parts, in order:
+1. A heading with the tool, the target and the UTC time.
+2. A table with the columns `Id | Title | Result | Observed | Protocol section`.
+3. **Failures**: for each FAIL, its message, then the `--dump` rendering of its `lastRead`.
+4. The cleanup list.
+
+The last line is `RESULT: PASS`, `RESULT: FAIL` or `RESULT: INTERRUPTED`.
 
 ## Reference: the Delta positioner ladder this generalises
 

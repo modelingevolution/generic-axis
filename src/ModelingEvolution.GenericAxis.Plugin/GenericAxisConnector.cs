@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Net.Sockets;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using RocketWelder.SDK.Abstractions;
@@ -19,10 +20,8 @@ namespace ModelingEvolution.GenericAxis.Plugin;
 /// </para>
 ///
 /// <para>
-/// Retry policy: a <c>LeaseHeld</c> refusal is the expected hand-over sequence (another commander is
-/// alive), so it logs Information and is retried on the next 1 s tick, which lets the lease be taken
-/// as soon as the old commander dies. Any other failure logs Warning once per outage, then Debug, and
-/// is retried every 5 s.
+/// Retry and reporting policy: see <see cref="ReportFailure"/>. Every failed attempt is logged with its
+/// error class in front and its message verbatim (protocol.md § Errors and debugging).
 /// </para>
 /// </summary>
 public sealed class GenericAxisConnector : BackgroundService
@@ -38,6 +37,10 @@ public sealed class GenericAxisConnector : BackgroundService
     private readonly ConcurrentDictionary<DeviceId, byte> _reported = new();
     // Earliest time (TimeProvider timestamp) of the next attempt after a non-lease failure.
     private readonly ConcurrentDictionary<DeviceId, long> _notBefore = new();
+    // The one attach attempt in flight per device. A connect can spend the whole lease timeout (30 s by
+    // default, unbounded when configured 0) waiting on a live commander, so the tick never awaits it:
+    // each device attaches on its own task and one slow axis cannot hold up another (review #13).
+    private readonly ConcurrentDictionary<DeviceId, Task> _attempts = new();
     private readonly IDeviceQuery? _devicesQuery;
     private readonly ILogger<GenericAxisConnector>? _logger;
     private readonly TimeProvider _time;
@@ -91,29 +94,37 @@ public sealed class GenericAxisConnector : BackgroundService
             TickInterval.TotalSeconds, FailureRetryInterval.TotalSeconds);
 
         using var timer = new PeriodicTimer(TickInterval, _time);
-        do
+        try
         {
-            foreach (var (id, device) in _devices)
+            do
             {
-                try
+                foreach (var (id, device) in _devices)
                 {
-                    await ReconcileAsync(id, device, stoppingToken).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-                {
-                    return;
-                }
-                catch (Exception ex)
-                {
-                    // One unreachable machine must not stop the others being attached.
-                    ReportFailure(id, ex);
+                    try
+                    {
+                        Reconcile(id, device, stoppingToken);
+                    }
+                    catch (Exception ex)
+                    {
+                        // One device's failure (a host query that throws, for example) must not stop the
+                        // connector for every other generic axis (review #27).
+                        ReportFailure(id, ex);
+                    }
                 }
             }
+            while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false));
         }
-        while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false));
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            // Host shutdown; the in-flight attempts see the same token.
+        }
+        finally
+        {
+            await DrainAsync().ConfigureAwait(false);
+        }
     }
 
-    private async Task ReconcileAsync(DeviceId id, ModbusAxisDevice device, CancellationToken ct)
+    private void Reconcile(DeviceId id, ModbusAxisDevice device, CancellationToken ct)
     {
         // Removed from the hub: the read model disposed it and will never rebuild it.
         if (_devicesQuery is not null && _devicesQuery.GetById(id) is null)
@@ -133,7 +144,47 @@ public sealed class GenericAxisConnector : BackgroundService
 
         if (!IsDue(id)) return;
 
-        await AttachAsync(id, device.OwnerId, device.ConnectAsync, ct).ConfigureAwait(false);
+        StartAttempt(id, device.OwnerId, device.ConnectAsync, ct);
+    }
+
+    /// <summary>
+    /// Starts one attach attempt for <paramref name="id"/> on its own task, unless one is already in
+    /// flight for that device. The caller never waits for it.
+    /// </summary>
+    /// <returns><see langword="true"/> when an attempt was started; <see langword="false"/> when the
+    /// device already has one in flight.</returns>
+    internal bool StartAttempt(DeviceId id, int ownerId, Func<CancellationToken, Task> connect, CancellationToken ct)
+    {
+        var start = new Task<Task>(() => AttachAsync(id, ownerId, connect, ct));
+        var attempt = start.Unwrap();
+        if (!_attempts.TryAdd(id, attempt)) return false;
+
+        attempt.ContinueWith(
+            finished =>
+            {
+                _attempts.TryRemove(new KeyValuePair<DeviceId, Task>(id, finished));
+                // Observed here: the only exception AttachAsync lets out is the shutdown cancellation.
+                _ = finished.Exception;
+            },
+            CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        start.Start(TaskScheduler.Default);
+        return true;
+    }
+
+    /// <summary>The attempt in flight for <paramref name="id"/>, or <see langword="null"/>.</summary>
+    internal Task? AttemptFor(DeviceId id) => _attempts.TryGetValue(id, out var attempt) ? attempt : null;
+
+    /// <summary>Waits for every attempt in flight to finish; used at shutdown.</summary>
+    internal async Task DrainAsync()
+    {
+        try
+        {
+            await Task.WhenAll(_attempts.Values).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // The attempts were cancelled by the shutdown token; nothing to report.
+        }
     }
 
     /// <summary>
@@ -151,15 +202,6 @@ public sealed class GenericAxisConnector : BackgroundService
             _notBefore.TryRemove(id, out _);
             _logger?.LogInformation("Generic axis {Device} attached as owner {Owner}", id, ownerId);
         }
-        catch (MotionException ex) when (ex.Error == MotionError.LeaseHeld)
-        {
-            // Another commander is alive on this axis. Not a fault: its lease expires one second after
-            // it dies, and the next 1 s tick takes it.
-            _notBefore.TryRemove(id, out _);
-            _logger?.LogInformation(
-                "Generic axis {Device} is held by another commander: MotionError.LeaseHeld: {ErrorMessage} (next attempt in {Tick} s)",
-                id, ex.Message, TickInterval.TotalSeconds);
-        }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
             ReportFailure(id, ex);
@@ -167,32 +209,78 @@ public sealed class GenericAxisConnector : BackgroundService
     }
 
     /// <summary>
-    /// Reports a failed attach, loud once per outage and quiet after, and schedules the next attempt
-    /// <see cref="FailureRetryInterval"/> later. A successful attach and <see cref="Forget"/> re-arm
-    /// the warning.
+    /// Reports a failed attach by its error class (protocol.md § Errors and debugging) and schedules
+    /// the next attempt. Every line leads with the class and carries the failure's message verbatim.
+    /// Nothing is re-worded, and nothing is reported under a class it does not belong to.
     /// </summary>
     /// <remarks>
-    /// Owner ruling "errors are not magic": the log carries the failure's own class and its message
-    /// verbatim. A <see cref="MotionException"/> is reported by its <see cref="MotionError"/>, so a
-    /// protocol or machine refusal stays that and is never called a connection problem; anything
-    /// else is reported by its exception type. Nothing is re-worded or translated.
+    /// <list type="bullet">
+    /// <item><b>Commander / LeaseHeld</b>: Information on every attempt, retried on the next 1 s tick,
+    /// so the lease is taken as soon as the other commander dies.</item>
+    /// <item><b>Protocol</b> (<c>ProtocolMismatch</c> at attach), other <b>Commander</b> refusals
+    /// (<c>OutOfRange</c>: the configured reading range contradicts the published travel) and
+    /// <b>unclassified</b> failures: Error on every attempt, retried every 5 s. None of them fixes
+    /// itself and none may read like a cable fault. Retrying lets a corrected PLC or configuration
+    /// attach without a restart.</item>
+    /// <item><b>Transport</b>, and <b>Machine</b> should one ever reach attach (an axis in ErrorStop
+    /// still attaches and shows its fault): Warning once per outage, then Debug, retried every 5 s. A
+    /// successful attach and <see cref="Forget"/> re-arm the warning.</item>
+    /// </list>
     /// </remarks>
     internal void ReportFailure(DeviceId id, Exception ex)
     {
+        var failure = Classify(ex);
+
+        if (ex is MotionException { Error: MotionError.LeaseHeld })
+        {
+            _notBefore.TryRemove(id, out _);
+            _logger?.LogInformation(
+                "{ErrorClass}: generic axis {Device} did not attach: {ErrorMessage} (next attempt in {Seconds} s)",
+                failure.Label, id, failure.Message, TickInterval.TotalSeconds);
+            return;
+        }
+
         _notBefore[id] = _time.GetTimestamp() + (long)(FailureRetryInterval.TotalSeconds * _time.TimestampFrequency);
 
-        var errorClass = ErrorClass(ex);
-        if (_reported.TryAdd(id, 0))
+        if (failure.Class is ErrorClass.Protocol or ErrorClass.Commander or null)
+        {
+            _logger?.LogError(ex,
+                "{ErrorClass}: generic axis {Device} did not attach: {ErrorMessage} (next attempt in {Seconds} s)",
+                failure.Label, id, failure.Message, FailureRetryInterval.TotalSeconds);
+        }
+        else if (_reported.TryAdd(id, 0))
+        {
             _logger?.LogWarning(ex,
-                "Generic axis {Device} did not attach: {ErrorClass}: {ErrorMessage} (next attempt in {Seconds} s)",
-                id, errorClass, ex.Message, FailureRetryInterval.TotalSeconds);
+                "{ErrorClass}: generic axis {Device} did not attach: {ErrorMessage} (next attempt in {Seconds} s)",
+                failure.Label, id, failure.Message, FailureRetryInterval.TotalSeconds);
+        }
         else
+        {
             _logger?.LogDebug(ex,
-                "Generic axis {Device} still did not attach: {ErrorClass}: {ErrorMessage}",
-                id, errorClass, ex.Message);
+                "{ErrorClass}: generic axis {Device} still did not attach: {ErrorMessage}",
+                failure.Label, id, failure.Message);
+        }
     }
 
-    /// <summary><c>MotionError.X</c> for a motion failure, otherwise the exception's full type name.</summary>
-    internal static string ErrorClass(Exception ex) =>
-        ex is MotionException { Error: { } error } ? $"MotionError.{error}" : ex.GetType().FullName!;
+    /// <summary>The class of an attach failure, what the log line leads with, and its message.</summary>
+    /// <param name="Class">The protocol class, or <see langword="null"/> when no class can be claimed.</param>
+    /// <param name="Label">The class name, or the exception's type name when unclassified.</param>
+    /// <param name="Message">The failure's own message, unchanged. A non-motion Transport exception is
+    /// prefixed with its type so the reader knows what threw it.</param>
+    internal readonly record struct AttachFailure(ErrorClass? Class, string Label, string Message);
+
+    /// <summary>
+    /// Classifies an attach failure. A <see cref="MotionException"/> is classified only by
+    /// <see cref="MotionErrorClasses.Of"/>, the driver's single map. A socket, IO or timeout exception
+    /// from the Modbus client is <see cref="ErrorClass.Transport"/>: the connect or the socket failed.
+    /// Any other exception is unclassified, because no observed cause justifies a class.
+    /// </summary>
+    internal static AttachFailure Classify(Exception ex) => ex switch
+    {
+        MotionException { Error: { } error } when MotionErrorClasses.Of(error) is var c =>
+            new(c, c.ToString(), ex.Message),
+        SocketException or IOException or TimeoutException =>
+            new(ErrorClass.Transport, nameof(ErrorClass.Transport), $"{ex.GetType().FullName}: {ex.Message}"),
+        _ => new(null, ex.GetType().FullName!, ex.Message),
+    };
 }
