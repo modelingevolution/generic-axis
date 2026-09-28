@@ -31,7 +31,7 @@ public sealed class RunnerLogicTests
     public async Task GA_U_63_AFailedPrerequisiteSkipsEveryDependant()
     {
         var ran = new List<string>();
-        var catalog = Scripted(id => id == "CHK-02" ? CheckOutcome.Fail("MapVersion 2, expected 1") : CheckOutcome.Pass("ok"), ran);
+        var catalog = Scripted(id => id == "CHK-02" ? CheckOutcome.Fail(Failure.Protocol("wrong map version. Read MapVersion (S+14 = 114) = 2, expected 1.")) : CheckOutcome.Pass("ok"), ran);
 
         var report = await Run(catalog, allowMotion: true);
 
@@ -88,6 +88,9 @@ public sealed class RunnerLogicTests
         var chk07 = report.Checks.Single(c => c.Id == "CHK-07");
         chk07.Result.Should().Be(CheckResultKind.Fail);
         chk07.Message.Should().Contain("cannot restore");
+        chk07.ErrorClass.Should().Be(ErrorClass.Protocol, "the restore's Reset was never acknowledged");
+        chk07.Message.Should().StartWith("Protocol/NotAcknowledged: cannot restore the axis: Reset not accepted.");
+        chk07.LastRead.Should().NotBeNull();
         report.Checks.SkipWhile(c => c.Id != "CHK-08").Should().OnlyContain(c =>
             c.Result == CheckResultKind.Skipped && c.Message == "CHK-07 could not restore the axis");
     }

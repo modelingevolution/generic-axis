@@ -20,6 +20,17 @@ public sealed class CheckCommandLineTests
         o.AllowMotion.Should().BeFalse();
         o.Tolerance.Should().Be(0.1);
         o.Report.Should().BeNull();
+        o.Dump.Should().BeFalse();
+    }
+
+    [Fact]
+    public void DumpAndWatchParse()
+    {
+        var (o, error) = CheckCommandLine.Parse(["--check", "plc:5020", "--dump", "--watch"]);
+        error.Should().BeNull();
+        o!.Dump.Should().BeTrue();
+        o.Watch.Should().BeTrue();
+        CheckCommandLine.Parse(["plc", "--watch"]).Error.Should().Contain("--watch needs --dump");
     }
 
     [Fact]

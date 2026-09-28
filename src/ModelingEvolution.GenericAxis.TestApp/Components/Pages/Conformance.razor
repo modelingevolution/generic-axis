@@ -41,8 +41,8 @@
         <MudSpacer/>
         @if (report is { FinishedAt: not null })
         {
-            <MudText Typo="Typo.h6" Color="@(report.Refused ? Color.Warning : report.Passed ? Color.Success : Color.Error)" data-testid="check-result">
-                @(report.Refused ? "REFUSED (exit 3)" : report.Passed ? "RESULT: PASS" : "RESULT: FAIL") &middot; @report.PassCount pass, @report.FailCount fail, @report.SkippedCount skipped
+            <MudText Typo="Typo.h6" Color="@(report.Refused || report.Interrupted ? Color.Warning : report.Passed ? Color.Success : Color.Error)" data-testid="check-result">
+                @(report.Refused ? "REFUSED (exit 3)" : $"RESULT: {report.SummaryResult}") &middot; @report.PassCount pass, @report.FailCount fail, @report.SkippedCount skipped
             </MudText>
             <MudButton Variant="Variant.Text" Href="@DataUri("text/markdown", ReportWriter.ToMarkdown(report))" download="conformance.md">.md</MudButton>
             <MudButton Variant="Variant.Text" Href="@DataUri("application/json", ReportWriter.ToJson(report))" download="conformance.json">.json</MudButton>

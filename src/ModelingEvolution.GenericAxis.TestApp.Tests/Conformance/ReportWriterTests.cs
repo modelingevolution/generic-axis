@@ -16,7 +16,10 @@ public sealed class ReportWriterTests
         Checks =
         [
             new("CHK-01", "Transport and unit", "Transport", CheckResultKind.Pass, 7, "connected", [KeyValuePair.Create("connectMs", 3L)]),
-            new("CHK-02", "Map version", "Status block", CheckResultKind.Fail, 2, "MapVersion 2, expected 1", [KeyValuePair.Create("mapVersion", 2L)]),
+            new("CHK-02", "Map version", "Status block", CheckResultKind.Fail, 2,
+                "Protocol/ProtocolMismatch: wrong map version. Read MapVersion (S+14 = 114) = 2, expected 1.", [KeyValuePair.Create("mapVersion", 2L)],
+                ErrorClass.Protocol,
+                new LastRead([1, 7, null, null, 0, 0, 0, 0, 12, 65535, 0, 2], [0, 32, 0, 0, 0, 0, 0, 6, 0, 0, 38528, 152, 41248, 7, 2])),
             new("CHK-12", "Home", "Command semantics: Home", CheckResultKind.Skipped, 0, "needs --allow-motion", []),
         ],
         Cleanup = ["C+0 = 0x0000 (Enable 0)", "C+9 = 0 (release lease)"],
@@ -47,7 +50,17 @@ public sealed class ReportWriterTests
 
         var checks = root.GetProperty("checks").EnumerateArray().ToList();
         checks.Should().HaveCount(3);
-        foreach (var c in checks) Names(c).Should().Equal("id", "title", "section", "result", "durationMs", "message", "observed");
+        Names(checks[0]).Should().Equal("id", "title", "section", "result", "durationMs", "message", "errorClass", "observed");
+        Names(checks[1]).Should().Equal("id", "title", "section", "result", "durationMs", "message", "errorClass", "observed", "lastRead");
+        Names(checks[2]).Should().Equal("id", "title", "section", "result", "durationMs", "message", "errorClass", "observed");
+        checks[0].GetProperty("errorClass").ValueKind.Should().Be(JsonValueKind.Null);
+        checks[1].GetProperty("errorClass").GetString().Should().Be("Protocol");
+        var lastRead = checks[1].GetProperty("lastRead");
+        Names(lastRead).Should().Equal("command", "status");
+        lastRead.GetProperty("command").GetArrayLength().Should().Be(12);
+        lastRead.GetProperty("status").GetArrayLength().Should().Be(15);
+        lastRead.GetProperty("command")[2].ValueKind.Should().Be(JsonValueKind.Null, "a register never read is null");
+        lastRead.GetProperty("status")[14].GetInt32().Should().Be(2);
         checks.Select(c => c.GetProperty("result").GetString()).Should().Equal("PASS", "FAIL", "SKIPPED");
         checks[1].GetProperty("observed").GetProperty("mapVersion").GetInt64().Should().Be(2);
         checks[2].GetProperty("observed").EnumerateObject().Should().BeEmpty();
@@ -62,7 +75,17 @@ public sealed class ReportWriterTests
 
         lines[0].Should().StartWith("# ").And.Contain("generic-axis-check").And.Contain("192.168.58.20:502").And.Contain("2026-09-29T10:15:02Z");
         lines.Should().Contain("| Id | Title | Result | Observed | Protocol section |");
-        lines.Should().Contain(l => l.StartsWith("| CHK-02 | Map version | FAIL | MapVersion 2, expected 1 (mapVersion=2) | Status block |"));
+        lines.Should().Contain(l => l.StartsWith("| CHK-02 | Map version | FAIL | Protocol/ProtocolMismatch: wrong map version."));
+        var failures = Array.IndexOf(lines, "## Failures");
+        var cleanup = Array.IndexOf(lines, "Cleanup:");
+        failures.Should().BeGreaterThan(Array.IndexOf(lines, "| Id | Title | Result | Observed | Protocol section |"), "the Failures part follows the table");
+        cleanup.Should().BeGreaterThan(failures, "the cleanup list comes last");
+        var part = lines[failures..cleanup];
+        part.Should().Contain("CHK-02: Protocol/ProtocolMismatch: wrong map version. Read MapVersion (S+14 = 114) = 2, expected 1.");
+        part.Should().Contain("| S+14 (114) | MapVersion | 0x0002 | 2 |");
+        part.Should().Contain("| S+0 (100) | State | 0x0000 | 0 Disabled |");
+        part.Should().Contain("| C+0 (0) | Command | 0x0001 | Enable |");
+        part.Should().Contain("| C+2…C+3 (2…3) | TargetPosition | — | never read |");
         lines.Should().Contain("- C+9 = 0 (release lease)");
         lines[^1].Should().Be("RESULT: FAIL");
     }
@@ -74,6 +97,18 @@ public sealed class ReportWriterTests
         report.ExitCode.Should().Be(0);
         ReportWriter.ToMarkdown(report).TrimEnd().Should().EndWith("RESULT: PASS");
         (report with { Refused = true }).ExitCode.Should().Be(3);
+    }
+
+    [Fact]
+    public void AnInterruptedRunIsInterruptedNotFail()
+    {
+        var report = Report() with { Interrupted = true };
+
+        report.ExitCode.Should().Be(4);
+        report.SummaryResult.Should().Be("INTERRUPTED");
+        using var doc = JsonDocument.Parse(ReportWriter.ToJson(report));
+        doc.RootElement.GetProperty("summary").GetProperty("result").GetString().Should().Be("INTERRUPTED");
+        ReportWriter.ToMarkdown(report).TrimEnd().Should().EndWith("RESULT: INTERRUPTED");
     }
 
     private static IEnumerable<string> Names(JsonElement e) => e.EnumerateObject().Select(p => p.Name);

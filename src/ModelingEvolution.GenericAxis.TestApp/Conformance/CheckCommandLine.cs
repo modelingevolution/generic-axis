@@ -24,6 +24,12 @@ public sealed record CheckerOptions
 
     public ReportTarget? Report { get; init; }
 
+    /// <summary><c>--dump</c>: print the decoded register dump and run no checks (rule 4). Writes nothing.</summary>
+    public bool Dump { get; init; }
+
+    /// <summary><c>--watch</c> (with <c>--dump</c>): repeat the dump at 5 Hz until Ctrl-C.</summary>
+    public bool Watch { get; init; }
+
     public RegisterMap Map => new(CommandBase, StatusBase);
 }
 
@@ -37,7 +43,7 @@ public static class CheckCommandLine
 
     public const string Usage =
         "Usage: --check <host>[:port] [--unit N] [--command-base N] [--status-base N] [--owner-id N] "
-        + "[--allow-motion] [--tolerance X] [--report FILE.md|FILE.json]";
+        + "[--allow-motion] [--tolerance X] [--report FILE.md|FILE.json] | --check <host>[:port] --dump [--watch]";
 
     /// <summary>Returns the options, or an error message for exit code 2.</summary>
     public static (CheckerOptions? Options, string? Error) Parse(IReadOnlyList<string> args)
@@ -50,6 +56,8 @@ public static class CheckCommandLine
         var allowMotion = false;
         var tolerance = 0.1;
         ReportTarget? report = null;
+        var dump = false;
+        var watch = false;
 
         for (var i = 0; i < args.Count; i++)
         {
@@ -82,6 +90,12 @@ public static class CheckCommandLine
                         if (!double.TryParse(t, NumberStyles.Float, CultureInfo.InvariantCulture, out tolerance) || !(tolerance > 0))
                             throw new FormatException($"--tolerance must be a positive number, got '{t}'");
                         break;
+                    case "--dump":
+                        dump = true;
+                        break;
+                    case "--watch":
+                        watch = true;
+                        break;
                     case "--report":
                         report = Report(Value());
                         break;
@@ -111,6 +125,7 @@ public static class CheckCommandLine
         }
 
         if (host.Length == 0) return (null, $"missing host in '{target}'");
+        if (watch && !dump) return (null, "--watch needs --dump");
         if (owner == CheckerOptions.ForeignOwnerId)
             return (null, $"--owner-id {owner} is the foreign id CHK-11 impersonates; use another");
 
@@ -127,7 +142,7 @@ public static class CheckCommandLine
         return (new CheckerOptions
         {
             Host = host, Port = port, Unit = (byte)unit, CommandBase = commandBase, StatusBase = statusBase,
-            OwnerId = (ushort)owner, AllowMotion = allowMotion, Tolerance = tolerance, Report = report,
+            OwnerId = (ushort)owner, AllowMotion = allowMotion, Tolerance = tolerance, Report = report, Dump = dump, Watch = watch,
         }, null);
     }
 

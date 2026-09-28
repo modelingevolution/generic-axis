@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using RocketWelder.SDK.Devices.Motion;
 using Microsoft.Extensions.Logging;
 
 namespace ModelingEvolution.GenericAxis.TestApp.Conformance;
@@ -62,23 +63,71 @@ internal sealed class CheckContext : IAsyncDisposable
 
     // ---- raw register access (the driver's channel, lane Move) --------------------------------------------------
 
+    private readonly int?[] _lastCommand = new int?[RegisterMap.CommandLength];
+    private readonly int?[] _lastStatus = new int?[RegisterMap.StatusLength];
+    private readonly Lock _lastSync = new();
+
+    /// <summary>The last value read from every register, <c>null</c> for one never read.</summary>
+    public LastRead LastValues()
+    {
+        lock (_lastSync) return new LastRead([.. _lastCommand], [.. _lastStatus]);
+    }
+
+    private void Remember(bool status, int offset, ushort[] words)
+    {
+        lock (_lastSync)
+        {
+            var target = status ? _lastStatus : _lastCommand;
+            for (var i = 0; i < words.Length && offset + i < target.Length; i++) target[offset + i] = words[i];
+        }
+    }
+
+    /// <summary><c>S+14 = 114</c> — a register's block offset and absolute address, for messages.</summary>
+    public string Where(ushort address) =>
+        address >= Map.StatusBase && address < Map.StatusBase + RegisterMap.StatusLength
+            ? $"S+{address - Map.StatusBase} = {address}"
+            : $"C+{address - Map.CommandBase} = {address}";
+
+    private string Range(ushort address, int count) =>
+        $"{Where(address).Split(' ')[0]}…{Where((ushort)(address + count - 1)).Split(' ')[0]} unit {Unit}";
+
+    public async Task<ushort[]> ReadAsync(ushort address, ushort count, CancellationToken ct, ChannelPriority lane = ChannelPriority.Move)
+    {
+        var words = await Channel.ReadHoldingAsync(Unit, address, count, $"read {Range(address, count)}", lane, ct);
+        var inStatus = address >= Map.StatusBase && address < Map.StatusBase + RegisterMap.StatusLength;
+        Remember(inStatus, address - (inStatus ? Map.StatusBase : Map.CommandBase), words);
+        return words;
+    }
+
     public async Task<StatusBlock> ReadStatusAsync(CancellationToken ct) =>
-        StatusBlock.Parse(await Channel.ReadHoldingAsync(Unit, Map.Status, RegisterMap.StatusLength, "read status block",
-            ChannelPriority.Move, ct));
+        StatusBlock.Parse(await ReadAsync(Map.Status, RegisterMap.StatusLength, ct));
 
     public async Task<PlcView> ReadViewAsync(CancellationToken ct)
     {
-        var watchdog = await Channel.ReadHoldingAsync(Unit, Map.Heartbeat, 4, "read heartbeat, lease and watchdog",
-            ChannelPriority.Move, ct);
+        var watchdog = await ReadAsync(Map.Heartbeat, 4, ct);
         var status = await ReadStatusAsync(ct);
         return new PlcView(status, watchdog[0], watchdog[1], watchdog[2], watchdog[3]);
     }
 
+    /// <summary>
+    /// <c>lastRead</c>: a fresh read of both blocks taken when a failure is detected, before any restore write. A read
+    /// that fails leaves the last values read (and <c>null</c> for registers never read).
+    /// </summary>
+    public async Task<LastRead> FreshLastReadAsync()
+    {
+        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+        try { await ReadAsync(Map.Command, RegisterMap.CommandLength, budget.Token); }
+        catch (Exception ex) when (ex is MotionException or OperationCanceledException) { Logger.LogWarning("lastRead: command block not read ({Message})", ex.Message); }
+        try { await ReadAsync(Map.Status, RegisterMap.StatusLength, budget.Token); }
+        catch (Exception ex) when (ex is MotionException or OperationCanceledException) { Logger.LogWarning("lastRead: status block not read ({Message})", ex.Message); }
+        return LastValues();
+    }
+
     public Task WriteAsync(ushort address, ushort value, string what, CancellationToken ct) =>
-        Channel.WriteRegisterAsync(Unit, address, value, what, ChannelPriority.Move, ct);
+        Channel.WriteRegisterAsync(Unit, address, value, $"write {Where(address)} ({what})", ChannelPriority.Move, ct);
 
     public Task WriteAsync(ushort address, ushort[] values, string what, CancellationToken ct) =>
-        Channel.WriteRegistersAsync(Unit, address, values, what, ChannelPriority.Move, ct);
+        Channel.WriteRegistersAsync(Unit, address, values, $"write {Range(address, values.Length)} ({what})", ChannelPriority.Move, ct);
 
     public async Task TakeLeaseAsync(CancellationToken ct)
     {
@@ -157,8 +206,7 @@ internal sealed class Beater(CheckContext ctx, string name)
     public async Task StartAsync(CancellationToken ct)
     {
         if (IsRunning) return;
-        _value = (await ctx.Channel.ReadHoldingAsync(ctx.Unit, ctx.Map.Heartbeat, 1, "read heartbeat",
-                ChannelPriority.Heartbeat, ct))[0];
+        _value = (await ctx.ReadAsync(ctx.Map.Heartbeat, 1, ct, ChannelPriority.Heartbeat))[0];
         _cts = new CancellationTokenSource();
         await BeatOnceAsync(ct); // the first beat is on the wire when Start returns
         _loop = RunAsync(_cts.Token);
@@ -168,7 +216,7 @@ internal sealed class Beater(CheckContext ctx, string name)
     private async Task BeatOnceAsync(CancellationToken ct)
     {
         _value = Words.NextNonZero(_value);
-        await ctx.Channel.WriteRegisterAsync(ctx.Unit, ctx.Map.Heartbeat, _value, "heartbeat", ChannelPriority.Heartbeat, ct);
+        await ctx.Channel.WriteRegisterAsync(ctx.Unit, ctx.Map.Heartbeat, _value, $"write {ctx.Where(ctx.Map.Heartbeat)} (Heartbeat {_value}, {name})", ChannelPriority.Heartbeat, ct);
         Interlocked.Exchange(ref _lastBeatAt, CheckContext.Now());
     }
 
@@ -187,7 +235,8 @@ internal sealed class Beater(CheckContext ctx, string name)
             }
             catch (Exception ex)
             {
-                ctx.Logger.LogWarning("Beat write failed ({Name}): {Message}", name, ex.Message);
+                // Rule 3: every failed beat is logged at Warning with the exception.
+                ctx.Logger.LogWarning(ex, "Beat write failed ({Name}): {Message}", name, ex.Message);
             }
         }
     }
@@ -226,7 +275,7 @@ internal sealed class CommandWriter(CheckContext ctx)
         Words.Write(words.AsSpan(0), target);
         Words.Write(words.AsSpan(2), velocity);
         Words.Write(words.AsSpan(4), acceleration);
-        await ctx.WriteAsync(ctx.Map.Parameters, words, "parameters", ct);
+        await ctx.WriteAsync(ctx.Map.Parameters, words, $"TargetPosition {target}, Velocity {velocity}, Acceleration {acceleration}", ct);
     }
 
     public async Task<Ack> SendAsync(CommandBits bits, CancellationToken ct, ChannelPriority lane = ChannelPriority.Move)
@@ -236,7 +285,8 @@ internal sealed class CommandWriter(CheckContext ctx)
         _seq = seq;
 
         Used = true;
-        await ctx.Channel.WriteRegistersAsync(ctx.Unit, ctx.Map.Command, [(ushort)bits, seq], $"command {bits}", lane, ct);
+        await ctx.Channel.WriteRegistersAsync(ctx.Unit, ctx.Map.Command, [(ushort)bits, seq],
+            $"write {ctx.Where(ctx.Map.Command)}…C+1 (Command {bits}, CommandSeq {seq})", lane, ct);
         var since = CheckContext.Now();
         ctx.Logger.LogInformation("Command {Bits} (0x{Raw:X4}) CommandSeq {Seq}", bits, (ushort)bits, seq);
 
@@ -244,7 +294,8 @@ internal sealed class CommandWriter(CheckContext ctx)
 
         var level = bits & CommandBits.Enable;
         if (level != bits)
-            await ctx.Channel.WriteRegistersAsync(ctx.Unit, ctx.Map.Command, [(ushort)level, seq], "clear edge bits", lane, ct);
+            await ctx.Channel.WriteRegistersAsync(ctx.Unit, ctx.Map.Command, [(ushort)level, seq],
+                $"write {ctx.Where(ctx.Map.Command)}…C+1 (clear edge bits, CommandSeq {seq})", lane, ct);
 
         return new Ack(seq, wait.Met, wait.ElapsedMs, wait.View, since);
     }

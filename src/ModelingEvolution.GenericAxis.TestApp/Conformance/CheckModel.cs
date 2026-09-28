@@ -2,7 +2,7 @@ using System.Collections.Immutable;
 
 namespace ModelingEvolution.GenericAxis.TestApp.Conformance;
 
-/// <summary>PASS, FAIL or SKIPPED (protocol § Conformance checks, Report schema).</summary>
+/// <summary>PASS, FAIL or SKIPPED (protocol § Report schema).</summary>
 public enum CheckResultKind
 {
     Pass,
@@ -10,20 +10,104 @@ public enum CheckResultKind
     Skipped,
 }
 
-/// <summary>What one check returns: a result, a message and the observed values, in the order they were observed.</summary>
-public sealed record CheckOutcome(CheckResultKind Result, string Message, ImmutableArray<KeyValuePair<string, long>> Observed)
+/// <summary>The four error classes of protocol § Errors and debugging. A checker FAIL is never Commander.</summary>
+public enum ErrorClass
+{
+    Transport,
+    Protocol,
+    Machine,
+    Commander,
+}
+
+/// <summary>
+/// One thing a check saw go wrong, with its class, its SDK <c>MotionError</c> name and its precedence from protocol
+/// § "Error class of a FAIL" (1 = decided first).
+/// </summary>
+public sealed record Failure(ErrorClass Class, string Name, int Rank, string Text)
+{
+    /// <summary>Rank 1: no answer, connect failed, socket closed, Modbus exception (after the one retry).</summary>
+    public static Failure Transport(string text) => new(ErrorClass.Transport, "CommunicationLost", 1, text);
+
+    /// <summary>Rank 2: a command was written and <c>CommandAck</c> did not echo <c>CommandSeq</c> within 500 ms.</summary>
+    public static Failure NotAcknowledged(string what, ushort seq, ushort ack, ushort state) =>
+        new(ErrorClass.Protocol, "NotAcknowledged", 2,
+            $"{what} not accepted. CommandSeq {seq} written, CommandAck {ack} read after 500 ms, State {state} read.");
+
+    /// <summary>Rank 3: <c>State</c> is 5 or above 7, or 7 with <c>FaultCode = 0</c>.</summary>
+    public static Failure InvalidState(ushort state, ushort faultCode, string where) => state == 7
+        ? new(ErrorClass.Protocol, "ProtocolMismatch", 3, $"ErrorStop without a fault. Read State ({where}) = 7, FaultCode = 0, expected a FaultCode.")
+        : new(ErrorClass.Protocol, "ProtocolMismatch", 3, $"State {state} is not a protocol state. Read State ({where}) = {state}, expected 0, 1, 2, 3, 4, 6 or 7.");
+
+    /// <summary>Rank 4: the PLC reports a fault the check did not expect; the name follows the FaultCode map.</summary>
+    public static Failure Fault(ushort faultCode, string where) =>
+        new(ErrorClass.Machine, FaultName(faultCode), 4,
+            $"the PLC reports ErrorStop. Read FaultCode ({where}) = {faultCode}{(faultCode >= 100 ? " (vendor code)" : "")}.");
+
+    /// <summary>Rank 5: the PLC answered, but against the protocol.</summary>
+    public static Failure Protocol(string text) => new(ErrorClass.Protocol, "ProtocolMismatch", 5, text);
+
+    /// <summary>Rank 6: an accepted command whose effect never came.</summary>
+    public static Failure Machine(string name, string text) => new(ErrorClass.Machine, name, 6, text);
+
+    /// <summary>FaultCode → SDK MotionError name (protocol § Errors and debugging, Machine row).</summary>
+    public static string FaultName(ushort faultCode) => faultCode switch
+    {
+        2 => "LimitTripped",
+        3 => "MotionFailed",
+        4 => "WatchdogTripped",
+        5 => "HomeLatchFailed",
+        7 => "SafetyStop",
+        _ => "DriveFault", // 1, 6 (drive link), ≥ 100 (vendor)
+    };
+}
+
+/// <summary>Raw C+0…C+11 and S+0…S+14; <c>null</c> for a register never read.</summary>
+public sealed record LastRead(ImmutableArray<int?> Command, ImmutableArray<int?> Status);
+
+/// <summary>What one check returns.</summary>
+public sealed record CheckOutcome(
+    CheckResultKind Result,
+    string Message,
+    ImmutableArray<KeyValuePair<string, long>> Observed,
+    ImmutableArray<Failure> Failures)
 {
     public static CheckOutcome Pass(string message, params (string Key, long Value)[] observed) =>
-        new(CheckResultKind.Pass, message, ToObserved(observed));
+        new(CheckResultKind.Pass, message, ToObserved(observed), []);
 
-    public static CheckOutcome Fail(string message, params (string Key, long Value)[] observed) =>
-        new(CheckResultKind.Fail, message, ToObserved(observed));
+    public static CheckOutcome Skipped(string message) => new(CheckResultKind.Skipped, message, [], []);
 
-    public static CheckOutcome Skipped(string message) => new(CheckResultKind.Skipped, message, []);
+    public static CheckOutcome Fail(Failure failure, params (string Key, long Value)[] observed) =>
+        Judge([failure], "", observed);
 
-    /// <summary>PASS when <paramref name="failures"/> is empty, else FAIL naming every failure.</summary>
-    public static CheckOutcome Judge(IReadOnlyCollection<string> failures, string passMessage, params (string Key, long Value)[] observed) =>
-        failures.Count == 0 ? Pass(passMessage, observed) : Fail(string.Join("; ", failures), observed);
+    /// <summary>PASS when <paramref name="failures"/> is empty, else FAIL.</summary>
+    public static CheckOutcome Judge(IEnumerable<Failure> failures, string passMessage, params (string Key, long Value)[] observed)
+    {
+        var list = failures.ToImmutableArray();
+        return list.IsEmpty
+            ? Pass(passMessage, observed)
+            : new CheckOutcome(CheckResultKind.Fail, "", ToObserved(observed), list).WithMessage();
+    }
+
+    /// <summary>The class that decides: the lowest rank among the failures seen.</summary>
+    public Failure? Deciding => Failures.IsEmpty ? null : Failures.MinBy(f => f.Rank);
+
+    /// <summary>Adds failures seen outside the check (the runner's lastRead, a failed restore) and re-decides.</summary>
+    public CheckOutcome With(IEnumerable<Failure> more)
+    {
+        // A failure already reported (same class, name and text) is not repeated.
+        var added = more.Where(m => !Failures.Any(f => f.Class == m.Class && f.Name == m.Name && f.Text == m.Text)).ToImmutableArray();
+        return added.IsEmpty ? this : (this with { Result = CheckResultKind.Fail, Failures = Failures.AddRange(added) }).WithMessage();
+    }
+
+    public CheckOutcome WithObserved(string key, long value) => this with { Observed = Observed.Add(KeyValuePair.Create(key, value)) };
+
+    /// <summary><c>&lt;Class&gt;/&lt;MotionError&gt;: &lt;what happened&gt;</c>, the deciding failure first.</summary>
+    private CheckOutcome WithMessage()
+    {
+        var deciding = Deciding!;
+        var rest = Failures.Where(f => !ReferenceEquals(f, deciding)).Select(f => $"also {f.Class}/{f.Name}: {f.Text}");
+        return this with { Message = string.Join(" ", new[] { $"{deciding.Class}/{deciding.Name}: {deciding.Text}" }.Concat(rest)) };
+    }
 
     private static ImmutableArray<KeyValuePair<string, long>> ToObserved((string Key, long Value)[] observed) =>
         [.. observed.Select(o => KeyValuePair.Create(o.Key, o.Value))];
@@ -37,7 +121,9 @@ public sealed record CheckResult(
     CheckResultKind Result,
     long DurationMs,
     string Message,
-    ImmutableArray<KeyValuePair<string, long>> Observed);
+    ImmutableArray<KeyValuePair<string, long>> Observed,
+    ErrorClass? ErrorClass = null,
+    LastRead? LastRead = null);
 
 /// <summary>The whole run, as the report schema <c>generic-axis-conformance/1</c> describes it.</summary>
 public sealed record ConformanceReport
@@ -55,6 +141,9 @@ public sealed record ConformanceReport
     /// <summary>The run refused to start: a live foreign commander holds the axis (exit 3).</summary>
     public bool Refused { get; init; }
 
+    /// <summary>The operator interrupted the run (exit 4). Not a FAIL.</summary>
+    public bool Interrupted { get; init; }
+
     /// <summary>The check running now (for the page), null when idle or done.</summary>
     public string? Running { get; init; }
 
@@ -63,8 +152,13 @@ public sealed record ConformanceReport
     public int SkippedCount => Checks.Count(c => c.Result == CheckResultKind.Skipped);
     public bool Passed => FailCount == 0;
 
-    /// <summary>0 = no FAIL · 1 = at least one FAIL · 3 = refused to start.</summary>
-    public int ExitCode => Refused ? ConformanceExitCodes.Refused : Passed ? ConformanceExitCodes.Pass : ConformanceExitCodes.Fail;
+    /// <summary><c>INTERRUPTED</c>, else <c>FAIL</c> if any check failed, else <c>PASS</c>.</summary>
+    public string SummaryResult => Interrupted ? "INTERRUPTED" : Passed ? "PASS" : "FAIL";
+
+    /// <summary>0 = no FAIL · 1 = at least one FAIL · 3 = refused to start · 4 = interrupted.</summary>
+    public int ExitCode => Refused ? ConformanceExitCodes.Refused
+        : Interrupted ? ConformanceExitCodes.Interrupted
+        : Passed ? ConformanceExitCodes.Pass : ConformanceExitCodes.Fail;
 }
 
 /// <summary>Exit codes of <c>--check</c> (protocol § Command line).</summary>
@@ -74,4 +168,5 @@ public static class ConformanceExitCodes
     public const int Fail = 1;
     public const int Usage = 2;
     public const int Refused = 3;
+    public const int Interrupted = 4;
 }

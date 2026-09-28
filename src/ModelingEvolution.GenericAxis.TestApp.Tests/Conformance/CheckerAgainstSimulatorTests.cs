@@ -91,7 +91,9 @@ public sealed class CheckerAgainstSimulatorTests
 
         Get(report, "CHK-01").Result.Should().Be(CheckResultKind.Pass);
         Get(report, "CHK-02").Result.Should().Be(CheckResultKind.Fail);
-        Get(report, "CHK-02").Message.Should().Be("MapVersion 2, expected 1");
+        Get(report, "CHK-02").Message.Should().Be("Protocol/ProtocolMismatch: wrong map version. Read MapVersion (S+14 = 114) = 2, expected 1.");
+        Get(report, "CHK-02").ErrorClass.Should().Be(ErrorClass.Protocol);
+        Get(report, "CHK-02").LastRead!.Status[14].Should().Be(2);
         ShouldBe(report, CheckResultKind.Skipped, Ids(3, 16));
         report.ExitCode.Should().Be(1);
         (await sim.SettledAsync()).CommandBlock.Should().OnlyContain(w => w == 0, "nothing is written when the map version is wrong");
@@ -107,7 +109,7 @@ public sealed class CheckerAgainstSimulatorTests
 
         var chk03 = Get(report, "CHK-03");
         chk03.Result.Should().Be(CheckResultKind.Fail);
-        chk03.Message.Should().Contain("all 0");
+        chk03.Message.Should().StartWith("Protocol/ProtocolMismatch: limits not published (all 0).");
         chk03.Observed.Select(kv => kv.Value).Should().Equal(0, 0, 0);
         ShouldBe(report, CheckResultKind.Pass, Ids(4, 12));
         ShouldBe(report, CheckResultKind.Skipped, Ids(13, 16));
@@ -122,13 +124,10 @@ public sealed class CheckerAgainstSimulatorTests
         var report = await Check(sim, allowMotion: true);
 
         Get(report, "CHK-08").Result.Should().Be(CheckResultKind.Fail);
-        Get(report, "CHK-08").Message.Should().Be("no trip within 1.5 s of the last beat");
-        ShouldBe(report, CheckResultKind.Skipped, ["CHK-09", "CHK-10"]);
-        // protocol.md: CHK-16 needs 15 only, so it runs and fails the same way. GA-I-34 expects it SKIPPED, which needs
-        // "08, 15" in the table — raised with the protocol owner; this line follows the table until it changes.
-        Get(report, "CHK-16").Result.Should().Be(CheckResultKind.Fail);
-        Get(report, "CHK-16").Message.Should().StartWith("no trip");
-        (await sim.SettledAsync()).Velocity.Should().Be(0, "the restore after the failed kill test stops the jog");
+        Get(report, "CHK-08").Message.Should().StartWith("Protocol/ProtocolMismatch: no trip within 1.5 s of the last beat.");
+        Get(report, "CHK-08").ErrorClass.Should().Be(ErrorClass.Protocol);
+        ShouldBe(report, CheckResultKind.Skipped, ["CHK-09", "CHK-10", "CHK-16"]);
+        Get(report, "CHK-16").Message.Should().Be("needs CHK-08, which FAILED", "the kill test never runs without a proven watchdog");
         report.ExitCode.Should().Be(1);
     }
 
@@ -140,7 +139,8 @@ public sealed class CheckerAgainstSimulatorTests
         var report = await Check(sim, allowMotion: true);
 
         Get(report, "CHK-06").Result.Should().Be(CheckResultKind.Fail);
-        Get(report, "CHK-06").Message.Should().StartWith("no CommandAck within 500 ms");
+        Get(report, "CHK-06").Message.Should().StartWith("Protocol/NotAcknowledged: Enable 1 not accepted. CommandSeq 1 written, CommandAck 0 read after 500 ms, State 0 read.");
+        Get(report, "CHK-06").ErrorClass.Should().Be(ErrorClass.Protocol);
         ShouldBe(report, CheckResultKind.Skipped, ["CHK-07", "CHK-08", "CHK-09", "CHK-10", "CHK-12", "CHK-13", "CHK-14", "CHK-15", "CHK-16"]);
         report.ExitCode.Should().Be(1);
     }
@@ -154,7 +154,7 @@ public sealed class CheckerAgainstSimulatorTests
 
         var chk03 = Get(report, "CHK-03");
         chk03.Result.Should().Be(CheckResultKind.Fail);
-        chk03.Message.Should().Contain("is not below TravelMax");
+        chk03.Message.Should().StartWith("Protocol/ProtocolMismatch: limits not sane.");
         // 10 000 000 = 0x00989680 served high word first reads back as 0x96800098.
         Observed(chk03, "travelMax").Should().Be(unchecked((int)0x96800098));
         report.ExitCode.Should().Be(1);
@@ -211,8 +211,11 @@ public sealed class CheckerAgainstSimulatorTests
         await interrupted;
 
         cts.IsCancellationRequested.Should().BeTrue("the run was interrupted during CHK-14");
-        Get(report, "CHK-14").Message.Should().Contain("interrupted");
-        ShouldBe(report, CheckResultKind.Skipped, Ids(15, 16));
+        ShouldBe(report, CheckResultKind.Skipped, Ids(14, 16));
+        foreach (var id in Ids(14, 16)) Get(report, id).Message.Should().Be("interrupted by the operator during CHK-14");
+        report.Interrupted.Should().BeTrue();
+        report.SummaryResult.Should().Be("INTERRUPTED");
+        report.ExitCode.Should().Be(4, "an interruption is not a FAIL");
         var end = await sim.SettledAsync();
         end.State.Should().BeOneOf(SimAxisState.Disabled, SimAxisState.Standstill);
         end.Velocity.Should().Be(0);
@@ -220,6 +223,38 @@ public sealed class CheckerAgainstSimulatorTests
         report.Cleanup.Should().Contain(l => l.Contains("(Stop)"))
             .And.Contain(l => l.Contains("Enable 0"))
             .And.Contain(l => l.Contains("release lease"));
+    }
+
+    [Fact]
+    public async Task AFaultTheCheckDidNotExpectIsAMachineError()
+    {
+        using var sim = new LiveSimulator(new SimulatedAxisOptions { Faults = new SimFaults { DriveFault = true } });
+        await Task.Delay(50);
+
+        var report = await Check(sim, allowMotion: false);
+
+        var chk06 = Get(report, "CHK-06");
+        chk06.Result.Should().Be(CheckResultKind.Fail);
+        chk06.ErrorClass.Should().Be(ErrorClass.Machine);
+        chk06.Message.Should().StartWith("Machine/DriveFault: the PLC reports ErrorStop. Read FaultCode (S+6 = 106) = 1. also Machine/DriveFault: cannot restore");
+        chk06.LastRead!.Status[0].Should().Be(7);
+    }
+
+    [Fact]
+    public async Task DumpReadsBothBlocksAndWritesNothing()
+    {
+        using var sim = new LiveSimulator();
+        var options = new CheckerOptions { Host = "127.0.0.1", Port = sim.Port, Dump = true };
+        var before = await sim.SettledAsync();
+
+        var code = await CheckMode.DumpAsync(options, NullLoggerFactory.Instance, CancellationToken.None);
+
+        code.Should().Be(0);
+        var after = await sim.SettledAsync();
+        after.CommandBlock.Should().Equal(before.CommandBlock, "--dump writes nothing and takes no lease");
+
+        var dead = await CheckMode.DumpAsync(options with { Port = 1 }, NullLoggerFactory.Instance, CancellationToken.None);
+        dead.Should().Be(1, "a Transport error is exit 1");
     }
 
     private volatile bool _chk14Running;

@@ -34,6 +34,7 @@ public static class CheckMode
         Console.CancelKeyPress += onCancel;
         try
         {
+            if (options.Dump) return await DumpAsync(options, loggerFactory, cts.Token);
             var report = await new ConformanceRunner(loggerFactory).RunAsync(options, cts.Token);
             var markdown = ReportWriter.ToMarkdown(report);
             await Console.Out.WriteAsync(markdown);
@@ -49,5 +50,38 @@ public static class CheckMode
         {
             Console.CancelKeyPress -= onCancel;
         }
+    }
+
+    /// <summary>
+    /// Rule 4: read C+0…C+11 and S+0…S+14 once (or at 5 Hz with <c>--watch</c> until Ctrl-C) and print them decoded.
+    /// Writes nothing and takes no lease. Exit 0 when both blocks were read, 1 on a Transport error.
+    /// </summary>
+    public static async Task<int> DumpAsync(CheckerOptions options, ILoggerFactory loggerFactory, CancellationToken ct)
+    {
+        // The context owns and disposes the channel.
+        await using var ctx = new CheckContext(options, new ModbusChannel(options.Host, options.Port, loggerFactory.CreateLogger<ModbusChannel>()), loggerFactory.CreateLogger("GenericAxis.Dump"));
+        do
+        {
+            try
+            {
+                await ctx.ReadAsync(ctx.Map.Command, RegisterMap.CommandLength, ct);
+                await ctx.ReadAsync(ctx.Map.Status, RegisterMap.StatusLength, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return ConformanceExitCodes.Pass;
+            }
+            catch (RocketWelder.SDK.Devices.Motion.MotionException ex)
+            {
+                await Console.Error.WriteLineAsync($"dump: Transport/CommunicationLost: {ex.Message}");
+                return ConformanceExitCodes.Fail;
+            }
+
+            await Console.Out.WriteAsync(
+                $"{DateTime.UtcNow:yyyy-MM-dd'T'HH:mm:ss.fff'Z'} {options.Host}:{options.Port} unit {options.Unit}\n\n{RegisterDump.Render(ctx.LastValues(), ctx.Map)}\n");
+            if (!options.Watch) return ConformanceExitCodes.Pass;
+            try { await Task.Delay(TimeSpan.FromMilliseconds(200), ct); }
+            catch (OperationCanceledException) { return ConformanceExitCodes.Pass; }
+        } while (true);
     }
 }
