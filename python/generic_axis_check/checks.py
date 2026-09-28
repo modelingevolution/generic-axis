@@ -365,13 +365,13 @@ async def chk08(ctx: CheckContext) -> Outcome:
 
 
 async def chk09(ctx: CheckContext) -> Outcome:
-    # The trip to start from: every check restores (protocol rule), so CHK-09 causes its own first trip.
+    # Setup: first trip the watchdog as in CHK-08 (protocol.md CHK-09; no trip → FAIL "setup: no trip").
     await ctx.clear_watchdog_fault()
     _, trips0 = await ctx.watchdog()
     await beat_for(ctx, ARMED_BEAT_S)
     first = await watch_trip(ctx, await ctx.beater.stop() or time.monotonic(), trips0)
     observed = {"firstTripMs": first.after_ms}
-    problem = judge_trip(first, "first trip")
+    problem = judge_trip(first, "setup")
     if problem:
         return failed(problem, **observed)
     trips1 = first.trips
@@ -702,5 +702,5 @@ CHECKS: tuple[Check, ...] = (
     Check("CHK-13", "MoveAbsolute to TravelMin + 10", "Command semantics: MoveAbsolute", ("03", "12"), True, chk13),
     Check("CHK-14", "Stop mid-move", "Command semantics: Stop; FR-11 priority", ("13",), True, chk14),
     Check("CHK-15", "MoveVelocity", "Command semantics: MoveVelocity", ("13",), True, chk15),
-    Check("CHK-16", "Kill test", "FR-11", ("15",), True, chk16),
+    Check("CHK-16", "Kill test", "FR-11", ("08", "15"), True, chk16),
 )

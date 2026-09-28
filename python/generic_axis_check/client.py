@@ -11,8 +11,9 @@ from pymodbus.exceptions import ModbusException
 
 from .registers import STATUS_LENGTH, RegisterMap, StatusBlock
 
-CONNECT_TIMEOUT_S = 2.0
-"""CHK-01: "TCP connect (2 s timeout)"."""
+CONNECT_ATTEMPTS = 2
+CONNECT_ATTEMPT_S = 1.5
+"""CHK-01: the TCP connect has a budget of ≤ 3 s including the tool's own retry: two attempts of 1.5 s."""
 
 REQUEST_TIMEOUT_S = 0.5
 """design.md § Python: request timeout 0.5 s (the protocol's ack budget; no single request may take longer)."""
@@ -53,18 +54,29 @@ class PlcClient:
         return self._client is not None and self._client.connected
 
     async def connect(self) -> None:
-        # retries=0: a lost answer is reported as what it is, never hidden by a resend that shifts the timing.
-        client = AsyncModbusTcpClient(self.host, port=self.port, timeout=REQUEST_TIMEOUT_S, retries=0)
+        """Connect within CHK-01's budget. pymodbus uses one timeout for connect and for requests, so the client
+        connects with the attempt timeout and then switches to the 0.5 s request timeout. Automatic reconnection is
+        off (``reconnect_delay=0``): a lost link is reported, never silently recovered (protocol.md § Errors and
+        debugging, rule 3)."""
         started = time.monotonic()
-        try:
-            ok = await client.connect()
-        except (OSError, ModbusException) as exc:
+        last: BaseException | None = None
+        for _ in range(CONNECT_ATTEMPTS):
+            client = AsyncModbusTcpClient(
+                self.host, port=self.port, timeout=CONNECT_ATTEMPT_S, retries=0, reconnect_delay=0
+            )
+            try:
+                if await client.connect():
+                    client.comm_params.timeout_connect = REQUEST_TIMEOUT_S
+                    self._client = client
+                    return
+            except (OSError, ModbusException) as exc:
+                last = exc
             client.close()
-            raise PlcError(f"connect to {self.host}:{self.port} failed: {exc}") from exc
-        if not ok:
-            client.close()
-            raise PlcError(f"connect to {self.host}:{self.port} failed after {time.monotonic() - started:.1f} s")
-        self._client = client
+        reason = f": {last}" if last is not None else ""
+        raise PlcError(
+            f"connect to {self.host}:{self.port} failed ({CONNECT_ATTEMPTS} attempts in "
+            f"{time.monotonic() - started:.1f} s){reason}"
+        )
 
     def close(self) -> None:
         if self._client is not None:
