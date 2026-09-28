@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageId>ModelingEvolution.GenericAxis</PackageId>
+    <Description>Generic external axis (linear track or rotary positioner) behind a PLC over Modbus TCP, implementing the RocketWelder SDK motion contract. The register map is docs/protocol.md (map version 1).</Description>
+    <PackageTags>rocketwelder;motion;modbus;plc;axis;track;positioner</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="RocketWelder.SDK.Devices.Motion" Version="2.29.0" />
+    <PackageReference Include="FluentModbus" Version="5.3.2" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.8" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ModelingEvolution.GenericAxis.Tests" />
+    <InternalsVisibleTo Include="ModelingEvolution.GenericAxis.Plugin" />
+    <InternalsVisibleTo Include="ModelingEvolution.GenericAxis.TestApp" />
+  </ItemGroup>
+
+</Project>
