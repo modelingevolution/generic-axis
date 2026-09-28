@@ -88,6 +88,48 @@ public sealed class ConnectorConcurrencyTests
         log.Levels.Should().NotContain(l => l >= LogLevel.Warning);
     }
 
+    [Fact]
+    public async Task A_Device_Whose_Host_Query_Throws_Does_Not_Stop_The_Connector()
+    {
+        // Review #27: the per-device guard around reconcile. Both devices' queries throw; the loop must
+        // reach the second one and keep running rather than fault ExecuteAsync.
+        var query = new ThrowingDeviceQuery(expectedCalls: 2);
+        var connector = new GenericAxisConnector(query, NullLogger<GenericAxisConnector>.Instance, new FakeTimeProvider());
+        foreach (var info in new[] { PluginHarness.Track, PluginHarness.Positioner })
+        {
+            var id = DeviceId.New(info.DeviceType);
+            var config = PluginHarness.ConfigFor(info, (GenericAxisConfigKey.For(info.Axes.Single().Name, "Host"), "192.0.2.1"));
+            connector.Track(id, PluginHarness.Build(info, config, id));
+        }
+
+        await connector.StartAsync(CancellationToken.None);
+        try
+        {
+            await query.Reached.Task.WaitAsync(Bound);
+            connector.ExecuteTask!.IsCompleted.Should().BeFalse("one device's failure must not stop the connector");
+        }
+        finally
+        {
+            await connector.StopAsync(CancellationToken.None);
+        }
+    }
+
+    private sealed class ThrowingDeviceQuery(int expectedCalls) : RocketWelder.SDK.Automation.IDeviceQuery
+    {
+        private int _calls;
+        public TaskCompletionSource Reached { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public event Action<DeviceId>? DeviceConfigChanged { add { } remove { } }
+
+        public RocketWelder.SDK.Automation.DeviceSnapshot? GetById(DeviceId id)
+        {
+            if (Interlocked.Increment(ref _calls) >= expectedCalls) Reached.TrySetResult();
+            throw new InvalidOperationException("read model unavailable");
+        }
+
+        public IEnumerable<RocketWelder.SDK.Automation.DeviceSnapshot> GetByInterface(string interfaceType) => [];
+        public int GetNextNumber(string interfaceType) => 1;
+    }
+
     private static async Task WaitUntilAsync(Func<bool> condition)
     {
         var deadline = DateTime.UtcNow + Bound;

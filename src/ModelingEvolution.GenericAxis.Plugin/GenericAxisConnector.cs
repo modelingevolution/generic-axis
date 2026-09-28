@@ -100,7 +100,18 @@ public sealed class GenericAxisConnector : BackgroundService
             do
             {
                 foreach (var (id, device) in _devices)
-                    Reconcile(id, device, stoppingToken);
+                {
+                    try
+                    {
+                        Reconcile(id, device, stoppingToken);
+                    }
+                    catch (Exception ex)
+                    {
+                        // One device's failure (a host query that throws, for example) must not stop the
+                        // connector for every other generic axis (review #27).
+                        ReportFailure(id, ex);
+                    }
+                }
             }
             while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false));
         }
