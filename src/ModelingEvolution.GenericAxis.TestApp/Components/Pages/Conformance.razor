@@ -63,7 +63,7 @@
     @foreach (var row in Rows(report))
     {
         <tr>
-            <td class="register-value">@row.Id</td>
+            <td class="register-value" style="white-space:nowrap">@row.Id</td>
             <td>@row.Title</td>
             <td><MudChip T="string" Size="Size.Small" Color="@row.Color">@row.Result</MudChip></td>
             <td style="font-size:13px">@row.Observed</td>
@@ -117,6 +117,9 @@
             return;
         }
 
+        // Show the switch on while asking, so a Cancel is a real value change and the switch is redrawn off.
+        _allowMotion = true;
+        StateHasChanged();
         var confirmed = await Dialogs.ShowMessageBoxAsync("Allow motion",
             "Operator at the machine, travel clear. CHK-12…16 will home the axis, move it and run the kill test.",
             yesText: "Operator at the machine, travel clear", cancelText: "Cancel");
