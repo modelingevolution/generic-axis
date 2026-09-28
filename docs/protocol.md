@@ -271,11 +271,43 @@ Every FAIL carries one class, decided by what the checker saw, in this order (§
 There is no Commander class in a checker FAIL: the checker writes raw registers and refuses nothing.
 
 - **The one retry.** A checker performs the one reconnect-and-retry the driver performs, logs it at Warning, and adds
-  `"retries": n` to that check's `observed`. A second failure is a Transport FAIL.
+  counts it in that check's `retries` (§ Observed values). A second failure is a Transport FAIL.
 - **`lastRead`** is a fresh read of both blocks, taken when the failure is detected and before any restore write. If
   that read fails, it holds the last values read, with `null` for a register never read.
 - **Interruption** is not a FAIL. The running check and every later one are `SKIPPED`, with the message
   "interrupted by the operator during CHK-nn". Cleanup runs, `summary.result` is `INTERRUPTED`, and the exit code is 4.
+
+### Observed values
+
+`observed` is exactly the keys listed here for the check, in this order: nothing more, nothing less. Every value is
+an integer or `null`. `null` means the value was never observed, for example because the check failed before
+reaching it. A SKIPPED check has `observed: {}`. Every non-skipped check ends with `retries`, the number of
+reconnect-and-retries performed during it (normally 0).
+
+Units: **ms**, a duration measured as in § Rules for every run. **raw**, an int32 register value (0.001 axis unit, or
+0.001 unit/s for velocities). **reg**, a uint16 register value as read. **count**, a number of events.
+
+| Id | Keys (unit) |
+|---|---|
+| CHK-01 | `connectMs` (ms), `readMs` (ms), `retries` (count) |
+| CHK-02 | `mapVersion` (reg), `retries` |
+| CHK-03 | `travelMin` (raw), `travelMax` (raw), `maxVelocity` (raw), `retries` |
+| CHK-04 | `reads` (count answered), `slowestMs` (ms), `invalidStates` (count), `retries` |
+| CHK-05 | `firstReadBack` (raw, after writing 65 538), `secondReadBack` (raw, after writing −2), `secondReadBackAfter1s` (raw), `retries` |
+| CHK-06 | `enableAckMs` (ms), `enableStateMs` (ms to State 1), `disableAckMs` (ms), `disableStateMs` (ms to State 0), `retries` |
+| CHK-07 | `ackMs` (ms), `state` (reg, after), `faultCode` (reg, after), `retries` |
+| CHK-08 | `tripAfterMs` (ms from the last beat), `watchdogTrips` (reg, after the trip), `faultCode` (reg), `state` (reg), `retries` |
+| CHK-09 | `setupTripAfterMs` (ms), `tripsWhileLatched` (count), `tripsWhileBeating` (count), `secondTripAfterMs` (ms), `watchdogTrips` (reg, at the end), `retries` |
+| CHK-10 | `tripsAfterRelease` (count), `watchdogFault` (reg, 2 s after release), `retries` |
+| CHK-11 | `ownIdReadBack` (reg), `refusedAfterMs` (ms until LeaseHeld), `leaseOwnerAfterRefusal` (reg), `takenAfterMs` (ms from the incumbent's last beat), `retries` |
+| CHK-12 | `ackMs` (ms), `homedAfterMs` (ms), `faultCode` (reg, at the end), `retries` |
+| CHK-13 | `target` (raw), `ackMs` (ms), `arrivedAfterMs` (ms), `position` (raw ActualPosition at rest), `positionError` (raw, absolute), `retries` |
+| CHK-14 | `commandedVelocity` (raw), `velocityAtStop` (raw ActualVelocity at the Stop write), `ackMs` (ms), `haltMs` (ms), `retries` |
+| CHK-15 | `commandedVelocity` (raw), `ackMs` (ms), `maxVelocitySeen` (raw), `stopAckMs` (ms), `haltMs` (ms), `retries` |
+| CHK-16 | `commandedVelocity` (raw), `tripAfterMs` (ms from the last beat), `haltAfterTripMs` (ms), `homedAfterTrip` (0 or 1), `retries` |
+
+Anything else a tool wants to say goes into `message`. The id-parity test on each side also compares these key lists
+with the tool's output.
 
 ### Report schema
 
@@ -295,11 +327,11 @@ JSON (`schema: "generic-axis-conformance/1"`). Both tools emit exactly these fie
     { "id": "CHK-08", "title": "Watchdog trips on a stalled beat", "section": "FR-11",
       "result": "PASS", "durationMs": 3140,
       "message": "trip after 1.12 s", "errorClass": null,
-      "observed": { "tripAfterMs": 1120, "watchdogTrips": 3, "faultCode": 4, "state": 7 } },
+      "observed": { "tripAfterMs": 1120, "watchdogTrips": 3, "faultCode": 4, "state": 7, "retries": 0 } },
     { "id": "CHK-06", "title": "Enable handshake (level)", "section": "Command semantics: Handshake, Enable",
       "result": "FAIL", "durationMs": 612, "errorClass": "Protocol",
       "message": "Protocol/NotAcknowledged: Enable 1 not accepted. CommandSeq 7 written, CommandAck 6 read after 500 ms, State 0 read.",
-      "observed": { "commandSeq": 7, "commandAck": 6, "state": 0 },
+      "observed": { "enableAckMs": null, "enableStateMs": null, "disableAckMs": null, "disableStateMs": null, "retries": 0 },
       "lastRead": { "command": [1, 7, 0, 0, 0, 0, 0, 0, 12, 65535, 0, 2],
                     "status": [0, 32, 0, 0, 0, 0, 0, 6, 0, 0, 38528, 152, 41248, 7, 1] } },
     { "id": "CHK-12", "title": "Home", "section": "Command semantics: Home",
@@ -313,7 +345,7 @@ JSON (`schema: "generic-axis-conformance/1"`). Both tools emit exactly these fie
   otherwise `FAIL` if any check failed, otherwise `PASS`.
 - `errorClass` is `Transport`, `Protocol`, `Machine` or `Commander` on a FAIL, and `null` otherwise. A FAIL also
   carries `lastRead`, the raw values of C+0…C+11 and S+0…S+14 from the last read before the failure.
-- `observed` keys are camelCase. Numbers are raw integers or durations in ms. `language` is `python` or `csharp`.
+- `observed` follows § Observed values exactly. `language` is `python` or `csharp`.
 
 The Markdown report has four parts, in order:
 1. A heading with the tool, the target and the UTC time.
