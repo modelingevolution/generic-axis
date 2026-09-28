@@ -21,3 +21,21 @@ dotnet build src/GenericAxis.sln
 dotnet test  src/GenericAxis.sln
 dotnet run --project src/ModelingEvolution.GenericAxis.TestApp   # http://localhost:5070
 ```
+
+## Cross-test: the simulator against both checkers
+
+```bash
+# 1. the PLC simulator, headless, on port 5023
+dotnet src/ModelingEvolution.GenericAxis.TestApp/bin/Debug/net10.0/ModelingEvolution.GenericAxis.TestApp.dll --headless --port 5023 &
+
+# 2. the C# checker (same binary)
+dotnet src/ModelingEvolution.GenericAxis.TestApp/bin/Debug/net10.0/ModelingEvolution.GenericAxis.TestApp.dll --check 127.0.0.1:5023 --allow-motion --report cs.md
+
+# 3. the Python checker (no .NET needed on the machine that runs it)
+python3 -m venv .venv && . .venv/bin/activate && pip install ./python
+python -m generic_axis_check 127.0.0.1:5023 --allow-motion --report py.md
+```
+
+Both must end with `RESULT: PASS`, exit code 0, CHK-01…CHK-16. Point either checker at a real PLC by replacing
+`127.0.0.1:5023` with its address; leave out `--allow-motion` unless an operator is at the machine and the travel is
+clear. Details and exit codes: [`python/README.md`](python/README.md) and `docs/protocol.md` § Conformance checks.
