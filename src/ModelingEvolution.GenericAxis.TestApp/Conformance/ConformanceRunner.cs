@@ -47,11 +47,10 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
         var refused = false;
         try
         {
-            var incumbent = await PreflightAsync(ctx, ct);
-            if (incumbent is { } owner)
+            var refusal = await PreflightAsync(ctx, ct);
+            if (refusal is { } reason)
             {
                 refused = true;
-                var reason = $"refused to start: LeaseOwner {owner} is beating — another commander is attached; stop it first";
                 _log.LogWarning("{Reason}", reason);
                 foreach (var def in _catalog) results.Add(Skipped(def, reason));
             }
@@ -90,6 +89,7 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
             }
 
             publish(def.Id);
+            var retriesBefore = ctx.Retries;
             var (outcome, durationMs) = await RunOneAsync(def, ctx, ct);
 
             if (ct.IsCancellationRequested)
@@ -122,6 +122,7 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
                 }
             }
 
+            outcome = outcome with { Observed = Canonical(def, outcome, ctx.RetriesSince(retriesBefore)) };
             _log.LogInformation("{Id} {Result}: {Message}", def.Id, ReportWriter.Result(outcome.Result),
                 outcome.Result == CheckResultKind.Fail ? $"{def.Id}: {outcome.Message}" : outcome.Message);
             results.Add(new CheckResult(def.Id, def.Title, def.Section, outcome.Result, durationMs, outcome.Message, outcome.Observed,
@@ -129,6 +130,19 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
             byId[def.Id] = outcome.Result;
             publish(null);
         }
+    }
+
+    /// <summary>
+    /// protocol § Observed values: exactly the check's keys, in order, <c>null</c> for a value never observed, and
+    /// <c>retries</c> last. A key a check reports that the table does not list is a defect in the catalog.
+    /// </summary>
+    internal ImmutableArray<KeyValuePair<string, long?>> Canonical(CheckDefinition def, CheckOutcome outcome, long retries)
+    {
+        var seen = outcome.Observed.ToDictionary(kv => kv.Key, kv => kv.Value);
+        var unknown = seen.Keys.Except(def.ObservedKeys).ToList();
+        if (unknown.Count > 0) // a catalog defect: never abort a run on a real PLC for it, but say so loudly
+            _log.LogError("{Id} reported observed keys the protocol does not list, dropped: {Keys}", def.Id, string.Join(", ", unknown));
+        return [.. def.ObservedKeys.Select(k => KeyValuePair.Create(k, seen.GetValueOrDefault(k))), KeyValuePair.Create("retries", (long?)retries)];
     }
 
     private static string Interrupted(string id) => $"interrupted by the operator during {id}";
@@ -196,26 +210,33 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
         return (outcome, (long)t.Elapsed.TotalMilliseconds);
     }
 
-    /// <summary>Reads <c>LeaseOwner</c> and watches <c>Heartbeat</c> for 1 s; returns a live foreign owner, else null.</summary>
-    private async Task<ushort?> PreflightAsync(CheckContext ctx, CancellationToken ct)
+    /// <summary>
+    /// Before its own first beat, reads <c>LeaseOwner</c> and watches <c>Heartbeat</c> (C+8) for 1 s. Any change, whatever
+    /// <c>LeaseOwner</c> holds (0, a station id or the tool's own id), means another commander is live: returns the
+    /// refusal message naming the beat values and the owner. Null when nothing beats.
+    /// </summary>
+    private async Task<string?> PreflightAsync(CheckContext ctx, CancellationToken ct)
     {
         try
         {
             await ctx.Channel.ConnectAsync(ct);
             var first = await ReadBeatAndOwnerAsync(ctx, ct);
-            var beating = false;
+            var beats = new List<ushort> { first.Beat };
             var owner = first.Owner;
             var until = Stopwatch.StartNew();
             while (until.Elapsed < PreflightWindow)
             {
                 await Task.Delay(Beater.Period, ct);
                 var now = await ReadBeatAndOwnerAsync(ctx, ct);
-                beating |= now.Beat != first.Beat;
+                if (now.Beat != beats[^1]) beats.Add(now.Beat);
                 owner = now.Owner;
             }
 
-            _log.LogInformation("Pre-flight: LeaseOwner {Owner}, Heartbeat {State}", owner, beating ? "changing" : "still");
-            return beating && owner != 0 && owner != ctx.Options.OwnerId ? owner : null;
+            _log.LogInformation("Pre-flight: LeaseOwner {Owner}, Heartbeat {Beats}", owner, string.Join(" → ", beats));
+            return beats.Count > 1
+                ? $"refused to start: another commander is beating — Heartbeat ({ctx.Where(ctx.Map.Heartbeat)}) read {string.Join(" → ", beats.Take(6))}"
+                  + $"{(beats.Count > 6 ? " …" : "")} within 1 s, LeaseOwner ({ctx.Where(ctx.Map.LeaseOwner)}) = {owner}; stop it first"
+                : null;
         }
         catch (MotionException ex)
         {

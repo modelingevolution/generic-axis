@@ -15,9 +15,9 @@ public sealed class ReportWriterTests
         FinishedAt = new DateTimeOffset(2026, 9, 29, 10, 15, 31, TimeSpan.Zero),
         Checks =
         [
-            new("CHK-01", "Transport and unit", "Transport", CheckResultKind.Pass, 7, "connected", [KeyValuePair.Create("connectMs", 3L)]),
+            new("CHK-01", "Transport and unit", "Transport", CheckResultKind.Pass, 7, "connected", [KeyValuePair.Create("connectMs", (long?)3)]),
             new("CHK-02", "Map version", "Status block", CheckResultKind.Fail, 2,
-                "Protocol/ProtocolMismatch: wrong map version. Read MapVersion (S+14 = 114) = 2, expected 1.", [KeyValuePair.Create("mapVersion", 2L)],
+                "Protocol/ProtocolMismatch: wrong map version. Read MapVersion (S+14 = 114) = 2, expected 1.", [KeyValuePair.Create("mapVersion", (long?)2), KeyValuePair.Create("retries", (long?)0)],
                 ErrorClass.Protocol,
                 new LastRead([1, 7, null, null, 0, 0, 0, 0, 12, 65535, 0, 2], [0, 32, 0, 0, 0, 0, 0, 6, 0, 0, 38528, 152, 41248, 7, 2])),
             new("CHK-12", "Home", "Command semantics: Home", CheckResultKind.Skipped, 0, "needs --allow-motion", []),
@@ -63,6 +63,7 @@ public sealed class ReportWriterTests
         lastRead.GetProperty("status")[14].GetInt32().Should().Be(2);
         checks.Select(c => c.GetProperty("result").GetString()).Should().Equal("PASS", "FAIL", "SKIPPED");
         checks[1].GetProperty("observed").GetProperty("mapVersion").GetInt64().Should().Be(2);
+        checks[1].GetProperty("observed").GetProperty("retries").GetInt64().Should().Be(0);
         checks[2].GetProperty("observed").EnumerateObject().Should().BeEmpty();
         root.GetProperty("cleanup").EnumerateArray().Select(e => e.GetString()).Should().Equal("C+0 = 0x0000 (Enable 0)", "C+9 = 0 (release lease)");
     }

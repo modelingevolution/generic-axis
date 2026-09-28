@@ -57,6 +57,11 @@ internal sealed class CheckContext : IAsyncDisposable
 
     public IReadOnlyList<string> CleanupLog => _cleanup;
 
+    /// <summary>Reconnect-and-retries the channel has performed so far (protocol "The one retry").</summary>
+    public long Retries => Channel is ModbusChannel m ? m.Retries : 0;
+
+    public long RetriesSince(long before) => Retries - before;
+
     public static long Now() => Stopwatch.GetTimestamp();
 
     public static long MsSince(long timestamp) => (long)Stopwatch.GetElapsedTime(timestamp).TotalMilliseconds;

@@ -41,6 +41,26 @@ public sealed partial class ProtocolCatalogTests
         throw new FileNotFoundException("docs/protocol.md not found above the test assembly");
     }
 
+    [GeneratedRegex(@"^\|\s*(CHK-\d{2})\s*\|\s*(`[^|]+)\|\s*$")]
+    private static partial Regex ObservedRowPattern();
+
+    [GeneratedRegex(@"`([A-Za-z0-9]+)`")]
+    private static partial Regex KeyPattern();
+
+    /// <summary>protocol § Observed values: CHK-nn → the keys in order.</summary>
+    internal static IReadOnlyDictionary<string, IReadOnlyList<string>> ProtocolObservedKeys() =>
+        File.ReadLines(ProtocolPath()).Select(l => ObservedRowPattern().Match(l)).Where(m => m.Success)
+            .ToDictionary(m => m.Groups[1].Value, m => (IReadOnlyList<string>)[.. KeyPattern().Matches(m.Groups[2].Value).Select(k => k.Groups[1].Value)]);
+
+    [Fact]
+    public void GA_U_60_ObservedKeysMatchTheProtocolTable()
+    {
+        var table = ProtocolObservedKeys();
+        table.Should().HaveCount(16, "§ Observed values lists every check");
+        foreach (var def in CheckCatalog.All)
+            def.ReportedKeys.Should().Equal(table[def.Id], $"{def.Id}'s observed keys are listed in protocol.md § Observed values");
+    }
+
     [Fact]
     public void GA_U_60_TheCatalogMatchesTheProtocolTable()
     {

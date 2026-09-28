@@ -10,15 +10,6 @@ public enum CheckResultKind
     Skipped,
 }
 
-/// <summary>The four error classes of protocol § Errors and debugging. A checker FAIL is never Commander.</summary>
-public enum ErrorClass
-{
-    Transport,
-    Protocol,
-    Machine,
-    Commander,
-}
-
 /// <summary>
 /// One thing a check saw go wrong, with its class, its SDK <c>MotionError</c> name and its precedence from protocol
 /// § "Error class of a FAIL" (1 = decided first).
@@ -68,19 +59,19 @@ public sealed record LastRead(ImmutableArray<int?> Command, ImmutableArray<int?>
 public sealed record CheckOutcome(
     CheckResultKind Result,
     string Message,
-    ImmutableArray<KeyValuePair<string, long>> Observed,
+    ImmutableArray<KeyValuePair<string, long?>> Observed,
     ImmutableArray<Failure> Failures)
 {
-    public static CheckOutcome Pass(string message, params (string Key, long Value)[] observed) =>
+    public static CheckOutcome Pass(string message, params (string Key, long? Value)[] observed) =>
         new(CheckResultKind.Pass, message, ToObserved(observed), []);
 
     public static CheckOutcome Skipped(string message) => new(CheckResultKind.Skipped, message, [], []);
 
-    public static CheckOutcome Fail(Failure failure, params (string Key, long Value)[] observed) =>
+    public static CheckOutcome Fail(Failure failure, params (string Key, long? Value)[] observed) =>
         Judge([failure], "", observed);
 
     /// <summary>PASS when <paramref name="failures"/> is empty, else FAIL.</summary>
-    public static CheckOutcome Judge(IEnumerable<Failure> failures, string passMessage, params (string Key, long Value)[] observed)
+    public static CheckOutcome Judge(IEnumerable<Failure> failures, string passMessage, params (string Key, long? Value)[] observed)
     {
         var list = failures.ToImmutableArray();
         return list.IsEmpty
@@ -99,7 +90,7 @@ public sealed record CheckOutcome(
         return added.IsEmpty ? this : (this with { Result = CheckResultKind.Fail, Failures = Failures.AddRange(added) }).WithMessage();
     }
 
-    public CheckOutcome WithObserved(string key, long value) => this with { Observed = Observed.Add(KeyValuePair.Create(key, value)) };
+    public CheckOutcome WithObserved(string key, long? value) => this with { Observed = Observed.Add(KeyValuePair.Create(key, value)) };
 
     /// <summary><c>&lt;Class&gt;/&lt;MotionError&gt;: &lt;what happened&gt;</c>, the deciding failure first.</summary>
     private CheckOutcome WithMessage()
@@ -109,7 +100,7 @@ public sealed record CheckOutcome(
         return this with { Message = string.Join(" ", new[] { $"{deciding.Class}/{deciding.Name}: {deciding.Text}" }.Concat(rest)) };
     }
 
-    private static ImmutableArray<KeyValuePair<string, long>> ToObserved((string Key, long Value)[] observed) =>
+    private static ImmutableArray<KeyValuePair<string, long?>> ToObserved((string Key, long? Value)[] observed) =>
         [.. observed.Select(o => KeyValuePair.Create(o.Key, o.Value))];
 }
 
@@ -121,7 +112,7 @@ public sealed record CheckResult(
     CheckResultKind Result,
     long DurationMs,
     string Message,
-    ImmutableArray<KeyValuePair<string, long>> Observed,
+    ImmutableArray<KeyValuePair<string, long?>> Observed,
     ErrorClass? ErrorClass = null,
     LastRead? LastRead = null);
 

@@ -20,7 +20,8 @@ public sealed class CheckerAgainstSimulatorTests
 
     private static CheckResult Get(ConformanceReport r, string id) => r.Checks.Single(c => c.Id == id);
 
-    private static long Observed(CheckResult c, string key) => c.Observed.Single(kv => kv.Key == key).Value;
+    private static long Observed(CheckResult c, string key) =>
+        c.Observed.Single(kv => kv.Key == key).Value ?? throw new InvalidOperationException($"{c.Id}.{key} is null");
 
     private static IEnumerable<string> Ids(int from, int to) => Enumerable.Range(from, to - from + 1).Select(i => $"CHK-{i:D2}");
 
@@ -40,12 +41,15 @@ public sealed class CheckerAgainstSimulatorTests
         report.ExitCode.Should().Be(0);
         Observed(Get(report, "CHK-08"), "tripAfterMs").Should().BeInRange(1000, 1500);
         Observed(Get(report, "CHK-09"), "secondTripAfterMs").Should().BeInRange(1000, 1500);
-        Observed(Get(report, "CHK-11"), "cTakenAfterMs").Should().BeInRange(0, 2000);
+        Observed(Get(report, "CHK-11"), "takenAfterMs").Should().BeInRange(0, 2000);
         Observed(Get(report, "CHK-14"), "haltMs").Should().BeLessThanOrEqualTo(200);
         Observed(Get(report, "CHK-16"), "tripAfterMs").Should().BeInRange(1000, 1500);
         Observed(Get(report, "CHK-16"), "haltAfterTripMs").Should().BeLessThanOrEqualTo(200);
-        Observed(Get(report, "CHK-16"), "homed").Should().Be(1);
+        Observed(Get(report, "CHK-16"), "homedAfterTrip").Should().Be(1);
 
+        foreach (var c in report.Checks)
+            c.Observed.Select(kv => kv.Key).Should().Equal(CheckCatalog.All.Single(d => d.Id == c.Id).ReportedKeys, $"{c.Id} reports the protocol's keys");
+        report.Checks.Should().OnlyContain(c => c.Observed.All(kv => kv.Value != null), "a full PASS observes every value");
         var end = await sim.SettledAsync();
         end.State.Should().Be(SimAxisState.Disabled);
         end.LeaseOwner.Should().Be(0);
@@ -110,7 +114,7 @@ public sealed class CheckerAgainstSimulatorTests
         var chk03 = Get(report, "CHK-03");
         chk03.Result.Should().Be(CheckResultKind.Fail);
         chk03.Message.Should().StartWith("Protocol/ProtocolMismatch: limits not published (all 0).");
-        chk03.Observed.Select(kv => kv.Value).Should().Equal(0, 0, 0);
+        chk03.Observed.Select(kv => kv.Value).Should().Equal(0, 0, 0, 0);
         ShouldBe(report, CheckResultKind.Pass, Ids(4, 12));
         ShouldBe(report, CheckResultKind.Skipped, Ids(13, 16));
         report.ExitCode.Should().Be(1);
@@ -185,6 +189,32 @@ public sealed class CheckerAgainstSimulatorTests
         after.CommandBlock.Skip(2).Take(6).Should().Equal(before.CommandBlock.Skip(2).Take(6), "the parameters are untouched");
         after.WatchdogTrips.Should().Be(0);
         report.Cleanup.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task PreflightRefusesOnAnyBeatEvenWithLeaseOwnerZero()
+    {
+        using var sim = new LiveSimulator();
+        using var other = new FluentModbus.ModbusTcpClient();
+        other.Connect(new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, sim.Port), FluentModbus.ModbusEndianness.BigEndian);
+        using var stop = new CancellationTokenSource();
+        var beating = Task.Run(async () =>
+        {
+            for (ushort beat = 1; !stop.IsCancellationRequested; beat++)
+            {
+                other.WriteSingleRegister(1, 8, beat); // a second tool that never takes the lease
+                await Task.Delay(100);
+            }
+        });
+
+        var report = await Check(sim, allowMotion: false);
+        await stop.CancelAsync();
+        await beating;
+
+        report.ExitCode.Should().Be(3);
+        report.Checks.Should().OnlyContain(c => c.Result == CheckResultKind.Skipped && c.Message.StartsWith("refused to start: another commander is beating"));
+        report.Checks[0].Message.Should().Contain("LeaseOwner (C+9 = 9) = 0");
+        (await sim.SettledAsync()).CommandSeq.Should().Be(0, "a refused run writes nothing");
     }
 
     [Fact]

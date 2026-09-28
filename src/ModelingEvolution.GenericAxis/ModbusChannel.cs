@@ -47,6 +47,11 @@ internal sealed class ModbusChannel : IModbusChannel
         _client = NewClient();
     }
 
+    private long _retries;
+
+    /// <summary>Reconnect-and-retries performed so far (protocol "The one retry"; the conformance checker reports it).</summary>
+    public long Retries => Interlocked.Read(ref _retries);
+
     /// <inheritdoc/>
     public string Host { get; }
 
@@ -129,7 +134,9 @@ internal sealed class ModbusChannel : IModbusChannel
                 }
                 catch (Exception ex) when (attempt == 0)
                 {
-                    _logger?.LogDebug(ex, "{Host}:{Port}: {What} failed, reconnecting and retrying", Host, Port, what);
+                    // protocol rule 3 "No silent recovery": the one retry is logged at Warning and counted.
+                    Interlocked.Increment(ref _retries);
+                    _logger?.LogWarning(ex, "{Host}:{Port}: {What} failed, reconnecting and retrying once", Host, Port, what);
                     Reset();
                     await Task.Delay(RetryPause, ct);
                 }

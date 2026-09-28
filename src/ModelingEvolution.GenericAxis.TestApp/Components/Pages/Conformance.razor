@@ -175,7 +175,7 @@
 
     private static string Observed(CheckResult c)
     {
-        var observed = string.Join(", ", c.Observed.Select(kv => $"{kv.Key}={kv.Value}"));
+        var observed = string.Join(", ", c.Observed.Select(kv => $"{kv.Key}={(kv.Value?.ToString() ?? "null")}"));
         return observed.Length == 0 ? c.Message : $"{c.Message} ({observed})";
     }
 

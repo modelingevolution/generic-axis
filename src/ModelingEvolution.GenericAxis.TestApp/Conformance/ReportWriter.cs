@@ -82,13 +82,13 @@ public static class ReportWriter
         sb.Append(CultureInfo.InvariantCulture,
             $"bases C={o.CommandBase} S={o.StatusBase}, motion {(o.AllowMotion ? "allowed" : "not allowed")}, {Utc(report.StartedAt)}\n\n");
         if (report.Refused)
-            sb.Append("Refused to start: the axis is held by a live foreign lease (another commander such as rw2 is attached). Stop it first.\n\n");
+            sb.Append("Refused to start: another commander is beating (rw2, a station, or a second tool). Stop it first.\n\n");
 
         sb.Append("| Id | Title | Result | Observed | Protocol section |\n");
         sb.Append("|---|---|---|---|---|\n");
         foreach (var c in report.Checks)
         {
-            var observed = string.Join(", ", c.Observed.Select(kv => $"{kv.Key}={kv.Value.ToString(CultureInfo.InvariantCulture)}"));
+            var observed = string.Join(", ", c.Observed.Select(kv => $"{kv.Key}={(kv.Value is { } v ? v.ToString(CultureInfo.InvariantCulture) : "null")}"));
             var cell = observed.Length == 0 ? c.Message : c.Message.Length == 0 ? observed : $"{c.Message} ({observed})";
             sb.Append(CultureInfo.InvariantCulture,
                 $"| {c.Id} | {Escape(c.Title)} | {Result(c.Result)} | {Escape(cell)} | {Escape(c.Section)} |\n");
