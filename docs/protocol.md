@@ -135,7 +135,8 @@ dead commander is indistinguishable from an idle one. Therefore:
    state.
 5. Implement the watchdog exactly as FR-11 states (arm on first change with a lease held, 1 s stall, trip actions,
    disarm until cleared, disarm on `LeaseOwner = 0`).
-6. Keep the project in a git repository next to this file's copy (epic-065 risk R-1: an unversioned PLC program is a
+6. Pass the conformance checks below, CHK-01…CHK-16 (motion checks at commissioning, with an operator present).
+7. Keep the project in a git repository next to this file's copy (epic-065 risk R-1: an unversioned PLC program is a
    drive that answers every register and moves nothing after replacement).
 
 ## Scope of map version 1
@@ -144,6 +145,105 @@ dead commander is indistinguishable from an idle one. Therefore:
   two devices.
 - A rotary axis has limited travel: `ActualPosition` is absolute and never wraps. Endless rotation is not in
   version 1.
+
+## Conformance checks
+
+This checklist is executable. Two tools run it verbatim against a PLC, with no rw2 involved:
+- the C# test app, `dotnet ModelingEvolution.GenericAxis.TestApp.dll --check <host>[:port] …`;
+- the Python tool, `python -m generic_axis_check <host>[:port] …` (in `python/generic_axis_check/`).
+
+The simulator must pass the full list, motion included, in CI. The table below is the single source of truth. A
+check id missing from either tool, or present in a tool but not here, is a defect, and each tool has a test that
+compares its ids with this table.
+
+### Command line (identical in both tools)
+
+| Argument | Default | Meaning |
+|---|---|---|
+| `<host>[:port]` | port 502 | The PLC. |
+| `--unit N` | 1 | Unit id. |
+| `--command-base N`, `--status-base N` | 0, 100 | Block bases. |
+| `--owner-id N` | 65535 | The checker's lease id. CHK-11 uses 65534 as the foreign id. Ids 65534–65535 are reserved for conformance tools; stations never use them. |
+| `--allow-motion` | off | Runs CHK-12…CHK-16. Without it they are SKIPPED. **Only with an operator at the machine and the travel clear.** |
+| `--tolerance X` | 0.1 | Position check threshold in axis units (CHK-13). This is a checker threshold, not a machine number. |
+| `--report FILE.md` | none | Writes the Markdown report there and the JSON report to `FILE.json`. The Markdown report always goes to stdout. |
+
+Exit codes: 0 = no FAIL (SKIPPED allowed) · 1 = at least one FAIL · 2 = usage error · 3 = refused to start (the axis
+is held by a live foreign lease, meaning another commander such as rw2 is attached; stop it first).
+
+### Rules for every run
+
+- **Pre-flight.** Read `LeaseOwner` and watch `Heartbeat` for 1 s. If a foreign owner is beating, exit 3, write nothing,
+  and report every check SKIPPED.
+- **Order.** Checks run in id order. A check whose prerequisite FAILED or was SKIPPED is SKIPPED, and its message names
+  the prerequisite.
+- **Timing.** Timing checks poll the status block every **20 ms**. Every duration is measured from the completion of
+  the triggering write to the first read that shows the effect, and is reported in ms.
+- **Units.** All positions and velocities are raw register values ÷ 1000, in the PLC's axis unit (mm or °).
+- **Cleanup, always, even after a FAIL or Ctrl-C:** Stop edge if State is 2, 3 or 4 · clear edge bits · Enable 0 ·
+  `WatchdogFault = 0` if the checker caused a trip · `LeaseOwner = 0` if it holds the checker's id. Each cleanup
+  write is logged in the report.
+- **Lease and beat between checks.** From CHK-06 onwards the checker holds the lease under its own id and beats,
+  except where a check says it stops.
+- **Each check restores.** Every check ends with the axis in State 0 or 1, no latched fault, the lease held and the
+  beat running: Reset, `WatchdogFault = 0` and re-take as needed. If it cannot restore, it FAILs with the reason, and
+  every later check is SKIPPED.
+- **Beat.** Whenever a check says "beat", the checker writes `Heartbeat` every 100 ms (1…65535, never 0) from its
+  own loop, not through a driver.
+
+### The checks
+
+| Id | Title | Protocol section | Needs | Procedure | PASS when |
+|---|---|---|---|---|---|
+| CHK-01 | Transport and unit | Transport | — | TCP connect (2 s timeout), then FC03 of S+0…S+14 on the unit. | Connected, and the read answers with no Modbus exception. |
+| CHK-02 | Map version | Status block | 01 | Read S+14. | `MapVersion == 1`. |
+| CHK-03 | Machine limits published | Status block, "Limits come from the machine" | 02 | Read S+8…S+13. | Not all zero, `TravelMin < TravelMax`, `MaxVelocity > 0`. The values are reported. |
+| CHK-04 | Status mirror cadence | Status block; FR-11 tick | 02 | 30 status-block reads, one every 100 ms. | All 30 answer, the slowest round trip is ≤ 100 ms, and `State` ∈ {0,1,2,3,4,6,7} in every read. |
+| CHK-05 | 32-bit word order and driver ownership of parameters | Transport (word order); Command block | 02 | Write C+2…C+3 = `[0x0002, 0x0001]` (65 538), read back. Write −2 as `[0xFFFE, 0xFFFF]`, read back. Wait 1 s and read again. No edge bit is set. | Both values read back exactly, and are unchanged after 1 s (the PLC does not write driver-owned registers). The PLC's *interpretation* of the order is proven by CHK-03 (sane limits) and CHK-13 (it arrives where it was sent). |
+| CHK-06 | Enable handshake (level) | Command semantics: Handshake, Enable | 02 | Precondition State 0 or 1. Take the lease (checker id), beat. Write `[Enable, seq+1]`, then after the ack `[0, seq+2]`. | Each ack arrives in ≤ 500 ms. State is 1 within 5 s after Enable 1 and 0 within 5 s after Enable 0. Ack ms and state ms are reported. Energises the drive and commands no motion. |
+| CHK-07 | Reset handshake (edge) | Command semantics: Reset, Acknowledge | 06 | From State 0 write `[Reset, seq+1]`. After the ack, clear the edge `[0, seq+1]`. | Ack in ≤ 500 ms, `State` stays 0 and `FaultCode` stays 0 (Reset outside ErrorStop is a no-op). |
+| CHK-08 | Watchdog trips on a stalled beat | FR-11 | 06 | Hold the lease, `WatchdogFault = 0`, beat for 2 s, then stop beating. Keep polling. | `WatchdogFault == 1`, `WatchdogTrips` +1, `State == 7`, `FaultCode == 4`, all within **1.0–1.5 s** of the last beat. The trip time is reported. |
+| CHK-09 | Watchdog disarms after a trip and re-arms on clear | FR-11 | 08 | Without clearing, beat 1 s: no second trip is counted. Then Reset edge, `WatchdogFault = 0`, beat 2 s (must not trip), stop beating. | No trip while latched. No trip while beating. A second trip within 1.0–1.5 s with `WatchdogTrips` +1. Recovery afterwards is Reset plus `WatchdogFault = 0`. |
+| CHK-10 | Clean release disarms | FR-11 "Clean release disarms" | 08 | Beat 2 s, write `LeaseOwner = 0`, stop beating, wait 2 s. | No trip: `WatchdogFault == 0` and the trip count is unchanged. |
+| CHK-11 | Advisory lease | FR-11 "Advisory lease" | 02 | (a) `LeaseOwner = 0` → the checker's lease client takes it and reads back its id, then releases. (b) Write `LeaseOwner = 65534` and beat as that incumbent. The checker's lease client, with a 3 s timeout, must refuse. (c) Stop the incumbent's beat while the client watches. | (a) Read-back equals the checker id. (b) Refused with LeaseHeld naming 65534 after 3 s, and `LeaseOwner` is still 65534. (c) Taken within 2 s of the incumbent's last beat, with the time reported. Any trip caused by (c) is cleaned up. |
+| CHK-12 | Home | Command semantics: Home | 06, `--allow-motion` | Enable, then Home edge. | Ack in ≤ 500 ms. Then `State == 1` with `Homed` within 120 s, and `FaultCode == 0`. Duration reported. |
+| CHK-13 | MoveAbsolute to TravelMin + 10 | Command semantics: MoveAbsolute | 03, 12 | Target `TravelMin + 10`, velocity 10 % of `MaxVelocity`, acceleration 0. | Ack with `State == 3` in ≤ 500 ms. Then `State == 1` with `InPosition`, and `abs(ActualPosition − target) ≤ --tolerance`. The error and duration are reported. |
+| CHK-14 | Stop mid-move | Command semantics: Stop; FR-11 priority | 13 | MoveAbsolute toward `TravelMin + (TravelMax − TravelMin)/2` at 10 %. Once `abs(ActualVelocity)` ≥ 90 % of the commanded speed (or after 2 s), write Stop. | Ack in ≤ 500 ms. `ActualVelocity == 0` and `State == 1` within **200 ms** of the Stop write. The time is reported. |
+| CHK-15 | MoveVelocity | Command semantics: MoveVelocity | 13 | MoveVelocity at +1 % of `MaxVelocity` (away from `TravelMin`) for 1 s, then Stop. | Ack with `State == 4`, `ActualVelocity > 0` during the run, then `State == 1` after Stop within 200 ms. |
+| CHK-16 | Kill test | FR-11 | 15 | MoveVelocity at +1 %, then stop beating. The connection stays open, and polling continues. | Trip (`FaultCode 4`, `State 7`) within 1.0–1.5 s of the last beat. `ActualVelocity == 0` within 200 ms of the trip. `Homed` is still set. Both times are reported. |
+
+### Report schema
+
+JSON (`schema: "generic-axis-conformance/1"`). Both tools emit exactly these fields:
+
+```json
+{
+  "schema": "generic-axis-conformance/1",
+  "mapVersion": 1,
+  "tool": { "name": "generic-axis-check", "language": "python", "version": "1.0.0" },
+  "target": { "host": "192.168.58.20", "port": 502, "unit": 1, "commandBase": 0, "statusBase": 100 },
+  "allowMotion": false,
+  "startedAt": "2026-09-29T10:15:02Z",
+  "finishedAt": "2026-09-29T10:15:31Z",
+  "summary": { "result": "PASS", "pass": 11, "fail": 0, "skipped": 5 },
+  "checks": [
+    { "id": "CHK-08", "title": "Watchdog trips on a stalled beat", "section": "FR-11",
+      "result": "PASS", "durationMs": 3140,
+      "message": "trip after 1.12 s",
+      "observed": { "tripAfterMs": 1120, "watchdogTrips": 3, "faultCode": 4, "state": 7 } },
+    { "id": "CHK-12", "title": "Home", "section": "Command semantics: Home",
+      "result": "SKIPPED", "durationMs": 0, "message": "needs --allow-motion", "observed": {} }
+  ],
+  "cleanup": [ "C+0 = 0x0000 (Enable 0)", "C+9 = 0 (release lease)" ]
+}
+```
+
+- `result` is `PASS`, `FAIL` or `SKIPPED`. `summary.result` is `FAIL` if any check failed, otherwise `PASS`.
+- `observed` keys are camelCase. Numbers are raw integers or durations in ms. `language` is `python` or `csharp`.
+
+The Markdown report has three parts. A heading gives the tool, the target and the UTC time. A table follows with the
+columns `Id | Title | Result | Observed | Protocol section`. Last comes the cleanup list. The last line is
+`RESULT: PASS` or `RESULT: FAIL`.
 
 ## Reference: the Delta positioner ladder this generalises
 
