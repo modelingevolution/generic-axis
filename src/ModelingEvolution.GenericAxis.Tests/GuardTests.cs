@@ -14,7 +14,7 @@ public class GuardTests
     private static async Task<MotionException> Refused(DriverRig rig, Func<Task> act, MotionError error)
     {
         var before = rig.Plc.CommandWritesSince(0).Count;
-        var ex = (await act.Should().ThrowAsync<MotionException>()).Which;
+        var ex = (await DriverRig.Bounded(act).Should().ThrowAsync<MotionException>()).Which;
         ex.Error.Should().Be(error, ex.Message);
         rig.Plc.CommandWritesSince(0).Count.Should().Be(before, "a refusal writes nothing");
         return ex;

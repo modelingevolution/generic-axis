@@ -179,14 +179,14 @@ public class LeaseAndHeartbeatTests
         rig.LogsAt(LogLevel.Error).Should().Contain(r => r.Message.Contains("9"));
 
         var reset = () => rig.Axis.ResetAsync();
-        (await reset.Should().ThrowAsync<MotionException>()).Which.Error.Should().Be(MotionError.LeaseHeld);
+        (await DriverRig.Bounded(reset).Should().ThrowAsync<MotionException>()).Which.Error.Should().Be(MotionError.LeaseHeld);
         rig.Plc.LeaseOwner = 1;
         await rig.TickAsync();
         rig.Axis.Status.Error.Should().Be(MotionError.LeaseHeld, "only a reconnect clears a lost lease");
 
         var writes = rig.Plc.CommandWritesSince(0).Count;
         var move = () => rig.Linear.MoveAbsoluteAsync(new(2000));
-        (await move.Should().ThrowAsync<MotionException>()).Which.Error.Should().Be(MotionError.LeaseHeld);
+        (await DriverRig.Bounded(move).Should().ThrowAsync<MotionException>()).Which.Error.Should().Be(MotionError.LeaseHeld);
         rig.Plc.CommandWritesSince(0).Count.Should().Be(writes, "a refusal writes nothing");
     }
 
