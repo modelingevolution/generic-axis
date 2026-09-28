@@ -166,7 +166,7 @@ compares its ids with this table.
 | `--owner-id N` | 65535 | The checker's lease id. CHK-11 uses 65534 as the foreign id. Ids 65534–65535 are reserved for conformance tools; stations never use them. |
 | `--allow-motion` | off | Runs CHK-12…CHK-16. Without it they are SKIPPED. **Only with an operator at the machine and the travel clear.** |
 | `--tolerance X` | 0.1 | Position check threshold in axis units (CHK-13). This is a checker threshold, not a machine number. |
-| `--report FILE.md` | none | Writes the Markdown report there and the JSON report to `FILE.json`. The Markdown report always goes to stdout. |
+| `--report PATH` | none | `*.md`: writes the Markdown report there and the JSON report next to it as `*.json`. `*.json`: writes the JSON report only. Any other extension is a usage error (exit 2). The Markdown report always goes to stdout. |
 
 Exit codes: 0 = no FAIL (SKIPPED allowed) · 1 = at least one FAIL · 2 = usage error · 3 = refused to start (the axis
 is held by a live foreign lease, meaning another commander such as rw2 is attached; stop it first).
