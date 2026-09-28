@@ -1,0 +1,183 @@
+using RocketWelder.SDK.Devices.Motion;
+
+namespace ModelingEvolution.GenericAxis.Tests.Support;
+
+/// <summary>One transaction the driver sent, as the fake PLC saw it.</summary>
+internal sealed record ChannelOp(bool IsWrite, ushort Address, ushort[] Values, int Count, ChannelPriority Lane,
+    string What)
+{
+    public override string ToString() =>
+        IsWrite ? $"W {Address} [{string.Join(", ", Values)}] {Lane} ({What})" : $"R {Address} x{Count} {Lane} ({What})";
+}
+
+/// <summary>
+/// A 65 536-register bank standing in for the PLC (design § Tests, <c>FakePlcChannel</c>). Records every transaction
+/// with its lane; <see cref="OnCommand"/> lets a test script the PLC's answer to a command write. All calls complete
+/// synchronously, so a verb runs up to its first wait before the call returns.
+/// </summary>
+internal sealed class FakePlcChannel : IModbusChannel
+{
+    private readonly Lock _sync = new();
+    private readonly ushort[] _regs = new ushort[65536];
+    private readonly List<ChannelOp> _ops = [];
+
+    public FakePlcChannel(RegisterMap? map = null)
+    {
+        Map = map ?? RegisterMap.Default;
+    }
+
+    public RegisterMap Map { get; }
+
+    public string Host => "fake-plc";
+
+    public int Port => 502;
+
+    public bool IsConnected { get; private set; }
+
+    /// <summary>Called under the bank lock for a write of <c>[Command, CommandSeq]</c>: (word, seq).</summary>
+    public Action<FakePlcChannel, ushort, ushort>? OnCommand { get; set; }
+
+    /// <summary>Called under the bank lock after every read.</summary>
+    public Action<FakePlcChannel, ChannelOp>? OnRead { get; set; }
+
+    /// <summary>Called under the bank lock after every write.</summary>
+    public Action<FakePlcChannel, ChannelOp>? OnWrite { get; set; }
+
+    /// <summary>When it returns true for an operation, that operation throws CommunicationLost.</summary>
+    public Func<ChannelOp, bool>? FailWhen { get; set; }
+
+    public IReadOnlyList<ChannelOp> Ops
+    {
+        get { lock (_sync) return [.. _ops]; }
+    }
+
+    public int OpCount
+    {
+        get { lock (_sync) return _ops.Count; }
+    }
+
+    public IReadOnlyList<ChannelOp> Writes => Ops.Where(o => o.IsWrite).ToArray();
+
+    /// <summary>Writes after operation index <paramref name="from"/> that are not heartbeat-lane traffic.</summary>
+    public IReadOnlyList<ChannelOp> CommandWritesSince(int from) =>
+        Ops.Skip(from).Where(o => o.IsWrite && o.Lane != ChannelPriority.Heartbeat).ToArray();
+
+    public ushort this[ushort address]
+    {
+        get { lock (_sync) return _regs[address]; }
+        set { lock (_sync) _regs[address] = value; }
+    }
+
+    public void Set(Action<FakePlcChannel> mutate)
+    {
+        lock (_sync) mutate(this);
+    }
+
+    // ── status helpers (default-map addresses unless a map was given) ──
+
+    public ushort State { get => this[Map.State]; set => this[Map.State] = value; }
+
+    public StatusFlags Flags { get => (StatusFlags)this[Map.Flags]; set => this[Map.Flags] = (ushort)value; }
+
+    public int ActualPosition { get => GetInt(Map.ActualPosition); set => SetInt(Map.ActualPosition, value); }
+
+    public int ActualVelocity { get => GetInt(Map.ActualVelocity); set => SetInt(Map.ActualVelocity, value); }
+
+    public ushort FaultCode { get => this[Map.FaultCode]; set => this[Map.FaultCode] = value; }
+
+    public ushort CommandAck { get => this[Map.CommandAck]; set => this[Map.CommandAck] = value; }
+
+    public ushort Command => this[Map.Command];
+
+    public ushort CommandSeq => this[Map.CommandSeq];
+
+    public ushort LeaseOwner { get => this[Map.LeaseOwner]; set => this[Map.LeaseOwner] = value; }
+
+    public ushort Heartbeat { get => this[Map.Heartbeat]; set => this[Map.Heartbeat] = value; }
+
+    public ushort WatchdogFault { get => this[Map.WatchdogFault]; set => this[Map.WatchdogFault] = value; }
+
+    public ushort WatchdogTrips { get => this[Map.WatchdogTrips]; set => this[Map.WatchdogTrips] = value; }
+
+    public ushort MapVersion { get => this[Map.MapVersion]; set => this[Map.MapVersion] = value; }
+
+    public void SetLimits(int travelMin, int travelMax, int maxVelocity)
+    {
+        lock (_sync)
+        {
+            SetInt(Map.TravelMin, travelMin);
+            SetInt(Map.TravelMax, travelMax);
+            SetInt(Map.MaxVelocity, maxVelocity);
+        }
+    }
+
+    public int GetInt(ushort address)
+    {
+        lock (_sync) return Words.Join(_regs[address], _regs[address + 1]);
+    }
+
+    public void SetInt(ushort address, int value)
+    {
+        lock (_sync)
+        {
+            var (lo, hi) = Words.Split(value);
+            _regs[address] = lo;
+            _regs[address + 1] = hi;
+        }
+    }
+
+    // ── IModbusChannel ──
+
+    public Task ConnectAsync(CancellationToken ct)
+    {
+        IsConnected = true;
+        return Task.CompletedTask;
+    }
+
+    public Task DisconnectAsync(CancellationToken ct = default)
+    {
+        IsConnected = false;
+        return Task.CompletedTask;
+    }
+
+    public Task<ushort[]> ReadHoldingAsync(byte unit, ushort address, ushort count, string what,
+        ChannelPriority priority = ChannelPriority.Move, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        lock (_sync)
+        {
+            var op = new ChannelOp(false, address, [], count, priority, what);
+            _ops.Add(op);
+            if (FailWhen?.Invoke(op) == true)
+                return Task.FromException<ushort[]>(new MotionException(MotionError.CommunicationLost,
+                    $"fake-plc: {what} failed (injected)"));
+            OnRead?.Invoke(this, op);
+            return Task.FromResult(_regs.AsSpan(address, count).ToArray());
+        }
+    }
+
+    public Task WriteRegisterAsync(byte unit, ushort address, ushort value, string what,
+        ChannelPriority priority = ChannelPriority.Move, CancellationToken ct = default) =>
+        WriteRegistersAsync(unit, address, [value], what, priority, ct);
+
+    public Task WriteRegistersAsync(byte unit, ushort address, ushort[] values, string what,
+        ChannelPriority priority = ChannelPriority.Move, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        lock (_sync)
+        {
+            var op = new ChannelOp(true, address, [.. values], values.Length, priority, what);
+            _ops.Add(op);
+            if (FailWhen?.Invoke(op) == true)
+                return Task.FromException(new MotionException(MotionError.CommunicationLost,
+                    $"fake-plc: {what} failed (injected)"));
+            values.CopyTo(_regs.AsSpan(address));
+            if (address == Map.Command && values.Length == 2)
+                OnCommand?.Invoke(this, values[0], values[1]);
+            OnWrite?.Invoke(this, op);
+            return Task.CompletedTask;
+        }
+    }
+
+    public void Dispose() => IsConnected = false;
+}

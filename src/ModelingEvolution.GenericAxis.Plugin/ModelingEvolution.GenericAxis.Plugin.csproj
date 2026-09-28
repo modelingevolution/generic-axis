@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <IsPackable>true</IsPackable>
+    <PackageId>ModelingEvolution.GenericAxis.Plugin</PackageId>
+    <Description>RocketWelder device plugin for a generic external axis over Modbus TCP (epic-065 feature-007): a linear track (ILinearTrack, axis 'carriage') or a rotary positioner (IPositioner, axis 'turntable') fronted by any PLC serving the generic-axis register map v1.</Description>
+    <PackageTags>rocketwelder;plugin;devices;motion;modbus;plc;linear-track;positioner</PackageTags>
+  </PropertyGroup>
+
+  <!-- The host does NOT reference this project: rw2's PluginLoader discovers it from the staged
+       plugins/<id>/<version>/ folder. Every host-facing reference is therefore a PackageReference. -->
+  <ItemGroup>
+    <PackageReference Include="RocketWelder.SDK.Abstractions" Version="2.29.0" />
+    <PackageReference Include="RocketWelder.SDK.Automation.Abstractions" Version="2.29.0" />
+    <PackageReference Include="RocketWelder.SDK.Devices.Motion" Version="2.29.0" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.8" />
+  </ItemGroup>
+
+  <!-- ADR-17: the driver is a NuGet package in its own right. A plain same-repo ProjectReference
+       (no PrivateAssets) makes `dotnet pack` write it into the nuspec as a package dependency, and
+       `dotnet publish` copies its dll into the staged closure. Delta embedded its adapter only
+       because that adapter's package had been retired; embedding here as well as publishing the
+       driver would put two copies of one assembly in a consumer's graph. -->
+  <ItemGroup>
+    <ProjectReference Include="..\ModelingEvolution.GenericAxis\ModelingEvolution.GenericAxis.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ModelingEvolution.GenericAxis.Plugin.Tests" />
+  </ItemGroup>
+
+</Project>
