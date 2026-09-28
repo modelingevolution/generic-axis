@@ -11,9 +11,9 @@
   <!-- The host does NOT reference this project: rw2's PluginLoader discovers it from the staged
        plugins/<id>/<version>/ folder. Every host-facing reference is therefore a PackageReference. -->
   <ItemGroup>
-    <PackageReference Include="RocketWelder.SDK.Abstractions" Version="2.29.0" />
-    <PackageReference Include="RocketWelder.SDK.Automation.Abstractions" Version="2.29.0" />
-    <PackageReference Include="RocketWelder.SDK.Devices.Motion" Version="2.29.0" />
+    <PackageReference Include="RocketWelder.SDK.Abstractions" Version="2.30.0" />
+    <PackageReference Include="RocketWelder.SDK.Automation.Abstractions" Version="2.30.0" />
+    <PackageReference Include="RocketWelder.SDK.Devices.Motion" Version="2.30.0" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.8" />
     <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.8" />
   </ItemGroup>
