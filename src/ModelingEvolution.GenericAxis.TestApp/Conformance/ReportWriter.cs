@@ -100,7 +100,7 @@ public static class ReportWriter
         foreach (var f in failures)
         {
             sb.Append(CultureInfo.InvariantCulture, $"### {f.Id} {f.Title}\n\n{f.Id}: {f.Message}\n\n");
-            if (f.LastRead is { } read) sb.Append("Last read of both blocks:\n\n").Append(RegisterDump.Render(read, o.Map)).Append('\n');
+            if (f.LastRead is { } read) sb.Append("Last read of both blocks:\n\n```\n").Append(LastReadDump.Render(read, o.Map)).Append("```\n");
         }
 
         sb.Append("\nCleanup:\n");

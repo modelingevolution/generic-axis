@@ -47,9 +47,9 @@ internal static class Words
     {
         var scaled = Math.Round(units * Scale, MidpointRounding.AwayFromZero);
         if (double.IsNaN(scaled) || scaled < int.MinValue || scaled > int.MaxValue)
-            throw new MotionException(MotionError.OutOfRange,
-                $"{axis}{(axis is null ? "" : ": ")}{what} {units} does not fit the protocol's int32 register pair "
-                + $"({int.MinValue / Scale}…{int.MaxValue / Scale})", axis);
+            throw AxisErrors.Create(axis ?? what, MotionError.OutOfRange,
+                $"{what} {units.ToString(System.Globalization.CultureInfo.InvariantCulture)} does not fit the protocol's "
+                + $"int32 register pair ({int.MinValue / Scale}…{int.MaxValue / Scale}); refused, not clamped");
         return (int)scaled;
     }
 

@@ -83,10 +83,11 @@ public sealed class ReportWriterTests
         cleanup.Should().BeGreaterThan(failures, "the cleanup list comes last");
         var part = lines[failures..cleanup];
         part.Should().Contain("CHK-02: Protocol/ProtocolMismatch: wrong map version. Read MapVersion (S+14 = 114) = 2, expected 1.");
-        part.Should().Contain("| S+14 (114) | MapVersion | 0x0002 | 2 |");
-        part.Should().Contain("| S+0 (100) | State | 0x0000 | 0 Disabled |");
-        part.Should().Contain("| C+0 (0) | Command | 0x0001 | Enable |");
-        part.Should().Contain("| C+2…C+3 (2…3) | TargetPosition | — | never read |");
+        // The driver's RegisterDump renders the dump; a register never read shows as "—".
+        part.Should().Contain(l => System.Text.RegularExpressions.Regex.IsMatch(l, @"^S\+14 = 114\s+MapVersion\s+0x0002\s+2$"));
+        part.Should().Contain(l => System.Text.RegularExpressions.Regex.IsMatch(l, @"^S\+0 = 100\s+State\s+0x0000\s+Disabled"));
+        part.Should().Contain(l => System.Text.RegularExpressions.Regex.IsMatch(l, @"^C\+0 = 0\s+Command\s+0x0001\s+.*Enable"));
+        part.Should().Contain(l => System.Text.RegularExpressions.Regex.IsMatch(l, @"^C\+2…C\+3 = 2…3\s+TargetPosition\s+—\s+never read$"));
         lines.Should().Contain("- C+9 = 0 (release lease)");
         lines[^1].Should().Be("RESULT: FAIL");
     }

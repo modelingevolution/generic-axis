@@ -78,7 +78,7 @@ public static class CheckMode
             }
 
             await Console.Out.WriteAsync(
-                $"{DateTime.UtcNow:yyyy-MM-dd'T'HH:mm:ss.fff'Z'} {options.Host}:{options.Port} unit {options.Unit}\n\n{RegisterDump.Render(ctx.LastValues(), ctx.Map)}\n");
+                $"{DateTime.UtcNow:yyyy-MM-dd'T'HH:mm:ss.fff'Z'} {options.Host}:{options.Port} unit {options.Unit}\n\n{LastReadDump.Render(ctx.LastValues(), ctx.Map)}\n");
             if (!options.Watch) return ConformanceExitCodes.Pass;
             try { await Task.Delay(TimeSpan.FromMilliseconds(200), ct); }
             catch (OperationCanceledException) { return ConformanceExitCodes.Pass; }

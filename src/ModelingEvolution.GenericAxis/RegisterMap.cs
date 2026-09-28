@@ -141,13 +141,24 @@ public sealed record RegisterMap(int CommandBase = RegisterMap.DefaultCommandBas
                 nameof(StatusBase));
     }
 
-    /// <summary>"C+n = address" / "S+n = address", for log lines and messages.</summary>
+    /// <summary>"C+n = address" / "S+n = address" — the protocol's form in messages and logs, e.g. <c>S+14 = 114</c>.</summary>
     public string Describe(ushort address) =>
         address >= CommandBase && address < CommandBase + CommandLength
-            ? $"C+{address - CommandBase} ({address})"
+            ? $"C+{address - CommandBase} = {address}"
             : address >= StatusBase && address < StatusBase + StatusLength
-                ? $"S+{address - StatusBase} ({address})"
-                : address.ToString();
+                ? $"S+{address - StatusBase} = {address}"
+                : address.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>A register range in the protocol's form, e.g. <c>S+0…S+14 (100…114)</c>.</summary>
+    public string DescribeRange(ushort address, int count)
+    {
+        var last = address + count - 1;
+        string Offset(int a) =>
+            a >= CommandBase && a < CommandBase + CommandLength ? $"C+{a - CommandBase}"
+            : a >= StatusBase && a < StatusBase + StatusLength ? $"S+{a - StatusBase}"
+            : a.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return count <= 1 ? $"{Offset(address)} ({address})" : $"{Offset(address)}…{Offset(last)} ({address}…{last})";
+    }
 
     private ushort C(int offset) => checked((ushort)(CommandBase + offset));
 
