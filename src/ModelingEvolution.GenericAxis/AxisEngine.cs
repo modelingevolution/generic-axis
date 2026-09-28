@@ -143,7 +143,7 @@ internal sealed class AxisEngine : IDisposable
         if ((block.Flags & StatusFlags.LimitMin) != 0) limits |= LimitSwitchState.Min;
         if ((block.Flags & StatusFlags.LimitMax) != 0) limits |= LimitSwitchState.Max;
 
-        MotionError? error = _overlay?.Error ?? (state == AxisState.ErrorStop ? MapFault(block).Error : null);
+        MotionError? error = _overlay?.Error ?? (state == AxisState.ErrorStop ? FaultError(block) : null);
         return new AxisStatus(state, block.Homed ? Words.FromRaw(block.ActualPosition) : null,
             Words.FromRaw(block.ActualVelocity), limits, error);
     }
@@ -163,28 +163,51 @@ internal sealed class AxisEngine : IDisposable
 
     private static bool IsKnownState(ushort raw) => raw is <= 4 or 6 or 7;
 
-    /// <summary>Design § State model, <c>MapFault</c>: the PLC's fault as the SDK remedy class and a message that
-    /// names the code.</summary>
-    internal static (MotionError Error, string Message) MapFault(StatusBlock s, ushort watchdogTrips = 0)
-    {
-        if (!IsKnownState(s.State))
-            return (MotionError.DriveFault, $"the PLC reports an unknown State {s.State}; read as ErrorStop");
+    /// <summary>Design § State model, <c>MapFault</c>: the <see cref="MotionError"/> of a snapshot in ErrorStop.
+    /// A State outside the protocol, or ErrorStop without a fault code, is the PLC breaking the protocol
+    /// (<see cref="MotionError.ProtocolMismatch"/>); everything else is the machine's fault by remedy.</summary>
+    internal static MotionError FaultError(StatusBlock s) =>
+        !IsKnownState(s.State)
+            ? MotionError.ProtocolMismatch
+            : s.FaultCode switch
+            {
+                0 => MotionError.ProtocolMismatch,
+                1 => MotionError.DriveFault,
+                2 => MotionError.LimitTripped,
+                3 => MotionError.MotionFailed,
+                4 => MotionError.WatchdogTripped,
+                5 => MotionError.HomeLatchFailed,
+                6 => MotionError.DriveFault,
+                7 => MotionError.SafetyStop,
+                _ => MotionError.DriveFault,
+            };
 
+    /// <summary>The exception for a snapshot in ErrorStop, saying what was read (protocol § Errors and debugging).</summary>
+    internal static MotionException FaultException(string axis, RegisterMap map, PlcSnapshot snapshot)
+    {
+        var s = snapshot.Status;
+        var error = FaultError(s);
+        if (!IsKnownState(s.State))
+            return AxisErrors.Create(axis, error, "the PLC reports a State map version 1 does not define",
+                AxisErrors.Read(map, "State", map.State, s.State, "0–4, 6, 7"));
+
+        var fault = AxisErrors.Read(map, "FaultCode", map.FaultCode, s.FaultCode);
         return s.FaultCode switch
         {
-            1 => (MotionError.DriveFault, "FaultCode 1: drive fault"),
-            2 => (MotionError.LimitTripped, $"FaultCode 2: limit switch tripped ({LimitText(s.Flags)})"),
-            3 => (MotionError.MotionFailed, "FaultCode 3: following error"),
-            4 => (MotionError.WatchdogTripped,
-                $"FaultCode 4: the PLC watchdog tripped ({watchdogTrips} trip(s) since PLC power-up). Reset, then "
-                + "re-command. No re-home."),
-            5 => (MotionError.HomeLatchFailed, "FaultCode 5: homing failed in the PLC sequence"),
-            6 => (MotionError.DriveFault, "FaultCode 6: the PLC lost its drive link"),
-            7 => (MotionError.SafetyStop, "FaultCode 7: safety circuit (E-stop / guard)"),
-            _ => (MotionError.DriveFault, $"FaultCode {s.FaultCode}"
-                                          + (s.FaultCode >= (ushort)PlcFaultCode.VendorFirst
-                                              ? " (vendor-specific; see the PLC's documentation)"
-                                              : "")),
+            0 => AxisErrors.Create(axis, error, "the PLC reports ErrorStop without a fault code",
+                AxisErrors.Read(map, "State", map.State, s.State),
+                AxisErrors.Read(map, "FaultCode", map.FaultCode, s.FaultCode, "1–7 or ≥ 100")),
+            1 => AxisErrors.Create(axis, error, "drive fault", fault),
+            2 => AxisErrors.Create(axis, error, $"limit switch tripped ({LimitText(s.Flags)})", fault,
+                AxisErrors.Read(map, "Flags", map.Flags, $"0x{(ushort)s.Flags:X4}")),
+            3 => AxisErrors.Create(axis, error, "following error", fault),
+            4 => AxisErrors.Create(axis, error, "the PLC watchdog tripped; Reset, then re-command (no re-home)", fault,
+                AxisErrors.Read(map, "WatchdogFault", map.WatchdogFault, snapshot.WatchdogFault),
+                AxisErrors.Read(map, "WatchdogTrips", map.WatchdogTrips, snapshot.WatchdogTrips)),
+            5 => AxisErrors.Create(axis, error, "homing failed in the PLC sequence", fault),
+            6 => AxisErrors.Create(axis, error, "the PLC lost its drive link", fault),
+            7 => AxisErrors.Create(axis, error, "safety circuit (E-stop / guard)", fault),
+            _ => AxisErrors.Create(axis, error, $"vendor fault {s.FaultCode}", fault),
         };
     }
 
@@ -261,13 +284,13 @@ internal sealed class AxisEngine : IDisposable
     {
         AxisStatus status;
         AxisState oldState, newState;
-        ushort oldRaw;
+        PlcSnapshot? previous;
         bool leaseLost, overlayWasCommsLost;
         lock (_sync)
         {
             if (!_attached) return;
             oldState = StateOf();
-            oldRaw = _snapshot?.Status.State ?? 0;
+            previous = _snapshot;
             overlayWasCommsLost = _overlay?.Error == MotionError.CommunicationLost && !_tickOkSinceOverlay;
             _snapshot = snapshot;
             _tickNo++;
@@ -275,9 +298,9 @@ internal sealed class AxisEngine : IDisposable
 
             leaseLost = snapshot.LeaseOwner != _ownerId && _overlay?.Error != MotionError.LeaseHeld;
             if (leaseLost)
-                _overlay = new Overlay(MotionError.LeaseHeld,
-                    $"{Name}: LeaseOwner ({_map.Describe(_map.LeaseOwner)}) is {snapshot.LeaseOwner}, not ours "
-                    + $"({_ownerId}); another commander holds the axis. Reconnect to take it back.");
+                _overlay = new Overlay(MotionError.LeaseHeld, AxisErrors.Message(Name, MotionError.LeaseHeld,
+                    "another commander took the axis; commanding stopped. Reconnect to take it back",
+                    AxisErrors.Read(_map, "LeaseOwner", _map.LeaseOwner, snapshot.LeaseOwner, _ownerId.ToString(Inv))));
 
             UpdateLimits(snapshot.Status, attach: false);
             newState = StateOf();
@@ -286,14 +309,15 @@ internal sealed class AxisEngine : IDisposable
         }
 
         if (leaseLost)
-            _logger?.LogError("{Axis}: LEASE LOST — LeaseOwner ({Register}) = {Owner}, ours is {Mine}. Commanding "
-                + "stops; the axis shows ErrorStop / LeaseHeld until reconnect",
-                Name, _map.Describe(_map.LeaseOwner), snapshot.LeaseOwner, _ownerId);
+            _logger?.LogError("{Message}", AxisErrors.Message(Name, MotionError.LeaseHeld,
+                "LEASE LOST: another commander took the axis; commanding stopped, the axis shows ErrorStop / LeaseHeld "
+                + "until reconnect", AxisErrors.Read(_map, "LeaseOwner", _map.LeaseOwner, snapshot.LeaseOwner,
+                    _ownerId.ToString(Inv))));
         if (overlayWasCommsLost)
             _logger?.LogInformation("{Axis}: the PLC answers again; the CommunicationLost overlay stays until ResetAsync",
                 Name);
 
-        LogTransition(oldState, newState, oldRaw, snapshot);
+        LogTransition(oldState, newState, previous, snapshot);
         RaiseStatus(status);
     }
 
@@ -309,31 +333,35 @@ internal sealed class AxisEngine : IDisposable
             oldState = StateOf();
             latched = _overlay is null;
             if (latched)
-                _overlay = new Overlay(MotionError.CommunicationLost,
-                    $"{Name}: communication with the PLC lost — {error.Message}");
+                _overlay = new Overlay(MotionError.CommunicationLost, error.Message);
             _tickOkSinceOverlay = false;
             status = StatusOf();
             SignalLocked();
         }
 
         if (latched)
-            _logger?.LogError("{Axis}: state {Old} → ErrorStop (overlay CommunicationLost: {Message})",
+            _logger?.LogError("{Axis}: state {Old} → ErrorStop (overlay CommunicationLost). {Message}",
                 Name, oldState, error.Message);
         RaiseStatus(status);
     }
 
-    private void LogTransition(AxisState oldState, AxisState newState, ushort oldRaw, PlcSnapshot snapshot)
+    private void LogTransition(AxisState oldState, AxisState newState, PlcSnapshot? previous, PlcSnapshot snapshot)
     {
-        var raw = snapshot.Status.State;
-        if (!IsKnownState(raw) && raw != oldRaw)
-            _logger?.LogWarning("{Axis}: the PLC reports State ({Register}) = {Raw}, which map version 1 does not "
-                + "define; read as ErrorStop / DriveFault", Name, _map.Describe(_map.State), raw);
+        var raw = snapshot.Status;
+        // The PLC's own ErrorStop, logged once per new cause — also under an overlay, so a watchdog trip the PLC
+        // reports after a link loss is its own Machine/WatchdogTripped line (protocol § Errors and debugging, rule 2).
+        var plcFaulted = MapState(raw.State) == AxisState.ErrorStop;
+        var wasFaulted = previous is { } p && MapState(p.Status.State) == AxisState.ErrorStop;
+        var sameCause = wasFaulted && previous!.Value.Status.State == raw.State
+                                   && previous.Value.Status.FaultCode == raw.FaultCode;
+        if (plcFaulted && !sameCause)
+            _logger?.LogError("{Message}", FaultException(Name, _map, snapshot).Message);
 
         if (oldState == newState) return;
         _logger?.LogInformation(
-            "{Axis}: state {Old} → {New} (State {Register} = {Raw}, FaultCode {FaultRegister} = {Fault}, Flags 0x{Flags:X4})",
-            Name, oldState, newState, _map.Describe(_map.State), raw, _map.Describe(_map.FaultCode),
-            snapshot.Status.FaultCode, (ushort)snapshot.Status.Flags);
+            "{Axis}: state {Old} → {New} (State ({Register}) = {Raw}, FaultCode ({FaultRegister}) = {Fault}, Flags 0x{Flags:X4})",
+            Name, oldState, newState, _map.Describe(_map.State), raw.State, _map.Describe(_map.FaultCode),
+            raw.FaultCode, (ushort)raw.Flags);
     }
 
     private void UpdateLimits(StatusBlock s, bool attach)
@@ -426,13 +454,14 @@ internal sealed class AxisEngine : IDisposable
                     or AxisState.Stopping)
                     await StopCoreAsync(token);
 
-                var (_, ackTick) = await SendCommandAsync("PowerAsync(false)", CommandBits.None, null, false,
+                var (_, ackTick) = await SendCommandAsync("Enable 0", CommandBits.None, null, false,
                     ChannelPriority.Move, token);
                 await AwaitAsync(ackTick - 1,
                     s => MapState(s.Status.State) is AxisState.Disabled or AxisState.ErrorStop,
                     failOnErrorStop: false, _options.EnableTimeout,
-                    () => new MotionException(MotionError.DriveFault,
-                        $"{Name}: did not reach Disabled within {Secs(_options.EnableTimeout)} after Enable 0", Name),
+                    () => Error(MotionError.DriveFault,
+                        $"did not reach Disabled within {Secs(_options.EnableTimeout)} after Enable 0",
+                        StateRead("0 (Disabled)")),
                     token);
             }, ct);
 
@@ -451,8 +480,9 @@ internal sealed class AxisEngine : IDisposable
         var (_, ackTick) = await SendCommandAsync("Enable 1", CommandBits.None, null, true, ChannelPriority.Move, ct);
         await AwaitAsync(ackTick - 1, s => MapState(s.Status.State) == AxisState.Standstill,
             failOnErrorStop: true, _options.EnableTimeout,
-            () => new MotionException(MotionError.DriveFault,
-                $"{Name}: did not reach Standstill within {Secs(_options.EnableTimeout)} after Enable 1", Name),
+            () => Error(MotionError.DriveFault,
+                $"did not reach Standstill within {Secs(_options.EnableTimeout)} after Enable 1",
+                StateRead("1 (Standstill)")),
             ct);
     }
 
@@ -467,7 +497,7 @@ internal sealed class AxisEngine : IDisposable
             {
                 if (State == AxisState.Disabled) await EnergiseAsync(token);
 
-                var (_, ackTick) = await SendCommandAsync("HomeAsync", CommandBits.Home, null, null, ChannelPriority.Move,
+                var (_, ackTick) = await SendCommandAsync("Home", CommandBits.Home, null, null, ChannelPriority.Move,
                     token);
                 try
                 {
@@ -478,8 +508,9 @@ internal sealed class AxisEngine : IDisposable
                 catch (BudgetExceeded)
                 {
                     await StopCoreAsync(CancellationToken.None);
-                    throw new MotionException(MotionError.HomeLatchFailed,
-                        $"{Name}: homing did not finish within {Secs(_options.HomingTimeout)}; the axis was stopped", Name);
+                    throw Error(MotionError.HomeLatchFailed,
+                        $"homing did not finish within {Secs(_options.HomingTimeout)}; the axis was stopped",
+                        StateRead("1 (Standstill)"), FlagsRead("Homed set"));
                 }
             }, ct);
 
@@ -525,13 +556,13 @@ internal sealed class AxisEngine : IDisposable
             },
             async token =>
             {
-                var (_, ackTick) = await SendCommandAsync("MoveVelocityAsync", CommandBits.MoveVelocity,
+                var (_, ackTick) = await SendCommandAsync("MoveVelocity", CommandBits.MoveVelocity,
                     [0, rawVelocity, RawAcceleration()], null, ChannelPriority.Move, token);
                 await AwaitAsync(ackTick - 1, s => MapState(s.Status.State) == AxisState.ContinuousMotion,
                     failOnErrorStop: true, ContinuousMotionConfirmTimeout,
-                    () => new MotionException(MotionError.MotionFailed,
-                        $"{Name}: ContinuousMotion not observed within "
-                        + $"{ContinuousMotionConfirmTimeout.TotalMilliseconds} ms of the MoveVelocity ack", Name),
+                    () => Error(MotionError.MotionFailed,
+                        $"ContinuousMotion not observed within {ContinuousMotionConfirmTimeout.TotalMilliseconds} ms "
+                        + "of the MoveVelocity ack", StateRead("4 (ContinuousMotion)")),
                     token);
             }, ct);
     }
@@ -568,17 +599,17 @@ internal sealed class AxisEngine : IDisposable
         lock (_sync)
         {
             if (!_attached)
-                throw new MotionException(MotionError.CommunicationLost,
-                    $"{Name}: not attached to the PLC; nothing of ours is moving", Name);
+                throw Error(MotionError.CommunicationLost,
+                    "Stop not sent: the device is not attached (ConnectAsync has not completed); nothing of ours is moving");
         }
 
-        var (_, ackTick) = await SendCommandAsync("StopAsync", CommandBits.Stop, null, null, ChannelPriority.Stop, ct,
+        var (_, ackTick) = await SendCommandAsync("Stop", CommandBits.Stop, null, null, ChannelPriority.Stop, ct,
             honourOverlay: false);
         await AwaitAsync(ackTick - 1,
             s => MapState(s.Status.State) is AxisState.Standstill or AxisState.Disabled or AxisState.ErrorStop,
             failOnErrorStop: false, _options.StopTimeout,
-            () => new MotionException(MotionError.MotionFailed,
-                $"{Name}: still moving {Secs(_options.StopTimeout)} after Stop", Name),
+            () => Error(MotionError.MotionFailed, $"still moving {Secs(_options.StopTimeout)} after Stop",
+                StateRead("1 (Standstill)"), VelocityRead()),
             ct, honourOverlay: false);
     }
 
@@ -594,11 +625,11 @@ internal sealed class AxisEngine : IDisposable
                 {
                     case { Error: MotionError.LeaseHeld } lease:
                         throw new MotionException(MotionError.LeaseHeld,
-                            $"{lease.Message} ResetAsync does not clear a lost lease.", Name);
-                    case { Error: MotionError.CommunicationLost } when !_tickOkSinceOverlay:
+                            $"{lease.Message} ResetAsync does not clear a lost lease; reconnect.", Name);
+                    case { Error: MotionError.CommunicationLost } overlay when !_tickOkSinceOverlay:
                         throw new MotionException(MotionError.CommunicationLost,
-                            $"{Name}: the PLC has not answered a tick since the communication loss; retry once the link "
-                            + "is back", Name);
+                            $"{overlay.Message} ResetAsync refused: no tick has succeeded since; retry once the link is "
+                            + "back.", Name);
                     case { Error: MotionError.CommunicationLost }:
                         _overlay = null;
                         _logger?.LogInformation("{Axis}: CommunicationLost overlay cleared by ResetAsync", Name);
@@ -621,14 +652,14 @@ internal sealed class AxisEngine : IDisposable
 
                 if (MapState(snapshot.Status.State) != AxisState.ErrorStop) return;
 
-                await SendCommandAsync("ResetAsync: Enable 0", CommandBits.None, null, false, ChannelPriority.Move, token);
-                var (_, ackTick) = await SendCommandAsync("ResetAsync", CommandBits.Reset, null, null,
+                await SendCommandAsync("Enable 0 (before Reset)", CommandBits.None, null, false, ChannelPriority.Move, token);
+                var (_, ackTick) = await SendCommandAsync("Reset", CommandBits.Reset, null, null,
                     ChannelPriority.Move, token);
                 await AwaitAsync(ackTick - 1, s => MapState(s.Status.State) != AxisState.ErrorStop,
                     failOnErrorStop: false, _options.EnableTimeout,
-                    () => new MotionException(MotionError.DriveFault,
-                        $"{Name}: the fault would not reset within {Secs(_options.EnableTimeout)} "
-                        + $"({MapFault(LastBlock()).Message})", Name),
+                    () => Error(MotionError.DriveFault,
+                        $"the fault would not reset within {Secs(_options.EnableTimeout)} after the Reset edge",
+                        StateRead("not 7 (ErrorStop)"), FaultRead()),
                     token);
             }, ct, requireConnection: false);
 
@@ -640,7 +671,7 @@ internal sealed class AxisEngine : IDisposable
     private async Task DiscreteMoveAsync(string verb, int rawTarget, int rawSpeed, double reading,
         CancellationToken ct)
     {
-        var (_, ackTick) = await SendCommandAsync(verb, CommandBits.MoveAbsolute,
+        var (_, ackTick) = await SendCommandAsync("MoveAbsolute", CommandBits.MoveAbsolute,
             [rawTarget, rawSpeed, RawAcceleration()], null, ChannelPriority.Move, ct);
 
         var distance = Math.Abs(Words.FromRaw(rawTarget) - reading);
@@ -654,15 +685,18 @@ internal sealed class AxisEngine : IDisposable
         catch (BudgetExceeded)
         {
             await StopCoreAsync(CancellationToken.None);
-            throw new MotionException(MotionError.MotionFailed,
-                $"{Name}: {verb} to {Fmt(Words.FromRaw(rawTarget))} {_unitSymbol} did not finish within "
-                + $"{Secs(budget)} (distance ÷ speed + margin); the axis was stopped", Name);
+            throw Error(MotionError.MotionFailed,
+                $"{verb} to {Fmt(Words.FromRaw(rawTarget))} {_unitSymbol} did not arrive within {Secs(budget)} "
+                + "(distance ÷ speed + margin); the axis was stopped",
+                StateRead("1 (Standstill)"), PositionRead(rawTarget));
         }
 
         if (!arrived.Status.InPosition)
-            throw new MotionException(MotionError.MotionFailed,
-                $"{Name}: {verb} to {Fmt(Words.FromRaw(rawTarget))} {_unitSymbol} stopped outside the in-position window "
-                + $"at {Fmt(Words.FromRaw(arrived.Status.ActualPosition))} {_unitSymbol}", Name);
+            throw Error(MotionError.MotionFailed,
+                $"{verb} to {Fmt(Words.FromRaw(rawTarget))} {_unitSymbol} stopped outside the in-position window",
+                AxisErrors.Read(_map, "ActualPosition", _map.ActualPosition, arrived.Status.ActualPosition,
+                    rawTarget.ToString(Inv)),
+                AxisErrors.Read(_map, "Flags", _map.Flags, $"0x{(ushort)arrived.Status.Flags:X4}", "InPosition set"));
     }
 
     // ═══════════════════════ guards ═══════════════════════
@@ -671,8 +705,8 @@ internal sealed class AxisEngine : IDisposable
     {
         if (state != AxisState.Standstill) throw RefuseState(verb, state);
         if (!s.Status.Homed)
-            throw new MotionException(MotionError.NotHomed,
-                $"{Name}: {verb} needs a homed axis (Flags.Homed is clear); home the axis first", Name);
+            throw Error(MotionError.NotHomed, $"{verb} needs a homed axis; home the axis first",
+                AxisErrors.Read(_map, "Flags", _map.Flags, $"0x{(ushort)s.Status.Flags:X4}", "Homed set"));
         GuardReadingRange(s);
         GuardLimitSource();
         reading = Words.FromRaw(s.Status.ActualPosition);
@@ -687,19 +721,20 @@ internal sealed class AxisEngine : IDisposable
         double? min = _options.ReadMin ?? (travel.Source == LimitSource.None ? null : travel.TravelMin);
         double? max = _options.ReadMax ?? (travel.Source == LimitSource.None ? null : travel.TravelMax);
         if ((min is { } lo && reading < lo) || (max is { } hi && reading > hi))
-            throw new MotionException(MotionError.NotHomed,
-                $"{Name}: position {Fmt(reading)} {_unitSymbol} is outside the reading range "
-                + $"{(min is { } a ? Fmt(a) : "-∞")}..{(max is { } b ? Fmt(b) : "+∞")} {_unitSymbol}; "
-                + "the reading cannot be trusted — home the axis first", Name);
+            throw Error(MotionError.NotHomed,
+                $"position {Fmt(reading)} {_unitSymbol} is outside the reading range "
+                + $"{(min is { } a ? Fmt(a) : "-∞")}..{(max is { } b ? Fmt(b) : "+∞")} {_unitSymbol}; the reading cannot "
+                + "be trusted, home the axis first",
+                AxisErrors.Read(_map, "ActualPosition", _map.ActualPosition, s.Status.ActualPosition));
     }
 
     /// <summary>G6: a limit source must exist.</summary>
     private void GuardLimitSource()
     {
         if (_limits.Units.Source == LimitSource.None)
-            throw new MotionException(MotionError.OutOfRange,
-                $"{Name}: no limit source — the PLC publishes no TravelMin/TravelMax/MaxVelocity (S+8…S+13) and none are "
-                + "configured; no move is accepted until the machine's limits are known", Name);
+            throw Error(MotionError.OutOfRange,
+                "no limit source: the PLC publishes no TravelMin/TravelMax/MaxVelocity and none are configured; no move "
+                + "is accepted until the machine's limits are known", LimitReads());
     }
 
     /// <summary>G7: the target inside TravelMin..TravelMax and representable; refused, never clamped.</summary>
@@ -707,9 +742,10 @@ internal sealed class AxisEngine : IDisposable
     {
         var raw = Words.ToRaw(target, "target", Name);
         if (raw < _limits.RawMin || raw > _limits.RawMax)
-            throw new MotionException(MotionError.OutOfRange,
-                $"{Name}: {Fmt(target)} {_unitSymbol} is outside TravelMin..TravelMax {Fmt(_limits.Units.TravelMin)}.."
-                + $"{Fmt(_limits.Units.TravelMax)} {_unitSymbol} ({_limits.Units.SourceText})", Name);
+            throw Error(MotionError.OutOfRange,
+                $"{Fmt(target)} {_unitSymbol} is outside TravelMin..TravelMax {Fmt(_limits.Units.TravelMin)}.."
+                + $"{Fmt(_limits.Units.TravelMax)} {_unitSymbol} ({_limits.Units.SourceText}); refused, not clamped",
+                LimitReads());
         return raw;
     }
 
@@ -719,9 +755,9 @@ internal sealed class AxisEngine : IDisposable
         var magnitude = Math.Abs(speed);
         var raw = Math.Round(magnitude * Words.Scale, MidpointRounding.AwayFromZero);
         if (double.IsNaN(raw) || raw < 1 || raw > _limits.RawMaxVelocity)
-            throw new MotionException(MotionError.UnreachableSpeed,
-                $"{Name}: {Fmt(speed)} {_speedSymbol} is outside {Fmt(Words.Quantum)}..{Fmt(_limits.Units.MaxVelocity)} "
-                + $"{_speedSymbol} ({_limits.Units.SourceText})", Name);
+            throw Error(MotionError.UnreachableSpeed,
+                $"{Fmt(speed)} {_speedSymbol} is outside {Fmt(Words.Quantum)}..{Fmt(_limits.Units.MaxVelocity)} "
+                + $"{_speedSymbol} ({_limits.Units.SourceText}); refused, not clamped", LimitReads());
         var value = (int)raw;
         return signed && speed < 0 ? -value : value;
     }
@@ -730,9 +766,9 @@ internal sealed class AxisEngine : IDisposable
     private void GuardSense(RotationSense? sense)
     {
         if (sense is { } s && s != RotationSense.Shortest)
-            throw new MotionException(MotionError.UnsupportedSense,
-                $"{Name}: RotationSense.{s} is not supported; map version 1 has limited rotary travel with no wrap, "
-                + "so only Shortest (the direct move) exists", Name);
+            throw Error(MotionError.UnsupportedSense,
+                $"RotationSense.{s} is not supported; map version 1 has limited rotary travel with no wrap, so only "
+                + "Shortest (the direct move) exists");
     }
 
     private double ResolveSpeed(SpeedRequest request) =>
@@ -740,13 +776,17 @@ internal sealed class AxisEngine : IDisposable
 
     private MotionException RefuseState(string verb, AxisState state) => state switch
     {
-        AxisState.ErrorStop => new MotionException(MotionError.Busy,
-            $"{Name}: {verb} refused in ErrorStop ({(_overlay?.Message ?? (_snapshot is { } s ? MapFault(s.Status, s.WatchdogTrips).Message : "no status"))}); call ResetAsync",
-            Name),
-        AxisState.Disabled => new MotionException(MotionError.Busy,
-            $"{Name}: {verb} refused while Disabled; power on or home first", Name),
-        _ => new MotionException(MotionError.Busy, $"{Name}: {verb} refused in state {state}", Name),
+        AxisState.ErrorStop => Error(MotionError.Busy,
+            $"{verb} refused in ErrorStop ({ErrorStopCause()}); call ResetAsync", StateRead()),
+        AxisState.Disabled => Error(MotionError.Busy, $"{verb} refused while Disabled; power on or home first",
+            StateRead()),
+        _ => Error(MotionError.Busy, $"{verb} refused in state {state}", StateRead()),
     };
+
+    private string ErrorStopCause() =>
+        _overlay is { } o ? o.Error.ToString()
+        : _snapshot is { } s ? $"{MotionErrorClasses.Of(FaultError(s.Status))}/{FaultError(s.Status)}"
+        : "no status";
 
     private int RawAcceleration() =>
         _options.Acceleration is { } a ? Words.ToRaw(a, "Acceleration", Name) : 0;
@@ -764,15 +804,14 @@ internal sealed class AxisEngine : IDisposable
             {
                 // G1: connected and no overlay (ResetAsync handles the overlay itself).
                 if (!_attached || _snapshot is null)
-                    throw new MotionException(MotionError.CommunicationLost,
-                        $"{Name}: {verb} refused — not attached to the PLC", Name);
+                    throw Error(MotionError.CommunicationLost,
+                        $"{verb} not sent: the device is not attached (ConnectAsync has not completed)");
                 if (requireConnection && _overlay is { } overlay)
-                    throw new MotionException(overlay.Error, $"{overlay.Message} ({verb} refused)", Name);
+                    throw new MotionException(overlay.Error, $"{overlay.Message} {verb} refused until it clears.", Name);
 
                 // G2: one verb at a time.
                 if (_running is { } other)
-                    throw new MotionException(MotionError.Busy,
-                        $"{Name}: {verb} refused — {other.Verb} is still running", Name);
+                    throw Error(MotionError.Busy, $"{verb} refused: {other.Verb} is still running");
 
                 guards?.Invoke(_snapshot.Value, StateOf());
                 _running = running;
@@ -781,8 +820,7 @@ internal sealed class AxisEngine : IDisposable
         catch (MotionException ex)
         {
             running.Dispose();
-            _logger?.LogWarning("{Axis}: refused {Verb} ({Error}) — {Message}; nothing written", Name, verb, ex.Error,
-                ex.Message);
+            _logger?.LogWarning("{Message} Nothing was written.", ex.Message);
             throw;
         }
 
@@ -807,7 +845,7 @@ internal sealed class AxisEngine : IDisposable
         }
         catch (MotionException ex)
         {
-            _logger?.LogWarning("{Axis}: {Verb} failed ({Error}) — {Message}", Name, verb, ex.Error, ex.Message);
+            _logger?.LogWarning("{Message}", ex.Message);
             throw;
         }
         finally
@@ -867,10 +905,10 @@ internal sealed class AxisEngine : IDisposable
         }
         catch (BudgetExceeded)
         {
+            var seen = LastBlock();
             await ClearEdgeAsync(verb, level, seq, lane, CancellationToken.None, bestEffort: true);
-            throw new MotionException(MotionError.CommunicationLost,
-                $"{Name}: PLC did not acknowledge CommandSeq {seq} ({verb}) within "
-                + $"{RegisterMap.AckTimeout.TotalMilliseconds} ms (CommandAck {LastBlock().CommandAck})", Name);
+            throw AxisErrors.Command(Name, MotionError.NotAcknowledged, $"{verb} not accepted", seq, seen.CommandAck,
+                seen.State, $"after {RegisterMap.AckTimeout.TotalMilliseconds.ToString(Inv)} ms");
         }
 
         if (edge != CommandBits.None)
@@ -896,7 +934,7 @@ internal sealed class AxisEngine : IDisposable
 
     /// <summary>
     /// Waits for a snapshot read after tick <paramref name="afterTick"/> that satisfies <paramref name="done"/>.
-    /// A snapshot in ErrorStop fails the wait with <see cref="MapFault"/> when <paramref name="failOnErrorStop"/>;
+    /// A snapshot in ErrorStop fails the wait with <see cref="FaultException"/> when <paramref name="failOnErrorStop"/>;
     /// an overlay fails it with the overlay's error; detaching fails it with CommunicationLost.
     /// </summary>
     private async Task<(PlcSnapshot Snapshot, long Tick)> AwaitAsync(long afterTick, Func<PlcSnapshot, bool> done,
@@ -921,7 +959,8 @@ internal sealed class AxisEngine : IDisposable
             }
 
             if (!attached)
-                throw new MotionException(MotionError.CommunicationLost, $"{Name}: detached from the PLC", Name);
+                throw Error(MotionError.CommunicationLost,
+                    "the wait was abandoned: the device was disconnected or disposed");
             if (honourOverlay && overlay is not null)
                 throw new MotionException(overlay.Error, overlay.Message, Name);
 
@@ -929,10 +968,7 @@ internal sealed class AxisEngine : IDisposable
             {
                 if (done(s)) return (s, tick);
                 if (failOnErrorStop && MapState(s.Status.State) == AxisState.ErrorStop)
-                {
-                    var (error, message) = MapFault(s.Status, s.WatchdogTrips);
-                    throw new MotionException(error, $"{Name}: {message}", Name);
-                }
+                    throw FaultException(Name, _map, s);
             }
 
             var remaining = budget - _time.GetElapsedTime(started);
@@ -971,6 +1007,35 @@ internal sealed class AxisEngine : IDisposable
     }
 
     private static string Fmt(double value) => value.ToString("0.###", Inv);
+
+    private MotionException Error(MotionError error, string what, params ReadOnlySpan<RegisterRead> reads) =>
+        AxisErrors.Create(Name, error, what, reads);
+
+    private RegisterRead StateRead(string? expected = null) =>
+        AxisErrors.Read(_map, "State", _map.State, LastBlock().State, expected);
+
+    private RegisterRead FlagsRead(string? expected = null) =>
+        AxisErrors.Read(_map, "Flags", _map.Flags, $"0x{(ushort)LastBlock().Flags:X4}", expected);
+
+    private RegisterRead FaultRead() => AxisErrors.Read(_map, "FaultCode", _map.FaultCode, LastBlock().FaultCode);
+
+    private RegisterRead VelocityRead() =>
+        AxisErrors.Read(_map, "ActualVelocity", _map.ActualVelocity, LastBlock().ActualVelocity, "0");
+
+    private RegisterRead PositionRead(int expectedRaw) =>
+        AxisErrors.Read(_map, "ActualPosition", _map.ActualPosition, LastBlock().ActualPosition, expectedRaw.ToString(Inv));
+
+    /// <summary>The three limit registers as last read (a configured source still shows what the PLC publishes).</summary>
+    private RegisterRead[] LimitReads()
+    {
+        var s = _snapshot?.Status ?? default;
+        return
+        [
+            AxisErrors.Read(_map, "TravelMin", _map.TravelMin, s.TravelMin),
+            AxisErrors.Read(_map, "TravelMax", _map.TravelMax, s.TravelMax),
+            AxisErrors.Read(_map, "MaxVelocity", _map.MaxVelocity, s.MaxVelocity),
+        ];
+    }
 
     private static string Secs(TimeSpan t) => $"{t.TotalSeconds.ToString("0.###", Inv)} s";
 

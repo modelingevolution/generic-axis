@@ -54,8 +54,8 @@ internal sealed record PlcTruth(
 /// no code with the driver's codec or register map: a misreading on one side is not mirrored into the other.
 ///
 /// <para>
-/// One scan every <see cref="MiniPlcOptions.ScanInterval"/> on its own thread: serve pending Modbus requests
-/// (synchronous server mode, so every request lands between scans), then read the command block, run the FR-11
+/// One scan every <see cref="MiniPlcOptions.ScanInterval"/> on its own thread, under the server's lock (requests are
+/// served between scans, never inside one): read the command block, run the FR-11
 /// watchdog, accept a new CommandSeq and ack it in the same scan that enters the state, integrate the motion, and
 /// publish the status block from that one image.
 /// </para>
@@ -64,7 +64,11 @@ internal sealed class MiniPlc : IAsyncDisposable
 {
     private const ushort Enable = 1, Home = 2, MoveAbs = 4, MoveVel = 8, Stop = 16, Reset = 32;
 
-    private readonly ModbusTcpServer _server = new(isAsynchronous: false);
+    // Asynchronous mode: each request is served at once under the server's Lock, which the scan also holds, so a
+    // request still lands between scans. Synchronous mode was tried first: there one failed response write (a
+    // connection the fixture dropped on purpose) ends FluentModbus's whole processing loop and the "PLC" never
+    // answers again, which is a fixture artefact, not a PLC behaviour.
+    private readonly ModbusTcpServer _server = new(isAsynchronous: true);
     private readonly GatedProvider _provider;
     private readonly ConcurrentQueue<Action> _actions = new();
     private readonly CancellationTokenSource _stop = new();
@@ -120,11 +124,25 @@ internal sealed class MiniPlc : IAsyncDisposable
     /// <summary>Drops every connection and refuses new ones while down; registers untouched.</summary>
     public void SetCommunicationDown(bool down) => _provider.SetDown(down);
 
+    /// <summary>Closes the next <paramref name="count"/> accepted connections straight after accepting them.</summary>
+    public void DropNextConnections(int count) => _provider.DropNext(count);
+
+    /// <summary>TCP connections accepted (dropped ones included) since construction.</summary>
+    public int AcceptedConnections => _provider.Accepted;
+
     /// <summary>Moves the axis instantly (a hand crank on the bench).</summary>
     public void Teleport(double position) => _actions.Enqueue(() => { _p = position; _v = 0; });
 
     /// <summary>Runs an action on the scan thread before the next scan.</summary>
     public void OnScan(Action action) => _actions.Enqueue(action);
+
+    /// <summary>Waits until a scan that started after this call has published its truth — requests are served
+    /// between scans, so a write awaited before this call is visible in <see cref="Truth"/> after it.</summary>
+    public async Task NextScanAsync()
+    {
+        var mark = Stopwatch.GetTimestamp();
+        await WaitFor(t => t.At > mark, TimeSpan.FromSeconds(2), "a scan after the mark");
+    }
 
     public async Task WaitFor(Func<PlcTruth, bool> predicate, TimeSpan timeout, string because)
     {
@@ -153,7 +171,6 @@ internal sealed class MiniPlc : IAsyncDisposable
                 // from one scan's image (protocol § Transport, Consistency).
                 lock (_server.Lock)
                 {
-                    _server.Update();
                     while (_actions.TryDequeue(out var action)) action();
                     Scan(dt, now);
                 }
@@ -456,7 +473,15 @@ internal sealed class MiniPlc : IAsyncDisposable
     {
         await _stop.CancelAsync();
         _thread.Join(TimeSpan.FromSeconds(2));
-        _server.Stop();
+        try
+        {
+            _server.Stop();
+        }
+        catch (AggregateException)
+        {
+            // A handler whose connection the fixture dropped on purpose ends with a socket error; teardown only.
+        }
+
         _server.Dispose();
         _provider.Dispose();
         _stop.Dispose();
@@ -468,6 +493,8 @@ internal sealed class MiniPlc : IAsyncDisposable
         private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
         private readonly ConcurrentBag<TcpClient> _accepted = [];
         private volatile bool _down;
+        private int _dropNext;
+        private int _acceptedCount;
 
         public GatedProvider()
         {
@@ -476,6 +503,10 @@ internal sealed class MiniPlc : IAsyncDisposable
         }
 
         public int Port { get; }
+
+        public int Accepted => Volatile.Read(ref _acceptedCount);
+
+        public void DropNext(int count) => Interlocked.Exchange(ref _dropNext, count);
 
         public void SetDown(bool down)
         {
@@ -492,7 +523,8 @@ internal sealed class MiniPlc : IAsyncDisposable
             while (true)
             {
                 var client = await _listener.AcceptTcpClientAsync();
-                if (_down)
+                Interlocked.Increment(ref _acceptedCount);
+                if (_down || Interlocked.Decrement(ref _dropNext) >= 0)
                 {
                     try { client.Client.Close(0); } catch { /* ignore */ }
                     continue;

@@ -116,10 +116,13 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
             }
 
             if (timeout is { } t && _time.GetElapsedTime(started) >= t)
-                throw new MotionException(MotionError.LeaseHeld,
-                    $"{_axis}: cannot attach to {_channel.Host}:{_channel.Port} — LeaseOwner is {owner}, held by a "
-                    + $"live commander for the whole lease timeout of {t.TotalSeconds:0.##} s ({decision.Reason})",
-                    _axis);
+                throw AxisErrors.Create(_axis, MotionError.LeaseHeld,
+                    $"cannot attach to {_channel.Host}:{_channel.Port}: another commander kept beating for the whole "
+                    + $"lease timeout of {t.TotalSeconds.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)} s",
+                    AxisErrors.Read(_map, "LeaseOwner", _map.LeaseOwner, owner, $"0 or {OwnerId}"),
+                    AxisErrors.Read(_map, "Heartbeat", _map.Heartbeat,
+                        $"{beat} (changed {_time.GetElapsedTime(lastChange).TotalSeconds.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)} s ago)",
+                        $"unchanged for {AdvisoryLease.Expiry.TotalSeconds.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)} s"));
 
             await Task.Delay(Interval, _time, ct);
 
@@ -176,7 +179,7 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
                 }
                 catch (MotionException ex)
                 {
-                    _logger?.LogWarning("{Axis}: heartbeat tick failed — {Message}", _axis, ex.Message);
+                    _logger?.LogWarning(ex, "{Axis}: heartbeat tick failed. {Message}", _axis, ex.Message);
                     Raise(TickFailed, ex);
                 }
             }
@@ -203,11 +206,10 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
             (ushort)snapshot.Status.Flags, snapshot.Status.ActualPosition, snapshot.Status.CommandAck);
 
         if (snapshot.WatchdogFault != 0 && _lastWatchdogFault == 0)
-            _logger?.LogError(
-                "{Axis}: WATCHDOG TRIPPED on {Host}:{Port} — WatchdogFault ({Register}) = {Fault}, {Trips} trip(s) since "
-                + "PLC power-up. Recovery is Reset, then re-command; no re-home",
-                _axis, _channel.Host, _channel.Port, _map.Describe(_map.WatchdogFault), snapshot.WatchdogFault,
-                snapshot.WatchdogTrips);
+            _logger?.LogError("{Message}", AxisErrors.Message(_axis, MotionError.WatchdogTripped,
+                $"WATCHDOG TRIPPED on {_channel.Host}:{_channel.Port}; recovery is Reset, then re-command (no re-home)",
+                AxisErrors.Read(_map, "WatchdogFault", _map.WatchdogFault, snapshot.WatchdogFault, "0"),
+                AxisErrors.Read(_map, "WatchdogTrips", _map.WatchdogTrips, snapshot.WatchdogTrips)));
         _lastWatchdogFault = snapshot.WatchdogFault;
 
         Interlocked.Increment(ref _ticks);

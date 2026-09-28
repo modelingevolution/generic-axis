@@ -69,6 +69,7 @@ internal sealed class LiveRig : IAsyncDisposable
         var track = Track(configure, owner);
         await track.ConnectAsync().WaitAsync(T);
         if (power) await track.Carriage.PowerAsync(true).WaitAsync(T);
+        await Plc.NextScanAsync();
         return track;
     }
 

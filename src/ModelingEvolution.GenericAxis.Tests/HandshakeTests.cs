@@ -39,11 +39,11 @@ public class HandshakeTests
 
         var info = rig.LogsAt(LogLevel.Information).Select(r => r.Message).ToArray();
         info.Should().Contain(m => m.Contains("TargetPosition") && m.Contains("2500000") && m.Contains("100000"));
-        info.Should().Contain(m => m.Contains("Command (C+0 (0)) = 0x0005") && m.Contains("CommandSeq (C+1 (1)) = 42"));
+        info.Should().Contain(m => m.Contains("Command (C+0 = 0) = 0x0005") && m.Contains("CommandSeq (C+1 = 1) = 42"));
         info.Should().Contain(m => m.Contains("clear edge") && m.Contains("0x0001") && m.Contains("= 42"));
     }
 
-    [Fact(DisplayName = "GA-U-34 A missing ack fails the command and clears the edge")]
+    [Fact(DisplayName = "GA-U-34 A missing ack is NotAcknowledged and clears the edge")]
     public async Task Home_NoAck_CommunicationLostAfter500msAndEdgeCleared()
     {
         await using var rig = await new DriverRig().ConnectAsync();
@@ -54,8 +54,10 @@ public class HandshakeTests
         for (var i = 0; i < 8 && !home.IsCompleted; i++) await rig.TickAsync();
 
         var ex = (await home.Invoking(h => h).Should().ThrowAsync<MotionException>()).Which;
-        ex.Error.Should().Be(MotionError.CommunicationLost);
-        ex.Message.Should().Contain("CommandSeq 1").And.Contain("500 ms");
+        ex.Error.Should().Be(MotionError.NotAcknowledged);
+        MotionErrorClasses.Of(ex).Should().Be(ErrorClass.Protocol);
+        ex.Message.Should().Be("carriage: Protocol/NotAcknowledged: Home not accepted. CommandSeq 1 written, "
+                               + "CommandAck 0 read after 500 ms, State 1 read.");
         (rig.Time.GetUtcNow() - started).Should().BeGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(500))
             .And.BeLessThanOrEqualTo(TimeSpan.FromMilliseconds(600));
         var last = rig.Plc.CommandWritesSince(0).Last();

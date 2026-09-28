@@ -36,7 +36,7 @@ public abstract class ModbusAxisDevice : IMotionDevice, IAsyncDisposable
         _logger = loggerFactory?.CreateLogger(GetType().FullName ?? nameof(ModbusAxisDevice));
 
         _channel = channelFactory is null
-            ? new ModbusChannel(options.Host, options.Port, _logger, new PriorityGate(clock))
+            ? new ModbusChannel(options.Host, options.Port, _logger, new PriorityGate(clock), options.Name, options.Map)
             : channelFactory(options, _logger);
         _heartbeat = new AxisHeartbeat(options.Name, _channel, (byte)options.UnitId, options.Map, ownerId,
             options.HeartbeatInterval, _logger, clock);
@@ -81,8 +81,8 @@ public abstract class ModbusAxisDevice : IMotionDevice, IAsyncDisposable
     public IMotionAxis this[string name] =>
         string.Equals(name, Axis.Name, StringComparison.OrdinalIgnoreCase)
             ? Axis
-            : throw new MotionException(MotionError.UnknownAxis,
-                $"Device '{Id}' has no axis named '{name}'. Declared axis: {Axis.Name}", name);
+            : throw AxisErrors.Create(name, MotionError.UnknownAxis,
+                $"device '{Id}' has no axis named '{name}'; its axis is '{Axis.Name}'");
 
     /// <summary>Raised after a completed attach.</summary>
     public event EventHandler? Connected;
@@ -99,9 +99,10 @@ public abstract class ModbusAxisDevice : IMotionDevice, IAsyncDisposable
     /// limit publication checked; a PLC that speaks another map is never written to) → take the lease → clear a
     /// predecessor's <c>WatchdogFault</c> → engine attach → start the beat.
     /// </summary>
-    /// <exception cref="MotionException"><c>CommunicationLost</c> for an unreachable PLC, another map version or an
-    /// invalid limit publication (ADR-12); <c>LeaseHeld</c> when another commander keeps beating.</exception>
-    /// <exception cref="ArgumentException">The configured reading range does not contain the PLC's travel.</exception>
+    /// <exception cref="MotionException"><c>CommunicationLost</c> (Transport) for an unreachable PLC;
+    /// <c>ProtocolMismatch</c> (Protocol) for another map version or an invalid limit publication (ADR-35);
+    /// <c>OutOfRange</c> (Commander) when the configured reading range does not contain the travel; <c>LeaseHeld</c>
+    /// (Commander) when another commander keeps beating.</exception>
     public async Task ConnectAsync(CancellationToken ct = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -152,8 +153,8 @@ public abstract class ModbusAxisDevice : IMotionDevice, IAsyncDisposable
                 _logger?.LogDebug(closeError, "{Axis}: closing the channel after a failed attach threw", o.Name);
             }
 
-            if (ex is not OperationCanceledException)
-                _logger?.LogWarning("{Axis}: attach to {Address} failed — {Message}", o.Name, Address, ex.Message);
+            if (ex is MotionException { Error: MotionError.CommunicationLost or MotionError.LeaseHeld })
+                _logger?.LogWarning("{Axis}: attach to {Address} failed. {Message}", o.Name, Address, ex.Message);
             throw;
         }
 
@@ -167,33 +168,57 @@ public abstract class ModbusAxisDevice : IMotionDevice, IAsyncDisposable
         Connected?.Invoke(this, EventArgs.Empty);
     }
 
-    /// <summary>Map version (S+14) and limit publication (S+8…S+13) before any write; the reading range against the
-    /// effective travel.</summary>
+    /// <summary>
+    /// Map version (S+14) and limit publication (S+8…S+13) before any write — both <c>ProtocolMismatch</c>, the PLC
+    /// answering outside the protocol (ADR-35) — and the configured reading range against the effective travel
+    /// (<c>OutOfRange</c>: the configuration contradicts the machine). Every refusal logs at Error as well as throwing.
+    /// </summary>
     private void CheckMap(StatusBlock s)
     {
         var o = Options;
+        var m = o.Map;
+        MotionException? refusal = null;
         if (s.MapVersion != RegisterMap.Version)
-            throw new MotionException(MotionError.CommunicationLost,
-                $"{o.Name}: PLC serves map version {s.MapVersion}; this driver speaks {RegisterMap.Version} "
-                + $"(register S+14 = {o.Map.MapVersion}). Nothing was written.", o.Name);
+        {
+            refusal = AxisErrors.Create(o.Name, MotionError.ProtocolMismatch, "attach refused; nothing was written",
+                AxisErrors.Read(m, "MapVersion", m.MapVersion, s.MapVersion, RegisterMap.Version.ToString(Inv)));
+        }
+        else if (s.LimitsPublished && !s.LimitsValid)
+        {
+            refusal = AxisErrors.Create(o.Name, MotionError.ProtocolMismatch,
+                "attach refused: the limit publication is partial or not sane; nothing was written",
+                AxisErrors.Read(m, "TravelMin", m.TravelMin, s.TravelMin),
+                AxisErrors.Read(m, "TravelMax", m.TravelMax, s.TravelMax),
+                AxisErrors.Read(m, "MaxVelocity", m.MaxVelocity, s.MaxVelocity,
+                    "all three 0, or TravelMin < TravelMax and MaxVelocity > 0"));
+        }
+        else
+        {
+            var limits = AxisEngine.ComputeLimits(s, o).Units;
+            if (limits.Source != LimitSource.None)
+            {
+                var plc = limits.Source == LimitSource.Plc;
+                if (o.ReadMin is { } rmin && rmin > limits.TravelMin)
+                    refusal = AxisErrors.Create(o.Name, MotionError.OutOfRange,
+                        $"attach refused: configured ReadMin {Fmt(rmin)} is above TravelMin {Fmt(limits.TravelMin)} "
+                        + $"({limits.SourceText}), expected ReadMin ≤ TravelMin",
+                        plc ? [AxisErrors.Read(m, "TravelMin", m.TravelMin, s.TravelMin)] : []);
+                else if (o.ReadMax is { } rmax && rmax < limits.TravelMax)
+                    refusal = AxisErrors.Create(o.Name, MotionError.OutOfRange,
+                        $"attach refused: configured ReadMax {Fmt(rmax)} is below TravelMax {Fmt(limits.TravelMax)} "
+                        + $"({limits.SourceText}), expected ReadMax ≥ TravelMax",
+                        plc ? [AxisErrors.Read(m, "TravelMax", m.TravelMax, s.TravelMax)] : []);
+            }
+        }
 
-        if (s.LimitsPublished && !s.LimitsValid)
-            throw new MotionException(MotionError.CommunicationLost,
-                $"{o.Name}: PLC publishes an invalid limit set in S+8…S+13 ({o.Map.TravelMin}…{o.Map.MaxVelocity + 1}): "
-                + $"TravelMin {s.TravelMin}, TravelMax {s.TravelMax}, MaxVelocity {s.MaxVelocity} (raw). A publication "
-                + "must be all zero or satisfy TravelMin < TravelMax and MaxVelocity > 0. Nothing was written.", o.Name);
-
-        var limits = AxisEngine.ComputeLimits(s, o).Units;
-        if (limits.Source == LimitSource.None) return;
-        if (o.ReadMin is { } rmin && rmin > limits.TravelMin)
-            throw new ArgumentException(
-                $"{o.Name}: ReadMin {rmin} is above TravelMin {limits.TravelMin} ({limits.SourceText}); the reading "
-                + "range must contain the travel", nameof(GenericAxisOptions.ReadMin));
-        if (o.ReadMax is { } rmax && rmax < limits.TravelMax)
-            throw new ArgumentException(
-                $"{o.Name}: ReadMax {rmax} is below TravelMax {limits.TravelMax} ({limits.SourceText}); the reading "
-                + "range must contain the travel", nameof(GenericAxisOptions.ReadMax));
+        if (refusal is null) return;
+        _logger?.LogError("{Message}", refusal.Message);
+        throw refusal;
     }
+
+    private static readonly System.Globalization.CultureInfo Inv = System.Globalization.CultureInfo.InvariantCulture;
+
+    private static string Fmt(double value) => value.ToString("0.###", Inv);
 
     /// <summary>
     /// Clean disconnect (ADR-8): Stop (failure logged, teardown continues) → Enable 0 → stop beating and release the

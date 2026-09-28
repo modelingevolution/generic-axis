@@ -1,0 +1,195 @@
+using System.Text.RegularExpressions;
+using FluentAssertions;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Testing;
+using ModelingEvolution.GenericAxis.Tests.Support;
+using RocketWelder.SDK.Devices.Motion;
+using Mm = ModelingEvolution.Drawing.Units.Length<double, ModelingEvolution.Drawing.Units.Millimetre<double>>;
+
+namespace ModelingEvolution.GenericAxis.Tests;
+
+/// <summary>test-scenarios.md § Unit — Error classes and messages (GA-U-66, GA-U-67, GA-U-69).</summary>
+public class ErrorClassTests
+{
+    /// <summary>protocol.md § Errors and debugging, the class table (plus the SDK's two caller errors).</summary>
+    public static TheoryData<MotionError, ErrorClass> ProtocolTable => new()
+    {
+        { MotionError.CommunicationLost, ErrorClass.Transport },
+        { MotionError.ProtocolMismatch, ErrorClass.Protocol },
+        { MotionError.NotAcknowledged, ErrorClass.Protocol },
+        { MotionError.DriveFault, ErrorClass.Machine },
+        { MotionError.LimitTripped, ErrorClass.Machine },
+        { MotionError.MotionFailed, ErrorClass.Machine },
+        { MotionError.WatchdogTripped, ErrorClass.Machine },
+        { MotionError.HomeLatchFailed, ErrorClass.Machine },
+        { MotionError.SafetyStop, ErrorClass.Machine },
+        { MotionError.Busy, ErrorClass.Commander },
+        { MotionError.NotHomed, ErrorClass.Commander },
+        { MotionError.OutOfRange, ErrorClass.Commander },
+        { MotionError.UnreachableSpeed, ErrorClass.Commander },
+        { MotionError.UnsupportedSense, ErrorClass.Commander },
+        { MotionError.LeaseHeld, ErrorClass.Commander },
+        { MotionError.UnknownAxis, ErrorClass.Commander },
+        { MotionError.WrongAxisKind, ErrorClass.Commander },
+    };
+
+    [Theory(DisplayName = "GA-U-66 Every MotionError has exactly one class")]
+    [MemberData(nameof(ProtocolTable))]
+    public void Of_ProtocolTable(MotionError error, ErrorClass expected) =>
+        MotionErrorClasses.Of(error).Should().Be(expected);
+
+    [Fact(DisplayName = "GA-U-66 the table covers every member of the SDK enum")]
+    public void Of_EveryMember_IsMappedAndInTheTable()
+    {
+        var table = ProtocolTable.Select(row => (MotionError)row[0]).ToHashSet();
+        var members = Enum.GetValues<MotionError>();
+
+        members.Should().Contain(MotionError.ProtocolMismatch, "control: the SDK 2.30.0 members are visible");
+        members.Should().BeSubsetOf(table, "a new, unmapped MotionError member must be classified deliberately");
+        foreach (var m in members) FluentActions.Invoking(() => MotionErrorClasses.Of(m)).Should().NotThrow();
+        FluentActions.Invoking(() => MotionErrorClasses.Of((MotionError)999))
+            .Should().Throw<ArgumentOutOfRangeException>("an unknown member is never defaulted into a class");
+    }
+
+    private static readonly Regex Shape = new(
+        @"^carriage: (Transport|Protocol|Machine|Commander)/[A-Za-z]+: .+\. Read [A-Za-z]+ \((C|S)\+[0-9]+ = [0-9]+\) = [^,]+",
+        RegexOptions.Compiled);
+
+    [Fact(DisplayName = "GA-U-67 Messages state what was seen (Machine, Commander, Protocol)")]
+    public async Task Messages_OneExamplePerClass_ProtocolShape()
+    {
+        var machine = AxisEngine.FaultException("carriage", RegisterMap.Default,
+            new PlcSnapshot(new StatusBlock(7, StatusFlags.Homed, 0, 0, 4, 0, 0, 0, 0, 1), 1, 1, 3, 0));
+        machine.Message.Should().MatchRegex(Shape.ToString());
+
+        await using var rig = await new DriverRig().ConnectAsync();
+        var commander = (await DriverRig.Bounded(() => rig.Linear.MoveAbsoluteAsync(new Mm(10_500)))
+            .Should().ThrowAsync<MotionException>()).Which;
+        commander.Message.Should().MatchRegex(Shape.ToString())
+            .And.Contain("Read TravelMin (S+8 = 108) = 0, TravelMax (S+10 = 110) = 10000000, MaxVelocity (S+12 = 112) = 500000.");
+
+        var protocol = rig.Axis.HomeAsync();
+        for (var i = 0; i < 8 && !protocol.IsCompleted; i++) await rig.TickAsync();
+        var notAck = (await protocol.Invoking(p => p).Should().ThrowAsync<MotionException>()).Which;
+        notAck.Message.Should().StartWith("carriage: Protocol/NotAcknowledged: ")
+            .And.MatchRegex("CommandSeq [0-9]+ written, CommandAck [0-9]+ read after 500 ms, State [0-9]+ read\\.$");
+
+        foreach (var m in new[] { machine.Message, commander.Message, notAck.Message })
+            m.Should().NotContainEquivalentOf("communication error");
+    }
+
+    [Fact(DisplayName = "GA-U-69 The register dump decodes names and units")]
+    public void Decode_ProtocolVector_NamesUnitsAndRawHex()
+    {
+        ushort[] command = [1, 7, 0, 0, 0, 0, 0, 0, 12, 65535, 0, 2];
+        ushort[] status = [0, 32, 0, 0, 0, 0, 0, 6, 0, 0, 38528, 152, 41248, 7, 1];
+
+        var rows = RegisterDump.Decode(RegisterMap.Default, command, status);
+        var byName = rows.ToDictionary(r => r.Name);
+
+        rows.Should().HaveCount(19, "one row per protocol field: 9 in the command block, 10 in the status block");
+        byName["Command"].Should().Be(new RegisterRow("C+0 = 0", "Command", "0x0001", "Enable"));
+        byName["CommandSeq"].Value.Should().Be("7");
+        byName["LeaseOwner"].Should().Be(new RegisterRow("C+9 = 9", "LeaseOwner", "0xFFFF", "65535"));
+        byName["WatchdogTrips"].Value.Should().Be("2");
+        byName["State"].Should().Be(new RegisterRow("S+0 = 100", "State", "0x0000", "Disabled"));
+        byName["Flags"].Value.Should().Be("DriveReady");
+        byName["CommandAck"].Value.Should().Be("6");
+        byName["TravelMax"].Should().Be(new RegisterRow("S+10…S+11 = 110…111", "TravelMax", "0x9680 0x0098", "10000.000"));
+        byName["MaxVelocity"].Value.Should().Be("500.000");
+        byName["MapVersion"].Value.Should().Be("1");
+        byName["FaultCode"].Value.Should().Be("None");
+
+        var text = RegisterDump.Format(rows);
+        text.Should().Contain("Command").And.Contain("0xA120 0x0007").And.Contain("10000.000");
+        text.Split('\n', StringSplitOptions.RemoveEmptyEntries).Should().HaveCount(20, "a header and one line per row");
+    }
+
+    [Fact(DisplayName = "GA-U-69 names for faults, undefined states and combined bits")]
+    public void Decode_NamesEveryEncoding()
+    {
+        ushort[] command = [(ushort)(CommandBits.Enable | CommandBits.Stop), 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0];
+        ushort[] status = [42, (ushort)(StatusFlags.Homed | StatusFlags.LimitMax), 0xFFFF, 0xFFFF, 0, 0, 150, 0, 0, 0, 0, 0, 0, 0, 1];
+
+        var byName = RegisterDump.Decode(new RegisterMap(200, 300), command, status).ToDictionary(r => r.Name);
+
+        byName["Command"].Value.Should().Be("Enable | Stop");
+        byName["Command"].Address.Should().Be("C+0 = 200");
+        byName["WatchdogFault"].Value.Should().Be("1 (tripped)");
+        byName["State"].Value.Should().Be("42 (undefined)");
+        byName["Flags"].Value.Should().Be("Homed | LimitMax");
+        byName["ActualPosition"].Value.Should().Be("-0.001");
+        byName["FaultCode"].Value.Should().Be("150 (vendor)");
+        byName["MapVersion"].Address.Should().Be("S+14 = 314");
+    }
+}
+
+/// <summary>GA-U-68 — No silent retry. It needs a real socket to fail, so it runs with the live tests.</summary>
+[Collection(LiveModbusCollection.Name)]
+[Trait("Category", "Integration")]
+public class ChannelRetryTests
+{
+    private static (ModbusChannel Channel, FakeLogCollector Logs, ILoggerFactory Factory) Channel(MiniPlc plc)
+    {
+        var logs = new FakeLogCollector();
+        var factory = LoggerFactory.Create(b => b.SetMinimumLevel(LogLevel.Trace).AddProvider(new FakeLoggerProvider(logs)));
+        var channel = new ModbusChannel("127.0.0.1", plc.Port, factory.CreateLogger("channel"), null, "carriage",
+            RegisterMap.Default);
+        return (channel, logs, factory);
+    }
+
+    [Fact(DisplayName = "GA-U-68 No silent retry: one failure is one Warning and exactly two attempts")]
+    public async Task Read_FirstAttemptFails_OneWarningTwoAttempts()
+    {
+        await using var plc = new MiniPlc();
+        var (channel, logs, factory) = Channel(plc);
+        using var _ = factory;
+        using var __ = channel;
+        plc.DropNextConnections(1);
+
+        var words = await channel.ReadHoldingAsync(1, 100, 15, "read status block", ChannelPriority.Move)
+            .WaitAsync(LiveRig.T);
+
+        words.Should().HaveCount(15);
+        words[14].Should().Be(1, "anchor: the second attempt read the real block (MapVersion)");
+        plc.AcceptedConnections.Should().Be(2, "exactly two attempts");
+        var warnings = logs.GetSnapshot().Where(r => r.Level == LogLevel.Warning).ToArray();
+        warnings.Should().ContainSingle().Which.Exception.Should().NotBeNull("the retry is logged with the exception");
+        warnings[0].Message.Should().Contain("read status block (read S+0…S+14 (100…114))")
+            .And.Contain($"127.0.0.1:{plc.Port} unit 1");
+    }
+
+    [Fact(DisplayName = "GA-U-68 two failures are CommunicationLost after exactly two attempts")]
+    public async Task Read_BothAttemptsFail_CommunicationLostNamesEverything()
+    {
+        await using var plc = new MiniPlc();
+        var (channel, logs, factory) = Channel(plc);
+        using var _ = factory;
+        using var __ = channel;
+        plc.DropNextConnections(2);
+
+        var ex = (await channel.Invoking(c => c.ReadHoldingAsync(1, 100, 15, "read status block").WaitAsync(LiveRig.T))
+            .Should().ThrowAsync<MotionException>()).Which;
+
+        ex.Error.Should().Be(MotionError.CommunicationLost);
+        ex.Message.Should().StartWith("carriage: Transport/CommunicationLost: read status block (read S+0…S+14 (100…114)) "
+                                      + $"on 127.0.0.1:{plc.Port} unit 1 failed twice (reconnected once): ");
+        ex.Message.Should().NotEndWith("(reconnected once): .", "the exception's own message is quoted");
+        plc.AcceptedConnections.Should().Be(2);
+        logs.GetSnapshot().Count(r => r.Level == LogLevel.Warning).Should().Be(1);
+    }
+
+    [Fact(DisplayName = "GA-U-68 a refused connection is CommunicationLost naming the endpoint")]
+    public async Task Connect_ClosedPort_CommunicationLost()
+    {
+        int port;
+        await using (var plc = new MiniPlc()) port = plc.Port;
+        using var channel = new ModbusChannel("127.0.0.1", port, null, null, "carriage", RegisterMap.Default);
+
+        var ex = (await channel.Invoking(c => c.ConnectAsync(CancellationToken.None).WaitAsync(LiveRig.T))
+            .Should().ThrowAsync<MotionException>()).Which;
+
+        ex.Error.Should().Be(MotionError.CommunicationLost);
+        ex.Message.Should().StartWith($"carriage: Transport/CommunicationLost: connect on 127.0.0.1:{port} unit 0 failed twice");
+    }
+}

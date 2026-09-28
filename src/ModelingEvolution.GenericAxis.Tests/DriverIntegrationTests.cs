@@ -202,7 +202,7 @@ public class DriverIntegrationTests(ITestOutputHelper output)
 
         output.WriteLine($"GA-I-09 refused after {refusedAfter * 1000:F0} ms: {ex.Message}");
         ex.Error.Should().Be(MotionError.LeaseHeld);
-        ex.Message.Should().Contain("LeaseOwner is 1");
+        ex.Message.Should().Contain("Read LeaseOwner (C+9 = 9) = 1, expected 0 or 2");
         refusedAfter.Should().BeInRange(3.0, 4.0);
         owners.Should().NotBeEmpty().And.OnlyContain(o => o == 1);
         move.IsCompleted.Should().BeFalse("A's move is undisturbed");
@@ -223,9 +223,11 @@ public class DriverIntegrationTests(ITestOutputHelper output)
         var sw = Stopwatch.StartNew();
         a.Dispose();
         await connecting.WaitAsync(T);
+        var attachedAfter = sw.Elapsed;
+        await rig.Plc.NextScanAsync();
 
-        output.WriteLine($"GA-I-10 successor attached {sw.Elapsed.TotalMilliseconds:F0} ms after the kill");
-        sw.Elapsed.TotalSeconds.Should().BeLessThanOrEqualTo(2.0);
+        output.WriteLine($"GA-I-10 successor attached {attachedAfter.TotalMilliseconds:F0} ms after the kill");
+        attachedAfter.TotalSeconds.Should().BeLessThanOrEqualTo(2.0);
         rig.Plc.Truth.LeaseOwner.Should().Be(2);
     }
 
@@ -259,8 +261,9 @@ public class DriverIntegrationTests(ITestOutputHelper output)
 
         var ex = await Throws(() => track.ConnectAsync());
 
-        ex.Error.Should().Be(MotionError.CommunicationLost);
-        ex.Message.Should().Contain("map version 2").And.Contain("S+14");
+        ex.Error.Should().Be(MotionError.ProtocolMismatch);
+        ex.Message.Should().Contain("Read MapVersion (S+14 = 114) = 2, expected 1.");
+        rig.Logs.GetSnapshot().Should().Contain(r => r.Level == LogLevel.Error && r.Message == ex.Message);
         await Task.Delay(100);
         rig.Plc.WrittenRegisters.Should().BeEmpty();
         rig.Plc.Truth.LeaseOwner.Should().Be(0);
@@ -302,6 +305,12 @@ public class DriverIntegrationTests(ITestOutputHelper output)
 
         output.WriteLine($"GA-I-14 CommunicationLost after {thrownS * 1000:F0} ms, halted after {haltS * 1000:F0} ms");
         ex.Which.Error.Should().Be(MotionError.CommunicationLost);
+        ex.Which.Message.Should().StartWith("carriage: Transport/CommunicationLost: ")
+            .And.Contain($"127.0.0.1:{rig.Plc.Port} unit 1 failed twice (reconnected once): ")
+            .And.MatchRegex(@"\((read|write) (C|S)\+[0-9]+");
+        rig.Logs.GetSnapshot().Should().Contain(r => r.Level == LogLevel.Warning && r.Exception != null
+                                                     && r.Message.Contains("reconnecting and retrying once"),
+            "the one retry is logged at Warning with the exception");
         thrownS.Should().BeLessThanOrEqualTo(1.0);
         track.Carriage.State.Should().Be(AxisState.ErrorStop);
         track.Carriage.Status.Error.Should().Be(MotionError.CommunicationLost);
@@ -311,6 +320,10 @@ public class DriverIntegrationTests(ITestOutputHelper output)
         rig.Plc.SetCommunicationDown(false);
         var ticks = track.Heartbeat.TickCount;
         await DriverRig.Until(() => track.Heartbeat.TickCount > ticks + 1, "ticks succeed again");
+        rig.Logs.GetSnapshot().Should().Contain(r => r.Level == LogLevel.Error
+                                                     && r.Message.StartsWith("carriage: Machine/WatchdogTripped: "),
+            "the trip the PLC reports after the link returns is its own Machine error");
+        track.Carriage.Status.Error.Should().Be(MotionError.CommunicationLost, "the loss stays latched until Reset");
         await track.Carriage.ResetAsync().WaitAsync(T);
         track.Carriage.Status.Error.Should().BeNull();
         track.Carriage.State.Should().Be(AxisState.Disabled);
@@ -319,7 +332,7 @@ public class DriverIntegrationTests(ITestOutputHelper output)
         rig.Plc.Truth.Homed.Should().BeTrue();
     }
 
-    [Fact(DisplayName = "GA-I-15 A missing ack is CommunicationLost")]
+    [Fact(DisplayName = "GA-I-15 A missing ack is NotAcknowledged, not a link failure")]
     public async Task Home_SuppressAck_CommunicationLostWithin700msBeatContinues()
     {
         await using var rig = new LiveRig();
@@ -331,8 +344,9 @@ public class DriverIntegrationTests(ITestOutputHelper output)
 
         output.WriteLine($"GA-I-15 {sw.Elapsed.TotalMilliseconds:F0} ms: {ex.Message}");
         sw.Elapsed.TotalMilliseconds.Should().BeLessThanOrEqualTo(700);
-        ex.Error.Should().Be(MotionError.CommunicationLost);
-        ex.Message.Should().MatchRegex("CommandSeq [0-9]+");
+        ex.Error.Should().Be(MotionError.NotAcknowledged);
+        MotionErrorClasses.Of(ex).Should().Be(ErrorClass.Protocol);
+        ex.Message.Should().MatchRegex("CommandSeq [0-9]+ written, CommandAck [0-9]+ read after 500 ms, State [0-9]+ read");
         var beat = rig.Plc.Truth.Heartbeat;
         await Task.Delay(1500);
         rig.Plc.Truth.Heartbeat.Should().NotBe(beat, "the heartbeat keeps beating");
