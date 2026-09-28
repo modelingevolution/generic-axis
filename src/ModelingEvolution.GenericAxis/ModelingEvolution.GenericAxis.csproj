@@ -7,6 +7,9 @@
     <Description>Generic external axis (linear track or rotary positioner) behind a PLC over Modbus TCP, implementing the RocketWelder SDK motion contract. The register map is docs/protocol.md (map version 1).</Description>
     <PackageTags>rocketwelder;motion;modbus;plc;axis;track;positioner</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <!-- MotionErrorClasses.Of names every MotionError with no default arm: a member added by a newer SDK
+         must fail the build (CS8509) rather than go unclassified. -->
+    <WarningsAsErrors>$(WarningsAsErrors);CS8509</WarningsAsErrors>
   </PropertyGroup>
 
   <ItemGroup>
