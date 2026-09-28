@@ -1,0 +1,87 @@
+name: Conformance
+
+# protocol.md § Conformance checks: the simulator must pass CHK-01…16, motion included, with BOTH checkers.
+# design.md § Conformance checker, CI: `python` (unit, quality gate) and `conformance` (C# test app as the simulator,
+# C# --check, Python checker, Python integration tests GA-I-30…39). The dotnet build/test job stays in test.yml.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install
+        run: pip install -e "python[dev]"
+
+      - name: Quality gate (black, ruff, mypy --strict, unit tests with coverage)
+        working-directory: python
+        run: ./verify-code-quality.sh
+
+  conformance:
+    needs: python
+    runs-on: ubuntu-latest
+    env:
+      SIM_PORT: '5020'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install the Python checker
+        run: pip install -e "python[dev]"
+
+      - name: Build
+        run: dotnet build src/GenericAxis.sln --configuration Release
+
+      - name: Locate the test app
+        run: |
+          dll=$(find src/ModelingEvolution.GenericAxis.TestApp/bin/Release -name ModelingEvolution.GenericAxis.TestApp.dll | head -n 1)
+          test -n "$dll" || { echo "ModelingEvolution.GenericAxis.TestApp.dll not found"; exit 1; }
+          echo "GENERIC_AXIS_TESTAPP_DLL=$PWD/$dll" >> "$GITHUB_ENV"
+
+      - name: Start the simulator (headless)
+        run: |
+          nohup dotnet "$GENERIC_AXIS_TESTAPP_DLL" --headless --port "$SIM_PORT" > simulator.log 2>&1 &
+          for _ in $(seq 1 120); do
+            (echo > "/dev/tcp/127.0.0.1/$SIM_PORT") 2>/dev/null && exit 0
+            sleep 0.5
+          done
+          echo "simulator did not listen on $SIM_PORT"; cat simulator.log; exit 1
+
+      - name: C# checker against the simulator
+        run: dotnet "$GENERIC_AXIS_TESTAPP_DLL" --check "127.0.0.1:$SIM_PORT" --allow-motion --report conformance-csharp.md
+
+      - name: Python checker against the simulator
+        run: python -m generic_axis_check "127.0.0.1:$SIM_PORT" --allow-motion --report conformance-python.md
+
+      - name: Python integration tests (GA-I-30…39, one simulator per scenario)
+        working-directory: python
+        run: pytest tests -m integration -v
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-reports
+          path: |
+            conformance-csharp.md
+            conformance-csharp.json
+            conformance-python.md
+            conformance-python.json
+            simulator.log
+          if-no-files-found: warn
