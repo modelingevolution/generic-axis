@@ -129,7 +129,7 @@ jobs:
           # Each of these is an assembly the host does not provide; its absence is a load failure.
           for required in "$PLUGIN_ID.dll" "$DRIVER_ID.dll" "FluentModbus.dll"; do
             if [ ! -f "$DIR/$required" ]; then
-              echo "::error::$required is missing from the staged closure — the strip step removed something the host does not ship."
+              echo "::error::$required is missing from the staged closure: either publish did not produce it or the strip step removed an assembly the host does not ship."
               exit 1
             fi
             echo "present  $required"
