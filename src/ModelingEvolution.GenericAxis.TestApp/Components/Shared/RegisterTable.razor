@@ -1,0 +1,21 @@
+<MudSimpleTable Dense="true" Hover="true" Striped="true" Elevation="1">
+    <thead>
+    <tr><th>Address</th><th>Name</th><th>Raw</th><th>Decoded</th></tr>
+    </thead>
+    <tbody>
+    @foreach (var r in Rows)
+    {
+        <tr>
+            <td class="register-value">@r.Address</td>
+            <td>@r.Name</td>
+            <td class="register-value">@r.Raw</td>
+            <td class="register-value">@r.Decoded</td>
+        </tr>
+    }
+    </tbody>
+</MudSimpleTable>
+
+@code {
+    /// <summary>An immutable list built from one snapshot per render.</summary>
+    [Parameter, EditorRequired] public IReadOnlyList<RegisterRow> Rows { get; set; } = [];
+}

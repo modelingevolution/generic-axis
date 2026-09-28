@@ -1,0 +1,139 @@
+@page "/"
+@inherits LiveComponentBase
+@inject SimulatorHost Host
+
+<PageTitle>Simulator &middot; Generic Axis</PageTitle>
+
+@{
+    var s = Host.Snapshot();
+    var o = Host.Options;
+    var unit = o.Unit;
+}
+
+<h1 class="mud-typography mud-typography-h5 mb-1">Simulated PLC</h1>
+<MudText Typo="Typo.body2" Class="mud-text-secondary mb-4">
+    @o.Kind axis &middot; Modbus TCP port <span class="register-value">@Host.Port</span> &middot; unit @o.UnitId &middot;
+    command block @o.CommandBase, status block @o.StatusBase &middot;
+    @(s.Listening ? "listening" : "NOT listening (communication down)")
+</MudText>
+
+<MudPaper Class="pa-4 mb-4" Elevation="1">
+    <MudText Typo="Typo.subtitle2" Class="mb-2">Travel</MudText>
+    <div class="travel-bar" data-testid="travel-bar">
+        <div class="zone" style="@Zone(HardMin(o), o.TravelMin - o.LimitSwitchMargin, "var(--mud-palette-error-darken)")" title="min limit switch"></div>
+        <div class="zone" style="@Zone(o.TravelMax + o.LimitSwitchMargin, HardMax(o), "var(--mud-palette-error-darken)")" title="max limit switch"></div>
+        <div class="zone" style="@Zone(o.HomeSensorPosition - o.HomeSensorWidth / 2, o.HomeSensorPosition + o.HomeSensorWidth / 2, "var(--mud-palette-info)")" title="home sensor"></div>
+        <div class="marker" style="@Marker(s.PublishedPosition, "var(--mud-palette-warning)")" title="published position"></div>
+        <div class="marker" style="@Marker(s.TruePosition, "var(--mud-palette-success)")" title="true position"></div>
+    </div>
+    <div class="d-flex justify-space-between mt-1">
+        <MudText Typo="Typo.caption">@F(HardMin(o)) @unit (hard stop)</MudText>
+        <MudText Typo="Typo.caption"><span style="color:var(--mud-palette-success)">&#9632;</span> true &nbsp; <span style="color:var(--mud-palette-warning)">&#9632;</span> published &nbsp; <span style="color:var(--mud-palette-info)">&#9632;</span> home sensor &nbsp; <span style="color:var(--mud-palette-error)">&#9632;</span> limit switch</MudText>
+        <MudText Typo="Typo.caption">@F(HardMax(o)) @unit (hard stop)</MudText>
+    </div>
+</MudPaper>
+
+<MudGrid>
+    <MudItem xs="12" md="6">
+        <MudPaper Class="pa-4" Elevation="1">
+            <MudText Typo="Typo.subtitle2" Class="mb-2">Axis</MudText>
+            <div class="d-flex flex-wrap">
+                <Reading Label="State" Value="@($"{(ushort)s.State} {s.State}")"/>
+                <Reading Label="FaultCode" Value="@($"{(ushort)s.FaultCode} {s.FaultCode}")"/>
+                <Reading Label="@($"True position, {unit}")" Value="@F(s.TruePosition)"/>
+                <Reading Label="@($"ActualPosition, {unit}")" Value="@F(s.PublishedPosition)"/>
+                <Reading Label="@($"Velocity, {unit}/s")" Value="@F(s.Velocity)"/>
+            </div>
+            <div class="d-flex flex-wrap gap-1 mt-2">
+                <Flag Text="Homed" On="@s.Flags.HasFlag(SimStatusFlags.Homed)"/>
+                <Flag Text="InPosition" On="@s.Flags.HasFlag(SimStatusFlags.InPosition)"/>
+                <Flag Text="LimitMin" On="@s.Flags.HasFlag(SimStatusFlags.LimitMin)" OnColor="Color.Error"/>
+                <Flag Text="LimitMax" On="@s.Flags.HasFlag(SimStatusFlags.LimitMax)" OnColor="Color.Error"/>
+                <Flag Text="HomeSensor" On="@s.Flags.HasFlag(SimStatusFlags.HomeSensor)" OnColor="Color.Info"/>
+                <Flag Text="DriveReady" On="@s.Flags.HasFlag(SimStatusFlags.DriveReady)" OnColor="Color.Success"/>
+                <Flag Text="Moving" On="@s.Flags.HasFlag(SimStatusFlags.Moving)" OnColor="Color.Warning"/>
+            </div>
+            <div class="d-flex flex-wrap mt-3">
+                <Reading Label="Command" Value="@($"0x{s.CommandWord:X4}")"/>
+                <Reading Label="CommandSeq" Value="@s.CommandSeq.ToString()"/>
+                <Reading Label="CommandAck" Value="@s.CommandAck.ToString()"/>
+            </div>
+        </MudPaper>
+    </MudItem>
+    <MudItem xs="12" md="6">
+        <MudPaper Class="pa-4" Elevation="1">
+            <MudText Typo="Typo.subtitle2" Class="mb-2">Watchdog and lease (FR-11)</MudText>
+            <div class="d-flex flex-wrap">
+                <Reading Label="Armed" Value="@(s.WatchdogArmed ? "yes" : "no")"/>
+                <Reading Label="Heartbeat" Value="@s.Heartbeat.ToString()"/>
+                <Reading Label="Heartbeat age" Value="@($"{s.HeartbeatAge.TotalMilliseconds:F0} ms")"/>
+                <Reading Label="WatchdogFault" Value="@s.WatchdogFault.ToString()"/>
+                <Reading Label="WatchdogTrips" Value="@s.WatchdogTrips.ToString()"/>
+                <Reading Label="LeaseOwner" Value="@s.LeaseOwner.ToString()"/>
+            </div>
+        </MudPaper>
+        <MudPaper Class="pa-4 mt-4" Elevation="1">
+            <MudText Typo="Typo.subtitle2" Class="mb-2">Controls</MudText>
+            <div class="d-flex flex-wrap align-center gap-2">
+                <MudNumericField T="double" @bind-Value="_teleportTo" Label="@($"Teleport to, {unit}")" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:180px"/>
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="() => Host.Teleport(_teleportTo)">Teleport</MudButton>
+                <MudButton Variant="Variant.Outlined" Color="Color.Warning" OnClick="Host.PowerCycle">Power cycle</MudButton>
+            </div>
+            <div class="d-flex flex-wrap align-center gap-4 mt-2">
+                <MudSwitch T="bool" Value="@Host.PublishLimits" ValueChanged="v => Host.PublishLimits = v" Color="Color.Primary" Label="PublishLimits"/>
+                <MudNumericField T="int" Value="@Host.MapVersion" ValueChanged="v => Host.MapVersion = (ushort)Math.Clamp(v, 0, 65535)" Label="MapVersion" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:140px"/>
+            </div>
+        </MudPaper>
+    </MudItem>
+    <MudItem xs="12">
+        <MudPaper Class="pa-4" Elevation="1">
+            <MudText Typo="Typo.subtitle2" Class="mb-2">Fault injection</MudText>
+            <div class="d-flex flex-wrap gap-4">
+                @foreach (var fault in FaultSwitches)
+                {
+                    <MudSwitch T="bool" Value="@fault.Get(s.Faults)" ValueChanged="v => Host.Faults = fault.Set(Host.Faults, v)" Color="Color.Error" Label="@fault.Name"/>
+                }
+            </div>
+        </MudPaper>
+    </MudItem>
+</MudGrid>
+
+@code {
+    private double _teleportTo;
+
+    private sealed record FaultSwitch(string Name, Func<SimFaults, bool> Get, Func<SimFaults, bool, SimFaults> Set);
+
+    // A fixed list, not an observable collection: the switches never change, only their values.
+    private static readonly FaultSwitch[] FaultSwitches =
+    [
+        new(nameof(SimFaults.CommunicationDown), f => f.CommunicationDown, (f, v) => f with { CommunicationDown = v }),
+        new(nameof(SimFaults.DriveFault), f => f.DriveFault, (f, v) => f with { DriveFault = v }),
+        new(nameof(SimFaults.FollowingErrorAtHalfway), f => f.FollowingErrorAtHalfway, (f, v) => f with { FollowingErrorAtHalfway = v }),
+        new(nameof(SimFaults.HomeSensorDead), f => f.HomeSensorDead, (f, v) => f with { HomeSensorDead = v }),
+        new(nameof(SimFaults.ForceLimitMin), f => f.ForceLimitMin, (f, v) => f with { ForceLimitMin = v }),
+        new(nameof(SimFaults.ForceLimitMax), f => f.ForceLimitMax, (f, v) => f with { ForceLimitMax = v }),
+        new(nameof(SimFaults.SafetyStop), f => f.SafetyStop, (f, v) => f with { SafetyStop = v }),
+        new(nameof(SimFaults.DriveLinkLost), f => f.DriveLinkLost, (f, v) => f with { DriveLinkLost = v }),
+        new(nameof(SimFaults.SuppressAck), f => f.SuppressAck, (f, v) => f with { SuppressAck = v }),
+        new(nameof(SimFaults.WatchdogDisabled), f => f.WatchdogDisabled, (f, v) => f with { WatchdogDisabled = v }),
+        new(nameof(SimFaults.SwappedWordOrder), f => f.SwappedWordOrder, (f, v) => f with { SwappedWordOrder = v }),
+    ];
+
+    private static double HardMin(SimulatedAxisOptions o) => o.TravelMin - 2 * o.LimitSwitchMargin;
+    private static double HardMax(SimulatedAxisOptions o) => o.TravelMax + 2 * o.LimitSwitchMargin;
+
+    private double Percent(double position)
+    {
+        var o = Host.Options;
+        var p = (position - HardMin(o)) / (HardMax(o) - HardMin(o)) * 100;
+        return Math.Clamp(p, 0, 100);
+    }
+
+    private string Zone(double from, double to, string color) =>
+        FormattableString.Invariant($"left:{Percent(from):F3}%;width:{Math.Max(0.3, Percent(to) - Percent(from)):F3}%;background:{color};opacity:.6");
+
+    private string Marker(double position, string color) =>
+        FormattableString.Invariant($"left:{Percent(position):F3}%;background:{color}");
+
+    private static string F(double v) => v.ToString("F3", CultureInfo.InvariantCulture);
+}

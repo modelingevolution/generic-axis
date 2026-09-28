@@ -1,0 +1,4 @@
+.register-value { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+.travel-bar { position: relative; height: 44px; border-radius: 4px; background: var(--mud-palette-background-gray); }
+.travel-bar .zone { position: absolute; top: 0; bottom: 0; }
+.travel-bar .marker { position: absolute; top: 0; bottom: 0; width: 3px; transform: translateX(-1px); }
