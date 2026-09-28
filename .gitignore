@@ -1,0 +1,60 @@
+# Build outputs
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+[Ll]og/
+[Ll]ogs/
+
+# Visual Studio / Rider
+.vs/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Visual Studio Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Publish output
+publish/
+*.pubxml.user
+
+# Dotnet
+*.swp
+*.tmp
+
+# NuGet
+*.nupkg
+.nuget/
+packages/
+
+# Allure / test artifacts
+allure-results/
+allure-report/
+TestResults/
+
+# Coverage
+coverage/
+*.coverage
+*.coveragexml
+
+# Node / Playwright e2e
+node_modules/
+test-results/
+playwright-report/
+.playwright-mcp/
+
+# Release workflow scratch
+nupkg/
+publish/
+staging/
