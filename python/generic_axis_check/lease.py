@@ -16,7 +16,7 @@ WATCH_PERIOD_S = 0.1
 """protocol.md § FR-11: a foreign owner's ``Heartbeat`` is watched at the heartbeat interval (the driver's 10 Hz)."""
 
 
-class LeaseHeld(Exception):
+class LeaseHeld(Exception):  # noqa: N818 — the SDK's name (protocol.md § FR-11, "refuse (SDK LeaseHeld)")
     """SDK ``LeaseHeld``: a foreign owner is still beating after the lease timeout."""
 
     def __init__(self, owner: int) -> None:

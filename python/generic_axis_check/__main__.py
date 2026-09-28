@@ -44,15 +44,20 @@ def _u16(text: str) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="python -m generic_axis_check",
-                                description="Run the generic-axis PLC conformance checklist (docs/protocol.md).")
+    p = argparse.ArgumentParser(
+        prog="python -m generic_axis_check",
+        description="Run the generic-axis PLC conformance checklist (docs/protocol.md).",
+    )
     p.add_argument("target", metavar="host[:port]", help=f"the PLC; port {DEFAULT_PORT} by default")
     p.add_argument("--unit", type=_u16, default=1, help="Modbus unit id (default 1)")
     p.add_argument("--command-base", type=_u16, default=0, help="command block base C (default 0)")
     p.add_argument("--status-base", type=_u16, default=100, help="status block base S (default 100)")
     p.add_argument("--owner-id", type=_u16, default=65535, help="the checker's lease id (default 65535)")
-    p.add_argument("--allow-motion", action="store_true",
-                   help="run CHK-12…16. Only with an operator at the machine and the travel clear")
+    p.add_argument(
+        "--allow-motion",
+        action="store_true",
+        help="run CHK-12…16. Only with an operator at the machine and the travel clear",
+    )
     p.add_argument("--tolerance", type=float, default=0.1, help="CHK-13 position tolerance in axis units")
     p.add_argument("--report", type=Path, help="*.md: Markdown there plus JSON next to it; *.json: JSON only")
     return p
@@ -83,8 +88,16 @@ def parse(argv: list[str]) -> Invocation:
                 report_json = a.report
             case _:
                 raise UsageError(f"--report {a.report}: the extension must be .md or .json")
-    options = Options(host=host, port=port, unit=a.unit, command_base=a.command_base, status_base=a.status_base,
-                      owner_id=a.owner_id, allow_motion=a.allow_motion, tolerance=a.tolerance)
+    options = Options(
+        host=host,
+        port=port,
+        unit=a.unit,
+        command_base=a.command_base,
+        status_base=a.status_base,
+        owner_id=a.owner_id,
+        allow_motion=a.allow_motion,
+        tolerance=a.tolerance,
+    )
     try:
         RegisterMap(options.command_base, options.status_base)
     except ValueError as exc:

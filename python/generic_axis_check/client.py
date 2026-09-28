@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -21,6 +22,19 @@ log = logging.getLogger(__name__)
 
 class PlcError(Exception):
     """A Modbus request failed: no connection, timeout, or a Modbus exception response."""
+
+
+def _failure(what: str, exc: BaseException) -> BaseException:
+    """The exception to raise for a failed request.
+
+    pymodbus catches a task cancellation inside a request and raises ``ModbusIOException`` ("Request cancelled
+    outside library") instead. A Ctrl-C would then read as a Modbus failure and the run would go on commanding the
+    axis, so a cancellation pending on the current task is turned back into ``CancelledError``.
+    """
+    task = asyncio.current_task()
+    if task is not None and task.cancelling():
+        return asyncio.CancelledError()
+    return PlcError(f"{what}: {exc}")
 
 
 class PlcClient:
@@ -49,9 +63,7 @@ class PlcClient:
             raise PlcError(f"connect to {self.host}:{self.port} failed: {exc}") from exc
         if not ok:
             client.close()
-            raise PlcError(
-                f"connect to {self.host}:{self.port} failed after {time.monotonic() - started:.1f} s"
-            )
+            raise PlcError(f"connect to {self.host}:{self.port} failed after {time.monotonic() - started:.1f} s")
         self._client = client
 
     def close(self) -> None:
@@ -69,7 +81,7 @@ class PlcClient:
         try:
             response = await client.read_holding_registers(address, count=count, device_id=self.unit)
         except (OSError, ModbusException) as exc:
-            raise PlcError(f"FC03 {address}+{count}: {exc}") from exc
+            raise _failure(f"FC03 {address}+{count}", exc) from exc
         if response.isError():
             raise PlcError(f"FC03 {address}+{count}: Modbus exception {response}")
         registers = list(response.registers)
@@ -86,7 +98,7 @@ class PlcClient:
             else:
                 response = await client.write_registers(address, values, device_id=self.unit)
         except (OSError, ModbusException) as exc:
-            raise PlcError(f"write {address}={values}: {exc}") from exc
+            raise _failure(f"write {address}={values}", exc) from exc
         if response.isError():
             raise PlcError(f"write {address}={values}: Modbus exception {response}")
         log.debug("wrote %d = %s", address, values)

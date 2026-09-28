@@ -203,7 +203,7 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
             say(f"pre-flight: {exc}")
         if foreign is not None:
             refused = True
-            abort = (f"pre-flight: LeaseOwner {foreign} is beating: another commander is attached; stop it first")
+            abort = f"pre-flight: LeaseOwner {foreign} is beating: another commander is attached; stop it first"
             say(abort)
 
         for check in checks:
@@ -224,8 +224,15 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
                 if check.id >= FIRST_LEASED_CHECK:
                     why = await _restore(ctx)
                     if why is not None:
-                        outcome = Outcome(FAIL, f"{outcome.message}; restore failed: {why}" if outcome.result == FAIL
-                                          else f"restore failed: {why}", outcome.observed)
+                        outcome = Outcome(
+                            FAIL,
+                            (
+                                f"{outcome.message}; restore failed: {why}"
+                                if outcome.result == FAIL
+                                else f"restore failed: {why}"
+                            ),
+                            outcome.observed,
+                        )
                         abort = f"restore after {check.id} failed"
             except asyncio.CancelledError:
                 task = asyncio.current_task()
@@ -234,8 +241,15 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
                 interrupted = True
                 abort = "interrupted"
                 outcome = Outcome(FAIL, "interrupted (Ctrl-C) during this check")
-            result = CheckResult(check.id, check.title, check.section, outcome.result,
-                                 ms(time.monotonic() - began), outcome.message, outcome.observed)
+            result = CheckResult(
+                check.id,
+                check.title,
+                check.section,
+                outcome.result,
+                ms(time.monotonic() - began),
+                outcome.message,
+                outcome.observed,
+            )
             results[check.id] = result
             say(f"{check.id} {result.result} ({result.duration_ms} ms) {result.message}")
     except asyncio.CancelledError:
@@ -252,8 +266,15 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
             await ctx.beater.stop()  # already stopped by cleanup unless the connection was lost
         client.close()
 
-    return Report(options, started_at, datetime.now(UTC), [results[c.id] for c in checks], ctx.cleanup_log,
-                  refused=refused, interrupted=interrupted)
+    return Report(
+        options,
+        started_at,
+        datetime.now(UTC),
+        [results[c.id] for c in checks],
+        ctx.cleanup_log,
+        refused=refused,
+        interrupted=interrupted,
+    )
 
 
 async def _run_one(check: Check, ctx: CheckContext) -> Outcome:

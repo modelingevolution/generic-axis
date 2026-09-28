@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 
 from .client import PlcClient, PlcError
@@ -65,10 +66,8 @@ class Beater:
                 raise PlcError(f"heartbeat loop failed: {exc}") from exc
             return self.last_beat
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
         return self.last_beat
 
     def failure(self) -> BaseException | None:

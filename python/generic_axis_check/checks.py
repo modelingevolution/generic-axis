@@ -188,11 +188,15 @@ async def ensure_enabled(ctx: CheckContext) -> Outcome | None:
     if status.state == AxisState.STANDSTILL and ctx.enabled:
         return None
     ack = await ctx.command(Command.ENABLE)
-    poll = await wait_for(ctx.client, ctx.registers, lambda s: s.state == AxisState.STANDSTILL, STATE_TIMEOUT_S,
-                          since=ack.written_at)
+    poll = await wait_for(
+        ctx.client, ctx.registers, lambda s: s.state == AxisState.STANDSTILL, STATE_TIMEOUT_S, since=ack.written_at
+    )
     if not poll.met:
-        return failed(f"Enable: State {poll.status.state} after {STATE_TIMEOUT_S:g} s, expected 1",
-                      state=poll.status.state, faultCode=poll.status.fault_code)
+        return failed(
+            f"Enable: State {poll.status.state} after {STATE_TIMEOUT_S:g} s, expected 1",
+            state=poll.status.state,
+            faultCode=poll.status.fault_code,
+        )
     return None
 
 
@@ -208,8 +212,10 @@ async def chk01(ctx: CheckContext) -> Outcome:
         await ctx.client.connect()
     started = time.monotonic()
     await ctx.status()
-    return passed(f"connected to {ctx.client.host}:{ctx.client.port}, unit {ctx.client.unit} answers",
-                  roundTripMs=ms(time.monotonic() - started))
+    return passed(
+        f"connected to {ctx.client.host}:{ctx.client.port}, unit {ctx.client.unit} answers",
+        roundTripMs=ms(time.monotonic() - started),
+    )
 
 
 async def chk02(ctx: CheckContext) -> Outcome:
@@ -270,8 +276,11 @@ async def chk05(ctx: CheckContext) -> Outcome:
     observed["afterWaitLow"], observed["afterWaitHigh"] = back
     last_words = WORD_ORDER_VALUES[-1][1]
     if tuple(back) != last_words:
-        return failed(f"C+2..3 changed to {list(map(hex, back))} within {OWNERSHIP_WAIT_S:g} s: the PLC wrote a "
-                      "driver-owned register", **observed)
+        return failed(
+            f"C+2..3 changed to {list(map(hex, back))} within {OWNERSHIP_WAIT_S:g} s: the PLC wrote a "
+            "driver-owned register",
+            **observed,
+        )
     return passed("65538 and -2 read back exactly and stayed", **observed)
 
 
@@ -289,35 +298,49 @@ async def chk06(ctx: CheckContext) -> Outcome:
         return failed(f"precondition: State {status.state}, expected 0 or 1", state=status.state)
 
     on = await ctx.command(Command.ENABLE)
-    on_state = await wait_for(ctx.client, ctx.registers, lambda s: s.state == AxisState.STANDSTILL,
-                              STATE_TIMEOUT_S, since=on.written_at)
+    on_state = await wait_for(
+        ctx.client, ctx.registers, lambda s: s.state == AxisState.STANDSTILL, STATE_TIMEOUT_S, since=on.written_at
+    )
     observed = {"enableAckMs": on.poll.elapsed_ms, "enableStateMs": on_state.elapsed_ms}
     if not on_state.met:
         return failed(f"Enable 1: State {on_state.status.state} after {STATE_TIMEOUT_S:g} s, expected 1", **observed)
     off = await ctx.command(Command.NONE)
-    off_state = await wait_for(ctx.client, ctx.registers, lambda s: s.state == AxisState.DISABLED,
-                               STATE_TIMEOUT_S, since=off.written_at)
+    off_state = await wait_for(
+        ctx.client, ctx.registers, lambda s: s.state == AxisState.DISABLED, STATE_TIMEOUT_S, since=off.written_at
+    )
     observed |= {"disableAckMs": off.poll.elapsed_ms, "disableStateMs": off_state.elapsed_ms}
     if not off_state.met:
         return failed(f"Enable 0: State {off_state.status.state} after {STATE_TIMEOUT_S:g} s, expected 0", **observed)
-    return passed(f"Enable ack {on.poll.elapsed_ms} ms, Standstill {on_state.elapsed_ms} ms; "
-                  f"disable ack {off.poll.elapsed_ms} ms, Disabled {off_state.elapsed_ms} ms", **observed)
+    return passed(
+        f"Enable ack {on.poll.elapsed_ms} ms, Standstill {on_state.elapsed_ms} ms; "
+        f"disable ack {off.poll.elapsed_ms} ms, Disabled {off_state.elapsed_ms} ms",
+        **observed,
+    )
 
 
 async def chk07(ctx: CheckContext) -> Outcome:
     status = await ctx.status()
     if status.state != AxisState.DISABLED or status.fault_code != FaultCode.NONE:
-        return failed(f"precondition: State {status.state}, FaultCode {status.fault_code}, expected 0 and 0",
-                      state=status.state, faultCode=status.fault_code)
+        return failed(
+            f"precondition: State {status.state}, FaultCode {status.fault_code}, expected 0 and 0",
+            state=status.state,
+            faultCode=status.fault_code,
+        )
     ack = await ctx.command(Command.RESET)
     # "State stays 0 and FaultCode stays 0": watched for one ack window after the ack.
-    changed = await wait_for(ctx.client, ctx.registers,
-                             lambda s: s.state != AxisState.DISABLED or s.fault_code != FaultCode.NONE,
-                             ACK_TIMEOUT_S)
+    changed = await wait_for(
+        ctx.client,
+        ctx.registers,
+        lambda s: s.state != AxisState.DISABLED or s.fault_code != FaultCode.NONE,
+        ACK_TIMEOUT_S,
+    )
     observed = {"ackMs": ack.poll.elapsed_ms, "state": changed.status.state, "faultCode": changed.status.fault_code}
     if changed.met or ack.poll.status.state != AxisState.DISABLED:
-        return failed(f"Reset outside ErrorStop changed the axis: State {changed.status.state}, "
-                      f"FaultCode {changed.status.fault_code}", **observed)
+        return failed(
+            f"Reset outside ErrorStop changed the axis: State {changed.status.state}, "
+            f"FaultCode {changed.status.fault_code}",
+            **observed,
+        )
     return passed(f"ack {ack.poll.elapsed_ms} ms, no-op", **observed)
 
 
@@ -328,8 +351,13 @@ async def chk08(ctx: CheckContext) -> Outcome:
     last_beat = await ctx.beater.stop()
     assert last_beat is not None
     watch = await watch_trip(ctx, last_beat, trips_before)
-    observed = {"tripAfterMs": watch.after_ms, "watchdogTrips": watch.trips, "faultCode": watch.status.fault_code,
-                "state": watch.status.state, "watchdogFault": watch.watchdog_fault}
+    observed = {
+        "tripAfterMs": watch.after_ms,
+        "watchdogTrips": watch.trips,
+        "faultCode": watch.status.fault_code,
+        "state": watch.status.state,
+        "watchdogFault": watch.watchdog_fault,
+    }
     problem = judge_trip(watch, "stalled beat")
     if problem:
         return failed(problem, **observed)
@@ -366,15 +394,17 @@ async def chk09(ctx: CheckContext) -> Outcome:
     fault, trips_beating = await ctx.watchdog()
     observed["tripsWhileBeating"] = (trips_beating - trips1) & 0xFFFF
     if fault or trips_beating != trips1:
-        return failed(f"tripped while beating (WatchdogFault {fault}, WatchdogTrips {trips1} → {trips_beating})",
-                      **observed)
+        return failed(
+            f"tripped while beating (WatchdogFault {fault}, WatchdogTrips {trips1} → {trips_beating})", **observed
+        )
     second = await watch_trip(ctx, await ctx.beater.stop() or time.monotonic(), trips1)
     observed |= {"secondTripMs": second.after_ms, "watchdogTrips": second.trips}
     problem = judge_trip(second, "after clear")
     if problem:
         return failed(problem, **observed)
-    return passed(f"disarmed while latched; re-armed on clear, second trip after {second.after_ms / 1000:.2f} s",
-                  **observed)
+    return passed(
+        f"disarmed while latched; re-armed on clear, second trip after {second.after_ms / 1000:.2f} s", **observed
+    )
 
 
 async def chk10(ctx: CheckContext) -> Outcome:
@@ -388,8 +418,10 @@ async def chk10(ctx: CheckContext) -> Outcome:
     fault, trips = await ctx.watchdog()
     observed = {"watchdogFault": fault, "tripsDelta": (trips - trips_before) & 0xFFFF}
     if fault or trips != trips_before:
-        return failed(f"tripped after a clean release (WatchdogFault {fault}, WatchdogTrips "
-                      f"{trips_before} → {trips})", **observed)
+        return failed(
+            f"tripped after a clean release (WatchdogFault {fault}, WatchdogTrips " f"{trips_before} → {trips})",
+            **observed,
+        )
     return passed(f"no trip {RELEASE_WAIT_S:g} s after LeaseOwner = 0", **observed)
 
 
@@ -425,8 +457,10 @@ async def chk11(ctx: CheckContext) -> Outcome:
         (owner_b,) = await ctx.client.read(registers.lease_owner, 1)
         observed["bLeaseOwner"] = owner_b
         if observed["bRefusedOwner"] != FOREIGN_OWNER_ID or owner_b != FOREIGN_OWNER_ID:
-            return failed(f"(b) refusal named {observed['bRefusedOwner']}, LeaseOwner {owner_b}; expected "
-                          f"{FOREIGN_OWNER_ID}", **observed)
+            return failed(
+                f"(b) refusal named {observed['bRefusedOwner']}, LeaseOwner {owner_b}; expected " f"{FOREIGN_OWNER_ID}",
+                **observed,
+            )
 
         # (c) the incumbent dies while the client watches → taken within 2 s of its last beat.
         take = asyncio.create_task(acquire(ctx.client, registers, own, LEASE_TIMEOUT_S))
@@ -450,10 +484,15 @@ async def chk11(ctx: CheckContext) -> Outcome:
             await ctx.release_lease()
 
     if observed["cTakenAfterMs"] > LEASE_TAKEOVER_MS:
-        return failed(f"(c) taken {observed['cTakenAfterMs']} ms after the incumbent's last beat, > "
-                      f"{LEASE_TAKEOVER_MS} ms", **observed)
-    return passed(f"(a) {read_back}; (b) refused, LeaseHeld {FOREIGN_OWNER_ID}; (c) taken after "
-                  f"{observed['cTakenAfterMs']} ms", **observed)
+        return failed(
+            f"(c) taken {observed['cTakenAfterMs']} ms after the incumbent's last beat, > " f"{LEASE_TAKEOVER_MS} ms",
+            **observed,
+        )
+    return passed(
+        f"(a) {read_back}; (b) refused, LeaseHeld {FOREIGN_OWNER_ID}; (c) taken after "
+        f"{observed['cTakenAfterMs']} ms",
+        **observed,
+    )
 
 
 async def chk12(ctx: CheckContext) -> Outcome:
@@ -461,12 +500,21 @@ async def chk12(ctx: CheckContext) -> Outcome:
     if not_ready:
         return not_ready
     ack = await ctx.command(Command.ENABLE | Command.HOME)
-    done = await wait_for(ctx.client, ctx.registers,
-                          lambda s: s.state == AxisState.ERROR_STOP or (s.state == AxisState.STANDSTILL and s.homed),
-                          HOME_TIMEOUT_S, since=ack.written_at)
+    done = await wait_for(
+        ctx.client,
+        ctx.registers,
+        lambda s: s.state == AxisState.ERROR_STOP or (s.state == AxisState.STANDSTILL and s.homed),
+        HOME_TIMEOUT_S,
+        since=ack.written_at,
+    )
     s = done.status
-    observed = {"ackMs": ack.poll.elapsed_ms, "homeMs": done.elapsed_ms, "faultCode": s.fault_code,
-                "state": s.state, "homed": int(s.homed)}
+    observed = {
+        "ackMs": ack.poll.elapsed_ms,
+        "homeMs": done.elapsed_ms,
+        "faultCode": s.fault_code,
+        "state": s.state,
+        "homed": int(s.homed),
+    }
     if not done.met:
         return failed(f"not homed after {HOME_TIMEOUT_S:g} s: State {s.state}", **observed)
     if s.state != AxisState.STANDSTILL or s.fault_code != FaultCode.NONE:
@@ -483,27 +531,37 @@ async def chk13(ctx: CheckContext) -> Outcome:
     velocity = percent_of(start.max_velocity, DISCRETE_SPEED_PERCENT)
     await ctx.write_parameters(target, velocity, 0)
     ack = await ctx.command(Command.ENABLE | Command.MOVE_ABSOLUTE)
-    observed = {"targetRaw": target, "velocityRaw": velocity, "ackMs": ack.poll.elapsed_ms,
-                "ackState": ack.poll.status.state}
+    observed = {
+        "targetRaw": target,
+        "velocityRaw": velocity,
+        "ackMs": ack.poll.elapsed_ms,
+        "ackState": ack.poll.status.state,
+    }
     if ack.poll.status.state != AxisState.DISCRETE_MOTION:
         return failed(f"ack showed State {ack.poll.status.state}, expected 3", **observed)
-    done = await wait_for(ctx.client, ctx.registers,
-                          lambda s: s.state == AxisState.ERROR_STOP
-                          or (s.state == AxisState.STANDSTILL and s.in_position),
-                          travel_timeout_s(target - start.actual_position, velocity), since=ack.written_at)
+    done = await wait_for(
+        ctx.client,
+        ctx.registers,
+        lambda s: s.state == AxisState.ERROR_STOP or (s.state == AxisState.STANDSTILL and s.in_position),
+        travel_timeout_s(target - start.actual_position, velocity),
+        since=ack.written_at,
+    )
     s = done.status
     error = abs(s.actual_position - target)
     observed |= {"actualRaw": s.actual_position, "errorRaw": error, "durationMs": done.elapsed_ms}
     if not done.met or s.state != AxisState.STANDSTILL:
-        return failed(f"not in position: State {s.state}, FaultCode {s.fault_code}, InPosition {int(s.in_position)}",
-                      **observed)
+        return failed(
+            f"not in position: State {s.state}, FaultCode {s.fault_code}, InPosition {int(s.in_position)}", **observed
+        )
     tolerance = round(ctx.options.tolerance * UNITS)
     if error > tolerance:
         return failed(f"position error {error / UNITS:.3f} > tolerance {ctx.options.tolerance:g}", **observed)
     return passed(f"in position, error {error / UNITS:.3f}, {done.elapsed_ms / 1000:.2f} s", **observed)
 
 
-async def stop_and_measure(ctx: CheckContext, observed: dict[str, int], *, require_zero_velocity: bool) -> Outcome | None:
+async def stop_and_measure(
+    ctx: CheckContext, observed: dict[str, int], *, require_zero_velocity: bool
+) -> Outcome | None:
     """Write Stop (priority edge) and wait ≤ 200 ms for Standstill (CHK-14, CHK-15)."""
     ack = await ctx.command(ctx.enabled | Command.STOP)
     observed["stopAckMs"] = ack.poll.elapsed_ms
@@ -517,9 +575,12 @@ async def stop_and_measure(ctx: CheckContext, observed: dict[str, int], *, requi
         # Keep watching, so the report says how long it did take.
         late = await wait_for(ctx.client, ctx.registers, halted, STATE_TIMEOUT_S, since=ack.written_at)
         observed["haltMs"] = late.elapsed_ms
-        return failed(f"not halted within {ms(STOP_HALT_S)} ms of the Stop write "
-                      f"({'after ' + str(late.elapsed_ms) + ' ms' if late.met else 'still moving'}: State "
-                      f"{late.status.state}, ActualVelocity {late.status.actual_velocity})", **observed)
+        return failed(
+            f"not halted within {ms(STOP_HALT_S)} ms of the Stop write "
+            f"({'after ' + str(late.elapsed_ms) + ' ms' if late.met else 'still moving'}: State "
+            f"{late.status.state}, ActualVelocity {late.status.actual_velocity})",
+            **observed,
+        )
     return None
 
 
@@ -532,10 +593,12 @@ async def chk14(ctx: CheckContext) -> Outcome:
     velocity = percent_of(start.max_velocity, DISCRETE_SPEED_PERCENT)
     await ctx.write_parameters(target, velocity, 0)
     await ctx.command(Command.ENABLE | Command.MOVE_ABSOLUTE)
-    cruise = await wait_for(ctx.client, ctx.registers,
-                            lambda s: s.state != AxisState.DISCRETE_MOTION
-                            or abs(s.actual_velocity) >= CRUISE_FRACTION * velocity,
-                            CRUISE_WAIT_S)
+    cruise = await wait_for(
+        ctx.client,
+        ctx.registers,
+        lambda s: s.state != AxisState.DISCRETE_MOTION or abs(s.actual_velocity) >= CRUISE_FRACTION * velocity,
+        CRUISE_WAIT_S,
+    )
     observed = {"targetRaw": target, "velocityRaw": velocity, "velocityAtStopRaw": cruise.status.actual_velocity}
     if cruise.status.state != AxisState.DISCRETE_MOTION:
         return failed(f"the move ended before Stop: State {cruise.status.state}", **observed)
@@ -585,13 +648,19 @@ async def chk16(ctx: CheckContext) -> Outcome:
     velocity = percent_of(start.max_velocity, JOG_SPEED_PERCENT)
     await ctx.write_parameters(start.actual_position, velocity, 0)
     await ctx.command(Command.ENABLE | Command.MOVE_VELOCITY)
-    moving = await wait_for(ctx.client, ctx.registers,
-                            lambda s: s.state != AxisState.CONTINUOUS_MOTION or s.actual_velocity > 0,
-                            CRUISE_WAIT_S)
+    moving = await wait_for(
+        ctx.client,
+        ctx.registers,
+        lambda s: s.state != AxisState.CONTINUOUS_MOTION or s.actual_velocity > 0,
+        CRUISE_WAIT_S,
+    )
     observed = {"velocityRaw": velocity, "velocityAtKillRaw": moving.status.actual_velocity}
     if moving.status.state != AxisState.CONTINUOUS_MOTION or moving.status.actual_velocity <= 0:
-        return failed(f"not moving before the kill: State {moving.status.state}, ActualVelocity "
-                      f"{moving.status.actual_velocity}", **observed)
+        return failed(
+            f"not moving before the kill: State {moving.status.state}, ActualVelocity "
+            f"{moving.status.actual_velocity}",
+            **observed,
+        )
     last_beat = await ctx.beater.stop()
     assert last_beat is not None
     watch = await watch_trip(ctx, last_beat, 0, need_latch=False)
@@ -599,25 +668,30 @@ async def chk16(ctx: CheckContext) -> Outcome:
     problem = judge_trip(watch, "kill")
     if problem:
         return failed(problem, **observed)
-    halt = await wait_for(ctx.client, ctx.registers, lambda s: s.actual_velocity == 0, STOP_HALT_S,
-                          since=watch.stamp)
+    halt = await wait_for(ctx.client, ctx.registers, lambda s: s.actual_velocity == 0, STOP_HALT_S, since=watch.stamp)
     observed |= {"haltAfterTripMs": halt.elapsed_ms, "homed": int(halt.status.homed)}
     if not halt.met:
         return failed(f"ActualVelocity {halt.status.actual_velocity} {ms(STOP_HALT_S)} ms after the trip", **observed)
     if not halt.status.homed:
         return failed("the trip cleared Homed", **observed)
-    return passed(f"trip after {watch.after_ms / 1000:.2f} s, halted {halt.elapsed_ms} ms later, still homed",
-                  **observed)
+    return passed(
+        f"trip after {watch.after_ms / 1000:.2f} s, halted {halt.elapsed_ms} ms later, still homed", **observed
+    )
 
 
 CHECKS: tuple[Check, ...] = (
     Check("CHK-01", "Transport and unit", "Transport", (), False, chk01),
     Check("CHK-02", "Map version", "Status block", ("01",), False, chk02),
-    Check("CHK-03", "Machine limits published", 'Status block, "Limits come from the machine"', ("02",), False,
-          chk03),
+    Check("CHK-03", "Machine limits published", 'Status block, "Limits come from the machine"', ("02",), False, chk03),
     Check("CHK-04", "Status mirror cadence", "Status block; FR-11 tick", ("02",), False, chk04),
-    Check("CHK-05", "32-bit word order and driver ownership of parameters", "Transport (word order); Command block",
-          ("02",), False, chk05),
+    Check(
+        "CHK-05",
+        "32-bit word order and driver ownership of parameters",
+        "Transport (word order); Command block",
+        ("02",),
+        False,
+        chk05,
+    ),
     Check("CHK-06", "Enable handshake (level)", "Command semantics: Handshake, Enable", ("02",), False, chk06),
     Check("CHK-07", "Reset handshake (edge)", "Command semantics: Reset, Acknowledge", ("06",), False, chk07),
     Check("CHK-08", "Watchdog trips on a stalled beat", "FR-11", ("06",), False, chk08),

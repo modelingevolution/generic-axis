@@ -42,9 +42,11 @@ class Options:
     tolerance: float = 0.1
 
 
-class AckTimeout(Exception):
+class AckTimeout(Exception):  # noqa: N818 — the protocol's name for the condition ("Acknowledge")
     def __init__(self, seq: int, status: StatusBlock) -> None:
-        super().__init__(f"no CommandAck within {ms(ACK_TIMEOUT_S)} ms (CommandSeq {seq}, CommandAck {status.command_ack})")
+        super().__init__(
+            f"no CommandAck within {ms(ACK_TIMEOUT_S)} ms (CommandSeq {seq}, CommandAck {status.command_ack})"
+        )
         self.seq = seq
         self.status = status
 
@@ -144,14 +146,22 @@ class CheckContext:
         Enable is dropped by the Reset write, since the PLC energises only on a fresh 0→1 (protocol.md "Enable").
         """
         status = await self.status()
-        if status.state in (AxisState.HOMING, AxisState.DISCRETE_MOTION, AxisState.CONTINUOUS_MOTION,
-                            AxisState.STOPPING):
+        if status.state in (
+            AxisState.HOMING,
+            AxisState.DISCRETE_MOTION,
+            AxisState.CONTINUOUS_MOTION,
+            AxisState.STOPPING,
+        ):
             if status.state != AxisState.STOPPING:
                 await self.command(self.enabled | Command.STOP)
-            status = (await wait_for(self.client, self.registers,
-                                     lambda s: s.state in (AxisState.STANDSTILL, AxisState.DISABLED,
-                                                           AxisState.ERROR_STOP),
-                                     STATE_TIMEOUT_S)).status
+            status = (
+                await wait_for(
+                    self.client,
+                    self.registers,
+                    lambda s: s.state in (AxisState.STANDSTILL, AxisState.DISABLED, AxisState.ERROR_STOP),
+                    STATE_TIMEOUT_S,
+                )
+            ).status
         fault, _ = await self.watchdog()
         if fault:
             await self.clear_watchdog_fault()
