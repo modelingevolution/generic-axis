@@ -165,10 +165,14 @@ jobs:
         timeout-minutes: 2
         continue-on-error: true
         run: |
-          dotnet nuget push ./nupkg/*.nupkg \
-            --api-key ${{ secrets.NUGET_API_KEY_ME }} \
-            --source https://nuget.modelingevolution.com/v3/index.json \
-            --timeout 60 --skip-duplicate
+          # Driver first, as on nuget.org below: rw2's plugin update resolves the plugin's nuspec
+          # dependencies from the feed.
+          for id in "$DRIVER_ID" "$PLUGIN_ID"; do
+            dotnet nuget push "./nupkg/$id.${{ steps.ver.outputs.version }}.nupkg" \
+              --api-key ${{ secrets.NUGET_API_KEY_ME }} \
+              --source https://nuget.modelingevolution.com/v3/index.json \
+              --timeout 60 --skip-duplicate
+          done
 
       - name: Push to NuGet.org
         env:
