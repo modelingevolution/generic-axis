@@ -13,6 +13,12 @@ namespace ModelingEvolution.GenericAxis.TestApp.Conformance;
 /// </summary>
 public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
 {
+    private IReadOnlyList<CheckDefinition> _catalog = CheckCatalog.All;
+
+    /// <summary>A runner over another catalog (runner-logic tests).</summary>
+    internal ConformanceRunner(ILoggerFactory loggerFactory, IReadOnlyList<CheckDefinition> catalog) : this(loggerFactory) =>
+        _catalog = catalog;
+
     private static readonly TimeSpan PreflightWindow = TimeSpan.FromSeconds(1);
     private readonly ILogger _log = loggerFactory.CreateLogger<ConformanceRunner>();
 
@@ -47,7 +53,7 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
                 refused = true;
                 var reason = $"refused to start: LeaseOwner {owner} is beating — another commander is attached; stop it first";
                 _log.LogWarning("{Reason}", reason);
-                foreach (var def in CheckCatalog.All) results.Add(Skipped(def, reason));
+                foreach (var def in _catalog) results.Add(Skipped(def, reason));
             }
             else
             {
@@ -71,7 +77,7 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
     {
         string? blocked = null;
         var byId = new Dictionary<string, CheckResultKind>();
-        foreach (var def in CheckCatalog.All)
+        foreach (var def in _catalog)
         {
             if (ct.IsCancellationRequested) blocked ??= "run interrupted";
             var skip = blocked ?? SkipReason(def, options, byId);
