@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=69.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "generic-axis-check"
+# Placeholder like src/Directory.Build.props; the tool is installed from the repo, never published (design.md).
+version = "1.0.0"
+description = "PLC conformance check for the generic-axis Modbus TCP register map (docs/protocol.md)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["pymodbus==3.15.0"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "pytest-timeout==2.4.0",
+    "pytest-cov==7.1.0",
+    "mypy==2.3.1",
+    "ruff==0.16.9",
+    "black==26.5.1",
+]
+
+[tool.setuptools.packages.find]
+include = ["generic_axis_check*"]
+
+[tool.setuptools.package-data]
+generic_axis_check = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+timeout = 300
+addopts = ["--strict-markers"]
+markers = [
+    "integration: runs the built C# test app as the simulator (GENERIC_AXIS_TESTAPP_DLL); CI job `conformance`",
+    "target: the checklist against GENERIC_AXIS_TARGET, one test per CHK id (tests_target/)",
+]
+
+[tool.black]
+line-length = 120
+target-version = ["py312"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM", "RUF", "ASYNC", "PT"]
+ignore = ["E501", "RUF001", "RUF002", "RUF003"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+show_error_codes = true
+
+[[tool.mypy.overrides]]
+module = ["pymodbus.*"]
+ignore_missing_imports = true
