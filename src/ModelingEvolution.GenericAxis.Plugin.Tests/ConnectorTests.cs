@@ -37,7 +37,7 @@ public sealed class ConnectorTests
 
         _log.Entries.Should().ContainSingle()
             .Which.Should().Match<(LogLevel Level, string Message)>(e =>
-                e.Level == LogLevel.Information && e.Message.Contains("LeaseOwner is 3"));
+                e.Level == LogLevel.Information && e.Message.Contains("MotionError.LeaseHeld: LeaseOwner is 3"));
         _connector.IsDue(_id).Should().BeTrue("a held lease is retried on the next 1 s tick");
     }
 
@@ -69,13 +69,52 @@ public sealed class ConnectorTests
     }
 
     [Fact]
-    public async Task A_Motion_Failure_Reports_Its_Machine_Readable_Reason()
+    public async Task A_Motion_Failure_Is_Logged_With_Its_Error_Class_And_Verbatim_Message()
     {
-        await _connector.AttachAsync(_id, 1,
-            Throws(new MotionException(MotionError.CommunicationLost, "PLC serves map version 2", "carriage")),
-            CancellationToken.None);
+        const string message = "carriage: PLC serves map version 2; this driver speaks 1 (register S+14)";
 
-        _log.Entries.Should().ContainSingle().Which.Message.Should().Contain("CommunicationLost");
+        await _connector.AttachAsync(_id, 1,
+            Throws(new MotionException(MotionError.CommunicationLost, message, "carriage")), CancellationToken.None);
+
+        _log.Entries.Should().ContainSingle()
+            .Which.Message.Should().Contain($"MotionError.CommunicationLost: {message}");
+    }
+
+    [Fact]
+    public async Task A_Machine_Refusal_Keeps_Its_Own_Class_And_Is_Not_Called_A_Connection_Problem()
+    {
+        const string message = "carriage: TravelMin 10 is not below TravelMax 5 (registers S+8..S+11)";
+
+        await _connector.AttachAsync(_id, 1,
+            Throws(new MotionException(MotionError.OutOfRange, message, "carriage")), CancellationToken.None);
+
+        var entry = _log.Entries.Should().ContainSingle().Subject;
+        entry.Message.Should().Contain($"MotionError.OutOfRange: {message}");
+        entry.Message.Should().NotContainAny("CommunicationLost", "connection", "unreachable");
+    }
+
+    [Fact]
+    public async Task A_Raw_Socket_Failure_Is_Logged_By_Its_Exception_Type_And_Verbatim_Message()
+    {
+        var ex = new SocketException((int)SocketError.ConnectionRefused);
+
+        await _connector.AttachAsync(_id, 1, Throws(ex), CancellationToken.None);
+
+        _log.Entries.Should().ContainSingle()
+            .Which.Message.Should().Contain($"System.Net.Sockets.SocketException: {ex.Message}");
+    }
+
+    [Fact]
+    public async Task The_Debug_Repeat_Carries_The_Same_Class_And_Message()
+    {
+        const string message = "carriage: PLC did not acknowledge CommandSeq 12 within 500 ms";
+        var ex = new MotionException(MotionError.CommunicationLost, message, "carriage");
+
+        await _connector.AttachAsync(_id, 1, Throws(ex), CancellationToken.None);
+        await _connector.AttachAsync(_id, 1, Throws(ex), CancellationToken.None);
+
+        _log.Entries[1].Level.Should().Be(LogLevel.Debug);
+        _log.Entries[1].Message.Should().Contain($"MotionError.CommunicationLost: {message}");
     }
 
     [Fact]

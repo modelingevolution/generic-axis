@@ -166,8 +166,8 @@ internal static class GenericAxisProperties
             catch (Exception ex) when (ex is FormatException or OverflowException or ArgumentException)
             {
                 throw new ArgumentException(
-                    $"'{GenericAxisConfigKey.For(template.Name, p.Suffix)}' is '{raw}', which is not a valid "
-                    + $"{p.ValueType} for this field: {ex.Message}", nameof(config), ex);
+                    $"'{GenericAxisConfigKey.For(template.Name, p.Suffix)}' = '{raw}' (declared {p.ValueType}) was "
+                    + $"refused: {ex.GetType().Name}: {ex.Message}", nameof(config), ex);
             }
         }
 
@@ -178,7 +178,8 @@ internal static class GenericAxisProperties
         catch (ArgumentException ex)
         {
             throw new ArgumentException(
-                $"{KeysFor(template.Name, ex.ParamName)}: {ex.Message}", nameof(config), ex);
+                $"{KeysFor(template.Name, ex.ParamName)} refused by GenericAxisOptions.Validate: {ex.Message}",
+                nameof(config), ex);
         }
 
         return options;

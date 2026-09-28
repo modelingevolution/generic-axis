@@ -157,8 +157,8 @@ public sealed class GenericAxisConnector : BackgroundService
             // it dies, and the next 1 s tick takes it.
             _notBefore.TryRemove(id, out _);
             _logger?.LogInformation(
-                "Generic axis {Device} is held by another commander; retrying in {Tick} s: {Reason}",
-                id, TickInterval.TotalSeconds, ex.Message);
+                "Generic axis {Device} is held by another commander: MotionError.LeaseHeld: {ErrorMessage} (next attempt in {Tick} s)",
+                id, ex.Message, TickInterval.TotalSeconds);
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
@@ -171,15 +171,28 @@ public sealed class GenericAxisConnector : BackgroundService
     /// <see cref="FailureRetryInterval"/> later. A successful attach and <see cref="Forget"/> re-arm
     /// the warning.
     /// </summary>
+    /// <remarks>
+    /// Owner ruling "errors are not magic": the log carries the failure's own class and its message
+    /// verbatim. A <see cref="MotionException"/> is reported by its <see cref="MotionError"/>, so a
+    /// protocol or machine refusal stays that and is never called a connection problem; anything
+    /// else is reported by its exception type. Nothing is re-worded or translated.
+    /// </remarks>
     internal void ReportFailure(DeviceId id, Exception ex)
     {
         _notBefore[id] = _time.GetTimestamp() + (long)(FailureRetryInterval.TotalSeconds * _time.TimestampFrequency);
 
-        var reason = ex is MotionException motion ? motion.Error.ToString() : ex.GetType().Name;
+        var errorClass = ErrorClass(ex);
         if (_reported.TryAdd(id, 0))
-            _logger?.LogWarning(ex, "Generic axis {Device} refused to attach ({Reason}); retrying every {Seconds} s",
-                id, reason, FailureRetryInterval.TotalSeconds);
+            _logger?.LogWarning(ex,
+                "Generic axis {Device} did not attach: {ErrorClass}: {ErrorMessage} (next attempt in {Seconds} s)",
+                id, errorClass, ex.Message, FailureRetryInterval.TotalSeconds);
         else
-            _logger?.LogDebug(ex, "Generic axis {Device} still refusing to attach ({Reason})", id, reason);
+            _logger?.LogDebug(ex,
+                "Generic axis {Device} still did not attach: {ErrorClass}: {ErrorMessage}",
+                id, errorClass, ex.Message);
     }
+
+    /// <summary><c>MotionError.X</c> for a motion failure, otherwise the exception's full type name.</summary>
+    internal static string ErrorClass(Exception ex) =>
+        ex is MotionException { Error: { } error } ? $"MotionError.{error}" : ex.GetType().FullName!;
 }
