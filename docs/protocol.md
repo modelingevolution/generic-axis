@@ -157,7 +157,10 @@ an error from one class into another.
 | **Transport** | The link failed: the TCP connect failed or was refused, the socket closed, a request got no answer within 500 ms, or the PLC returned a Modbus exception. | `CommunicationLost` | Network, IP, port, unit id. |
 | **Protocol** | The PLC answered, but not per this document. | `ProtocolMismatch`: `MapVersion ≠ 1` · limits partial or not sane · `State` is 5 or above 7 · `State = 7` with `FaultCode = 0` · the PLC changed a driver-owned register. `NotAcknowledged`: a command was written, and `CommandAck` did not echo `CommandSeq` within 500 ms. | PLC programmer. |
 | **Machine** | The PLC reports a fault, or the machine did not do what the PLC accepted. | `FaultCode` 1 → `DriveFault` · 2 → `LimitTripped` · 3 → `MotionFailed` · 4 → `WatchdogTripped` · 5 → `HomeLatchFailed` · 6 → `DriveFault` (drive link) · 7 → `SafetyStop` · ≥ 100 → `DriveFault` (vendor code in the message). An accepted command that misses the driver's budget: no Standstill after Enable → `DriveFault`; homing not finished → `HomeLatchFailed`; stopped outside the in-position window, or not arrived, or still moving after Stop → `MotionFailed`. | Maintenance or operator. |
-| **Commander** | The driver refused before writing anything. | `Busy`, `NotHomed`, `OutOfRange`, `UnreachableSpeed`, `UnsupportedSense`, `LeaseHeld` | The caller, or the other commander. |
+| **Commander** | The driver refused before writing anything. | `Busy`, `NotHomed`, `OutOfRange`, `UnreachableSpeed`, `UnsupportedSense`, `LeaseHeld`, `UnknownAxis`, `WrongAxisKind` (binding refusals) | The caller, or the other commander. |
+
+Every `MotionError` member of SDK 2.30.0 appears in exactly one row. A member added later is unmapped until this
+table names its class.
 
 **Rules**
 
