@@ -1,0 +1,27 @@
+@inherits LayoutComponentBase
+
+<MudThemeProvider IsDarkMode="true"/>
+<MudPopoverProvider/>
+<MudDialogProvider/>
+<MudSnackbarProvider/>
+
+<MudLayout>
+    <MudAppBar Elevation="1" Dense="true">
+        <MudText Typo="Typo.h6">Generic Axis</MudText>
+        <MudSpacer/>
+        <MudText Typo="Typo.caption">Modbus TCP &middot; protocol map v1 &middot; epic-065 f7</MudText>
+    </MudAppBar>
+    <MudDrawer Open="true" Variant="DrawerVariant.Mini" OpenMiniOnHover="true" Elevation="1">
+        <MudNavMenu>
+            <MudNavLink Href="/" Match="NavLinkMatch.All" Icon="@Icons.Material.Filled.PrecisionManufacturing">Simulator</MudNavLink>
+            <MudNavLink Href="/registers" Icon="@Icons.Material.Filled.TableChart">Registers</MudNavLink>
+            <MudNavLink Href="/driver" Icon="@Icons.Material.Filled.Gamepad">Driver</MudNavLink>
+            <MudNavLink Href="/conformance" Icon="@Icons.Material.Filled.FactCheck">Conformance</MudNavLink>
+        </MudNavMenu>
+    </MudDrawer>
+    <MudMainContent>
+        <MudContainer MaxWidth="MaxWidth.ExtraLarge" Class="pa-4">
+            @Body
+        </MudContainer>
+    </MudMainContent>
+</MudLayout>

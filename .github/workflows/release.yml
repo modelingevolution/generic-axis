@@ -1,0 +1,192 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+# Publishes BOTH packages (ADR-17): the driver ModelingEvolution.GenericAxis, a NuGet library in its
+# own right, and the rw2 plugin ModelingEvolution.GenericAxis.Plugin, whose nuspec depends on it.
+# The staged plugin zip carries both dlls, so a cell that installs from the zip needs no feed.
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      PLUGIN_ID: ModelingEvolution.GenericAxis.Plugin
+      DRIVER_ID: ModelingEvolution.GenericAxis
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Extract version from tag
+        id: ver
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: Inject version
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          # AssemblyVersion/FileVersion must be numeric, so strip any prerelease suffix
+          # (1.1.0-preview.1 -> 1.1.0). <Version>, the NuGet package version, keeps the full string.
+          NUMERIC="${VERSION%%-*}"
+          # src/Directory.Build.props is the single source of version metadata; no csproj carries one.
+          sed -i "s|<Version>1.0.0</Version>|<Version>${VERSION}</Version>|g" src/Directory.Build.props
+          sed -i "s|<AssemblyVersion>1.0.0</AssemblyVersion>|<AssemblyVersion>${NUMERIC}.0</AssemblyVersion>|g" src/Directory.Build.props
+          sed -i "s|<FileVersion>1.0.0</FileVersion>|<FileVersion>${NUMERIC}.0</FileVersion>|g" src/Directory.Build.props
+          grep -n "Version>" src/Directory.Build.props
+          grep -q "<Version>${VERSION}</Version>" src/Directory.Build.props \
+            || { echo "::error::version injection did not land in src/Directory.Build.props"; exit 1; }
+
+      - name: Restore
+        run: dotnet restore src/GenericAxis.sln
+
+      - name: Build
+        run: dotnet build src/GenericAxis.sln --no-restore --configuration Release
+
+      - name: Test
+        run: dotnet test src/GenericAxis.sln --no-build --configuration Release
+
+      - name: Pack driver and plugin
+        run: |
+          dotnet pack "src/$DRIVER_ID/$DRIVER_ID.csproj" --configuration Release --no-build --output ./nupkg
+          dotnet pack "src/$PLUGIN_ID/$PLUGIN_ID.csproj" --configuration Release --no-build --output ./nupkg
+          ls -1 ./nupkg
+
+      - name: Verify the plugin package depends on the driver package
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          # ADR-17: the driver reaches a NuGet consumer as a dependency, never embedded. A dependency
+          # missing here means a feed install would load the plugin without its driver.
+          unzip -p "./nupkg/$PLUGIN_ID.$VERSION.nupkg" "$PLUGIN_ID.nuspec" > plugin.nuspec
+          grep -q "id=\"$DRIVER_ID\" version=\"$VERSION\"" plugin.nuspec \
+            || { echo "::error::$PLUGIN_ID.nuspec has no dependency on $DRIVER_ID $VERSION"; cat plugin.nuspec; exit 1; }
+          if unzip -l "./nupkg/$PLUGIN_ID.$VERSION.nupkg" | grep -q "lib/.*/$DRIVER_ID.dll"; then
+            echo "::error::$DRIVER_ID.dll is embedded in the plugin package; it must be a dependency only"
+            exit 1
+          fi
+          echo "plugin -> $DRIVER_ID $VERSION dependency present, not embedded"
+
+      # The staged zip is what rw2 consumes, so it is built and released BEFORE any feed push: an
+      # unreachable feed or a missing secret must not cost the release its artifact.
+      - name: Publish plugin closure (framework-dependent)
+        run: |
+          dotnet publish "src/$PLUGIN_ID/$PLUGIN_ID.csproj" --configuration Release --output publish/plugin
+
+      # ── STRIP WHAT THE HOST SHIPS, KEEP EVERYTHING ELSE ────────────────────────────────────────
+      #
+      # rw2's PluginLoader loads a plugin into the default load context. Its Resolving handler returns
+      # the host's resident copy for any assembly the host ships, and probes this folder only for what
+      # the host does not have. So an assembly the host ships is dead weight here, and an assembly it
+      # does not ship must survive or the plugin fails at load on a cell.
+      #
+      # The strip patterns are globs, so a future dependency could match one by name without being a
+      # host assembly. The KEEP list is checked before any file is removed. When adding a dependency,
+      # ask one question: does the rw2 host reference this package? Yes -> it may be stripped.
+      # No -> it must survive, and belongs in KEEP if any pattern could match it.
+      - name: Stage plugin folder
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          cd publish/plugin
+
+          # Assemblies this plugin needs and the host does NOT ship.
+          KEEP="$PLUGIN_ID $DRIVER_ID FluentModbus"
+
+          strip() {
+            for f in $1; do
+              [ -e "$f" ] || continue
+              base="${f%.dll}"
+              case " $KEEP " in
+                *" $base "*) echo "keep   $base"; continue ;;
+              esac
+              echo "strip  $base"
+              rm -f "$base.dll" "$base.pdb" "$base.xml"
+            done
+          }
+
+          # Host-shipped assemblies (design.md § Plugin, Release).
+          strip 'RocketWelder.SDK*.dll'
+          strip 'ModelingEvolution.Drawing*.dll'
+          strip 'ModelingEvolution.Signals*.dll'
+          strip 'MicroPlumberd*.dll'
+          strip 'MudBlazor*.dll'
+          # App-specific runtime config: meaningless inside a loadable plugin closure.
+          rm -f *.runtimeconfig.json
+
+          cd ../..
+          # Layout PluginLoader discovers by: plugins/<id>/<version>/<id>.dll
+          mkdir -p "staging/plugins/$PLUGIN_ID/$VERSION"
+          cp -a publish/plugin/. "staging/plugins/$PLUGIN_ID/$VERSION/"
+
+      - name: Verify the staged closure is loadable
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          DIR="staging/plugins/$PLUGIN_ID/$VERSION"
+
+          # Each of these is an assembly the host does not provide; its absence is a load failure.
+          for required in "$PLUGIN_ID.dll" "$DRIVER_ID.dll" "FluentModbus.dll"; do
+            if [ ! -f "$DIR/$required" ]; then
+              echo "::error::$required is missing from the staged closure: either publish did not produce it or the strip step removed an assembly the host does not ship."
+              exit 1
+            fi
+            echo "present  $required"
+          done
+
+          # And the converse: a host-shipped assembly left behind would shadow nothing and only confuse.
+          for forbidden in ModelingEvolution.Drawing.dll RocketWelder.SDK.Abstractions.dll; do
+            if [ -f "$DIR/$forbidden" ]; then
+              echo "::error::$forbidden should have been stripped — the host serves it."
+              exit 1
+            fi
+            echo "absent   $forbidden"
+          done
+
+          echo "--- staged closure ---"
+          ls -1 "$DIR"
+
+      - name: Package staged plugin as zip
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          (cd staging && zip -r "../GenericAxis.Plugin-${VERSION}.zip" plugins/)
+          unzip -l "GenericAxis.Plugin-${VERSION}.zip"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: GenericAxis.Plugin-${{ steps.ver.outputs.version }}.zip
+          generate_release_notes: true
+
+      - name: Push to ModelingEvolution NuGet
+        # The org feed has no public ingress for GitHub-hosted runners. Bounded and allowed to fail;
+        # nuget.org below is the publish that matters from CI.
+        timeout-minutes: 2
+        continue-on-error: true
+        run: |
+          # Driver first, as on nuget.org below: rw2's plugin update resolves the plugin's nuspec
+          # dependencies from the feed.
+          for id in "$DRIVER_ID" "$PLUGIN_ID"; do
+            dotnet nuget push "./nupkg/$id.${{ steps.ver.outputs.version }}.nupkg" \
+              --api-key ${{ secrets.NUGET_API_KEY_ME }} \
+              --source https://nuget.modelingevolution.com/v3/index.json \
+              --timeout 60 --skip-duplicate
+          done
+
+      - name: Push to NuGet.org
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          # Checked explicitly: an unset secret otherwise reaches nuget.org as an empty --api-key and
+          # comes back as a bare 401, which reads like a revoked key rather than a missing one.
+          if [ -z "$NUGET_API_KEY" ]; then
+            echo "::error::NUGET_API_KEY is not set on this repository. The release zip is already published; only the NuGet push is missing. Add the secret and re-run this job."
+            exit 1
+          fi
+          # Driver first: the plugin's nuspec depends on it, so a consumer resolving the plugin the
+          # moment it indexes must find the driver already there.
+          dotnet nuget push "./nupkg/$DRIVER_ID.${{ steps.ver.outputs.version }}.nupkg" \
+            --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
+          dotnet nuget push "./nupkg/$PLUGIN_ID.${{ steps.ver.outputs.version }}.nupkg" \
+            --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate

@@ -41,7 +41,7 @@ FR-11 dead-commander watchdog) and epic-065 feature-007 (Pamet track directly fr
 
 | Addr | Name | Type | Meaning |
 |---|---|---|---|
-| 100 | `State` | uint16 | 0 Disabled · 1 Standstill · 2 Homing · 3 DiscreteMotion · 4 ContinuousMotion · 5 (reserved) · 6 Stopping · 7 ErrorStop — the numbers of the SDK `AxisState` enum. Any other value is read by the driver as ErrorStop. |
+| 100 | `State` | uint16 | 0 Disabled · 1 Standstill · 2 Homing · 3 DiscreteMotion · 4 ContinuousMotion · 5 (reserved) · 6 Stopping · 7 ErrorStop — the numbers of the SDK `AxisState` enum. Any other value is a Protocol error (`ProtocolMismatch`). |
 | 101 | `Flags` | bitfield | bit 0 Homed · bit 1 InPosition · bit 2 LimitMin · bit 3 LimitMax · bit 4 HomeSensor · bit 5 DriveReady · bit 6 Moving |
 | 102–103 | `ActualPosition` | int32 | Position units. Valid only while `Homed` is set (an absolute encoder keeps it across power cycles; the map does not care which). |
 | 104–105 | `ActualVelocity` | int32 | Signed, 0.001 unit/s. |
@@ -66,7 +66,7 @@ combination (a partial publication included) makes the driver refuse to attach.
   (Homing, DiscreteMotion, ContinuousMotion, Stopping, Disabled, Standstill). A status read that shows the new ack
   therefore also shows the command's state, never the state from before it.
 - **Acknowledge**: a command is accepted when `CommandAck == CommandSeq`. The driver waits ≤ 500 ms for the ack; no
-  ack → SDK `CommunicationLost` for the command (the heartbeat keeps running); the driver clears the edge bit it set.
+  ack → SDK `NotAcknowledged` for the command (the heartbeat keeps running); the driver clears the edge bit it set.
 - **Sequence at attach**: the driver reads `CommandAck` and continues from `CommandAck + 1`, so a new driver never
   issues a sequence number the PLC already acknowledged.
 - **Enable** (level): `Command.bit0 = 1` → PLC energises the drive; State leaves Disabled for Standstill.
@@ -146,6 +146,47 @@ dead commander is indistinguishable from an idle one. Therefore:
 - A rotary axis has limited travel: `ActualPosition` is absolute and never wraps. Endless rotation is not in
   version 1.
 
+## Errors and debugging
+
+Owner rulings 2026-09-29: an error must say what was seen, and never claim a cause it did not observe. There are four
+error classes. The driver, both checkers, the reports and the logs use the same four names, and nothing translates
+an error from one class into another.
+
+| Class | Meaning | SDK `MotionError` (2.30.0) | Who acts |
+|---|---|---|---|
+| **Transport** | The link failed: the TCP connect failed or was refused, the socket closed, a request got no answer within 500 ms, or the PLC returned a Modbus exception. | `CommunicationLost` | Network, IP, port, unit id. |
+| **Protocol** | The PLC answered, but not per this document. | `ProtocolMismatch`: `MapVersion ≠ 1` · limits partial or not sane · `State` is 5 or above 7 · `State = 7` with `FaultCode = 0` · the PLC changed a driver-owned register. `NotAcknowledged`: a command was written, and `CommandAck` did not echo `CommandSeq` within 500 ms. | PLC programmer. |
+| **Machine** | The PLC reports a fault, or the machine did not do what the PLC accepted. | `FaultCode` 1 → `DriveFault` · 2 → `LimitTripped` · 3 → `MotionFailed` · 4 → `WatchdogTripped` · 5 → `HomeLatchFailed` · 6 → `DriveFault` (drive link) · 7 → `SafetyStop` · ≥ 100 → `DriveFault` (vendor code in the message). An accepted command that misses the driver's budget: no Standstill after Enable → `DriveFault`; homing not finished → `HomeLatchFailed`; stopped outside the in-position window, or not arrived, or still moving after Stop → `MotionFailed`. | Maintenance or operator. |
+| **Commander** | The driver refused before writing anything. | `Busy`, `NotHomed`, `OutOfRange`, `UnreachableSpeed`, `UnsupportedSense`, `LeaseHeld` | The caller, or the other commander. |
+
+**Rules**
+
+1. **Say what you saw.** Every error message and every FAIL line has this shape:
+   `<axis or CHK-nn>: <Class>/<MotionError>: <what happened>. Read <Register> (<address>) = <value>[, expected <value>].`
+   A command error adds `CommandSeq <n> written, CommandAck <m> read, State <s> read`. A transport error adds the
+   endpoint, the operation, the register range and the exception message. A bare "communication error" is a defect.
+2. **One cause, one class.** A Protocol or Machine error is never reported as Transport. A Transport failure is never
+   reported as a Machine fault. After a link loss the driver reports `CommunicationLost`. When the link returns, a
+   watchdog trip the PLC reports is a separate `WatchdogTripped`, and the log carries both.
+3. **No silent recovery.** One retry of a failed transaction, after a reconnect, is the only retry. It logs at Warning
+   with the exception, and so does every failed heartbeat beat. A command is never re-sent, and an ack is waited for
+   once.
+4. **A register dump comes first.** Both checkers take `--dump`. It reads C+0…C+11 and S+0…S+14 once, or at 5 Hz
+   with `--watch` until Ctrl-C. It prints one row per register: address, name, raw hex, and the decoded value in
+   engineering units, with `State` and `FaultCode` names and `Flags` and `Command` bits by name. `--dump` writes
+   nothing and takes no lease. Its exit code is 0 when both blocks were read, and 1 on a Transport error.
+5. **Every FAIL carries evidence.** A FAIL in a report attaches the last read of both blocks, decoded as by `--dump`.
+
+Example messages:
+
+```
+carriage: Protocol/ProtocolMismatch: attach refused. Read MapVersion (S+14 = 114) = 2, expected 1.
+carriage: Protocol/NotAcknowledged: Home not accepted. CommandSeq 42 written, CommandAck 41 read after 500 ms, State 0 read.
+carriage: Machine/WatchdogTripped: Read FaultCode (S+6 = 106) = 4, WatchdogFault (C+10 = 10) = 1, WatchdogTrips (C+11 = 11) = 3.
+carriage: Transport/CommunicationLost: read S+0…S+14 on 192.168.58.20:502 unit 1 failed twice (reconnected once): Connection refused.
+CHK-06: Protocol/NotAcknowledged: Enable 1 not accepted. CommandSeq 7 written, CommandAck 6 read after 500 ms, State 0 read.
+```
+
 ## Conformance checks
 
 This checklist is executable. Two tools run it verbatim against a PLC, with no rw2 involved:
@@ -166,6 +207,7 @@ compares its ids with this table.
 | `--owner-id N` | 65535 | The checker's lease id. CHK-11 uses 65534 as the foreign id. Ids 65534–65535 are reserved for conformance tools; stations never use them. |
 | `--allow-motion` | off | Runs CHK-12…CHK-16. Without it they are SKIPPED. **Only with an operator at the machine and the travel clear.** |
 | `--tolerance X` | 0.1 | Position check threshold in axis units (CHK-13). This is a checker threshold, not a machine number. |
+| `--dump` [`--watch`] | off | Prints the decoded register dump (§ Errors and debugging, rule 4) and runs no checks. |
 | `--report PATH` | none | `*.md`: writes the Markdown report there and the JSON report next to it as `*.json`. `*.json`: writes the JSON report only. Any other extension is a usage error (exit 2). The Markdown report always goes to stdout. |
 
 Exit codes: 0 = no FAIL (SKIPPED allowed) · 1 = at least one FAIL · 2 = usage error · 3 = refused to start (the axis
@@ -195,7 +237,7 @@ is held by a live foreign lease, meaning another commander such as rw2 is attach
 
 | Id | Title | Protocol section | Needs | Procedure | PASS when |
 |---|---|---|---|---|---|
-| CHK-01 | Transport and unit | Transport | — | TCP connect (2 s timeout), then FC03 of S+0…S+14 on the unit. | Connected, and the read answers with no Modbus exception. |
+| CHK-01 | Transport and unit | Transport | — | TCP connect (a budget of ≤ 3 s including the tool's own retry; a budget, not a timing threshold), then FC03 of S+0…S+14 on the unit. | Connected, and the read answers with no Modbus exception. |
 | CHK-02 | Map version | Status block | 01 | Read S+14. | `MapVersion == 1`. |
 | CHK-03 | Machine limits published | Status block, "Limits come from the machine" | 02 | Read S+8…S+13. | Not all zero, `TravelMin < TravelMax`, `MaxVelocity > 0`. The values are reported. |
 | CHK-04 | Status mirror cadence | Status block; FR-11 tick | 02 | 30 status-block reads, one every 100 ms. | All 30 answer, the slowest round trip is ≤ 100 ms, and `State` ∈ {0,1,2,3,4,6,7} in every read. |
@@ -203,14 +245,14 @@ is held by a live foreign lease, meaning another commander such as rw2 is attach
 | CHK-06 | Enable handshake (level) | Command semantics: Handshake, Enable | 02 | Precondition State 0 or 1. Take the lease (checker id), beat. Write `[Enable, seq+1]`, then after the ack `[0, seq+2]`. | Each ack arrives in ≤ 500 ms. State is 1 within 5 s after Enable 1 and 0 within 5 s after Enable 0. Ack ms and state ms are reported. Energises the drive and commands no motion. |
 | CHK-07 | Reset handshake (edge) | Command semantics: Reset, Acknowledge | 06 | From State 0 write `[Reset, seq+1]`. After the ack, clear the edge `[0, seq+1]`. | Ack in ≤ 500 ms, `State` stays 0 and `FaultCode` stays 0 (Reset outside ErrorStop is a no-op). |
 | CHK-08 | Watchdog trips on a stalled beat | FR-11 | 06 | Hold the lease, `WatchdogFault = 0`, beat for 2 s, then stop beating. Keep polling. | `WatchdogFault == 1`, `WatchdogTrips` +1, `State == 7`, `FaultCode == 4`, all within **1.0–1.5 s** of the last beat. The trip time is reported. |
-| CHK-09 | Watchdog disarms after a trip and re-arms on clear | FR-11 | 08 | Without clearing, beat 1 s: no second trip is counted. Then Reset edge, `WatchdogFault = 0`, beat 2 s (must not trip), stop beating. | No trip while latched. No trip while beating. A second trip within 1.0–1.5 s with `WatchdogTrips` +1. Recovery afterwards is Reset plus `WatchdogFault = 0`. |
+| CHK-09 | Watchdog disarms after a trip and re-arms on clear | FR-11 | 08 | Setup: first trip the watchdog as in CHK-08 (lease held, `WatchdogFault = 0`, beat 2 s, stop, wait ≤ 1.5 s; no trip → FAIL "setup: no trip"). Then, without clearing, beat 1 s: no second trip is counted. Then Reset edge, `WatchdogFault = 0`, beat 2 s (must not trip), stop beating. | No trip while latched. No trip while beating. A second trip within 1.0–1.5 s with `WatchdogTrips` +1. Recovery afterwards is Reset plus `WatchdogFault = 0`. |
 | CHK-10 | Clean release disarms | FR-11 "Clean release disarms" | 08 | Beat 2 s, write `LeaseOwner = 0`, stop beating, wait 2 s. | No trip: `WatchdogFault == 0` and the trip count is unchanged. |
 | CHK-11 | Advisory lease | FR-11 "Advisory lease" | 02 | (a) `LeaseOwner = 0` → the checker's lease client takes it and reads back its id, then releases. (b) Write `LeaseOwner = 65534` and beat as that incumbent. The checker's lease client, with a 3 s timeout, must refuse. (c) Stop the incumbent's beat while the client watches. | (a) Read-back equals the checker id. (b) Refused with LeaseHeld naming 65534 after 3 s, and `LeaseOwner` is still 65534. (c) Taken within 2 s of the incumbent's last beat, with the time reported. Any trip caused by (c) is cleaned up. |
 | CHK-12 | Home | Command semantics: Home | 06, `--allow-motion` | Enable, then Home edge. | Ack in ≤ 500 ms. Then `State == 1` with `Homed` within 120 s, and `FaultCode == 0`. Duration reported. |
 | CHK-13 | MoveAbsolute to TravelMin + 10 | Command semantics: MoveAbsolute | 03, 12 | Target `TravelMin + 10`, velocity 10 % of `MaxVelocity`, acceleration 0. | Ack with `State == 3` in ≤ 500 ms. Then `State == 1` with `InPosition`, and `abs(ActualPosition − target) ≤ --tolerance`. The error and duration are reported. |
 | CHK-14 | Stop mid-move | Command semantics: Stop; FR-11 priority | 13 | MoveAbsolute toward `TravelMin + (TravelMax − TravelMin)/2` at 10 %. Once `abs(ActualVelocity)` ≥ 90 % of the commanded speed (or after 2 s), write Stop. | Ack in ≤ 500 ms. `ActualVelocity == 0` and `State == 1` within **200 ms** of the Stop write. The time is reported. |
 | CHK-15 | MoveVelocity | Command semantics: MoveVelocity | 13 | MoveVelocity at +1 % of `MaxVelocity` (away from `TravelMin`) for 1 s, then Stop. | Ack with `State == 4`, `ActualVelocity > 0` during the run, then `State == 1` after Stop within 200 ms. |
-| CHK-16 | Kill test | FR-11 | 15 | MoveVelocity at +1 %, then stop beating. The connection stays open, and polling continues. | Trip (`FaultCode 4`, `State 7`) within 1.0–1.5 s of the last beat. `ActualVelocity == 0` within 200 ms of the trip. `Homed` is still set. Both times are reported. |
+| CHK-16 | Kill test | FR-11 | 08, 15 | MoveVelocity at +1 %, then stop beating. The connection stays open, and polling continues. | Trip (`FaultCode 4`, `State 7`) within 1.0–1.5 s of the last beat. `ActualVelocity == 0` within 200 ms of the trip. `Homed` is still set. Both times are reported. |
 
 ### Report schema
 
@@ -229,20 +271,29 @@ JSON (`schema: "generic-axis-conformance/1"`). Both tools emit exactly these fie
   "checks": [
     { "id": "CHK-08", "title": "Watchdog trips on a stalled beat", "section": "FR-11",
       "result": "PASS", "durationMs": 3140,
-      "message": "trip after 1.12 s",
+      "message": "trip after 1.12 s", "errorClass": null,
       "observed": { "tripAfterMs": 1120, "watchdogTrips": 3, "faultCode": 4, "state": 7 } },
+    { "id": "CHK-06", "title": "Enable handshake (level)", "section": "Command semantics: Handshake, Enable",
+      "result": "FAIL", "durationMs": 612, "errorClass": "Protocol",
+      "message": "Protocol/NotAcknowledged: Enable 1 not accepted. CommandSeq 7 written, CommandAck 6 read after 500 ms, State 0 read.",
+      "observed": { "commandSeq": 7, "commandAck": 6, "state": 0 },
+      "lastRead": { "command": [1, 7, 0, 0, 0, 0, 0, 0, 12, 65535, 0, 2],
+                    "status": [0, 32, 0, 0, 0, 0, 0, 6, 0, 0, 38528, 152, 41248, 7, 1] } },
     { "id": "CHK-12", "title": "Home", "section": "Command semantics: Home",
-      "result": "SKIPPED", "durationMs": 0, "message": "needs --allow-motion", "observed": {} }
+      "result": "SKIPPED", "durationMs": 0, "message": "needs --allow-motion", "errorClass": null, "observed": {} }
   ],
   "cleanup": [ "C+0 = 0x0000 (Enable 0)", "C+9 = 0 (release lease)" ]
 }
 ```
 
 - `result` is `PASS`, `FAIL` or `SKIPPED`. `summary.result` is `FAIL` if any check failed, otherwise `PASS`.
+- `errorClass` is `Transport`, `Protocol`, `Machine` or `Commander` on a FAIL, and `null` otherwise. A FAIL also
+  carries `lastRead`, the raw values of C+0…C+11 and S+0…S+14 from the last read before the failure.
 - `observed` keys are camelCase. Numbers are raw integers or durations in ms. `language` is `python` or `csharp`.
 
 The Markdown report has three parts. A heading gives the tool, the target and the UTC time. A table follows with the
-columns `Id | Title | Result | Observed | Protocol section`. Last comes the cleanup list. The last line is
+columns `Id | Title | Result | Observed | Protocol section`. Each FAIL is followed by its message and the decoded
+dump of `lastRead`. Last comes the cleanup list. The last line is
 `RESULT: PASS` or `RESULT: FAIL`.
 
 ## Reference: the Delta positioner ladder this generalises
