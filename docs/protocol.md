@@ -210,8 +210,8 @@ compares its ids with this table.
 | `--dump` [`--watch`] | off | Prints the decoded register dump (§ Errors and debugging, rule 4) and runs no checks. |
 | `--report PATH` | none | `*.md`: writes the Markdown report there and the JSON report next to it as `*.json`. `*.json`: writes the JSON report only. Any other extension is a usage error (exit 2). The Markdown report always goes to stdout. |
 
-Exit codes: 0 = no FAIL (SKIPPED allowed) · 1 = at least one FAIL · 2 = usage error · 3 = refused to start (the axis
-is held by a live foreign lease, meaning another commander such as rw2 is attached; stop it first) · 4 = interrupted by
+Exit codes: 0 = no FAIL (SKIPPED allowed) · 1 = at least one FAIL · 2 = usage error · 3 = refused to start (another commander is beating
+— rw2, a station, or a second tool; see Pre-flight; stop it first) · 4 = interrupted by
 the operator (Ctrl-C / SIGINT) before the list finished.
 
 ### Rules for every run
@@ -221,7 +221,7 @@ the operator (Ctrl-C / SIGINT) before the list finished.
   another commander is live. The tool then writes nothing, reports every check SKIPPED, names the observed beat values
   and `LeaseOwner` in the message, and exits 3. This also catches a second conformance tool using the same owner id.
 - **Isolation.** Each tool run uses its own working directory for logs and reports. A run against a simulator uses a
-  simulator on its own port. Two runs never share a PLC, a simulator or a report path.
+  simulator on its own port. Two concurrent runs never share a PLC, a simulator or a report path.
 - **Order.** Checks run in id order. A check whose prerequisite FAILED or was SKIPPED is SKIPPED, and its message names
   the prerequisite.
 - **Timing.** Timing checks poll the status block every **20 ms**. Every duration is measured from the completion of
