@@ -30,6 +30,13 @@ def simulator_command(port: int) -> list[str] | None:
     return None
 
 
+def simulator_cwd() -> str | None:
+    """The test app's own directory: a .NET host watches ``appsettings.json`` in its working directory, and that
+    watch hangs on a WSL drvfs mount (/mnt/*), so the process never starts listening there."""
+    dll = os.environ.get("GENERIC_AXIS_TESTAPP_DLL")
+    return os.path.dirname(os.path.abspath(dll)) if dll else None
+
+
 def wait_for_port(port: int, process: subprocess.Popen[bytes], timeout_s: float) -> None:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -51,7 +58,9 @@ class Simulator:
         command = simulator_command(self.port)
         assert command is not None
         env = {**os.environ, **overrides}
-        self.process = subprocess.Popen(command, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        self.process = subprocess.Popen(
+            command, env=env, cwd=simulator_cwd(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
         wait_for_port(self.port, self.process, SIM_START_TIMEOUT_S)
 
     def stop(self) -> None:

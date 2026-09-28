@@ -25,7 +25,7 @@ from generic_axis_check.client import PlcClient
 from generic_axis_check.registers import COMMAND_LENGTH, RegisterMap
 
 from .conftest import PYTHON_DIR
-from .simproc import Simulator
+from .simproc import Simulator, simulator_cwd
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(240)]
 MAP = RegisterMap()
@@ -203,6 +203,7 @@ def test_ga_i_39_both_tools_agree(simulator: START, tmp_path: Path) -> None:
         capture_output=True,
         text=True,
         timeout=200,
+        cwd=simulator_cwd(),
         check=False,
     )
     assert cs_report.exists(), cs.stderr
