@@ -216,8 +216,12 @@ the operator (Ctrl-C / SIGINT) before the list finished.
 
 ### Rules for every run
 
-- **Pre-flight.** Read `LeaseOwner` and watch `Heartbeat` for 1 s. If a foreign owner is beating, exit 3, write nothing,
-  and report every check SKIPPED.
+- **Pre-flight.** Before its own first beat, the tool reads `LeaseOwner` and watches `Heartbeat` (C+8) for 1 s. Any
+  change of `Heartbeat` in that window, whatever `LeaseOwner` holds (0, a station id, or the tool's own id), means
+  another commander is live. The tool then writes nothing, reports every check SKIPPED, names the observed beat values
+  and `LeaseOwner` in the message, and exits 3. This also catches a second conformance tool using the same owner id.
+- **Isolation.** Each tool run uses its own working directory for logs and reports. A run against a simulator uses a
+  simulator on its own port. Two runs never share a PLC, a simulator or a report path.
 - **Order.** Checks run in id order. A check whose prerequisite FAILED or was SKIPPED is SKIPPED, and its message names
   the prerequisite.
 - **Timing.** Timing checks poll the status block every **20 ms**. Every duration is measured from the completion of
@@ -344,7 +348,9 @@ JSON (`schema: "generic-axis-conformance/1"`). Both tools emit exactly these fie
 - `result` is `PASS`, `FAIL` or `SKIPPED`. `summary.result` is `INTERRUPTED` if the operator interrupted the run,
   otherwise `FAIL` if any check failed, otherwise `PASS`.
 - `errorClass` is `Transport`, `Protocol`, `Machine` or `Commander` on a FAIL, and `null` otherwise. A FAIL also
-  carries `lastRead`, the raw values of C+0…C+11 and S+0…S+14 from the last read before the failure.
+  carries `lastRead`, the raw values of C+0…C+11 and S+0…S+14 taken as § Error class of a FAIL says: a fresh read
+  when the failure is detected, before any restore write. If that read fails, the last values read, with `null` for a
+  register never read.
 - `observed` follows § Observed values exactly. `language` is `python` or `csharp`.
 
 The Markdown report has four parts, in order:
