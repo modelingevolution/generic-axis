@@ -13,6 +13,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\ModelingEvolution.GenericAxis\ModelingEvolution.GenericAxis.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <InternalsVisibleTo Include="ModelingEvolution.GenericAxis.TestApp.Tests" />
     <InternalsVisibleTo Include="ModelingEvolution.GenericAxis.Tests" />
   </ItemGroup>
