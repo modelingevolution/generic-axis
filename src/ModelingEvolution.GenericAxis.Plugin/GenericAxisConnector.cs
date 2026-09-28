@@ -38,6 +38,10 @@ public sealed class GenericAxisConnector : BackgroundService
     private readonly ConcurrentDictionary<DeviceId, byte> _reported = new();
     // Earliest time (TimeProvider timestamp) of the next attempt after a non-lease failure.
     private readonly ConcurrentDictionary<DeviceId, long> _notBefore = new();
+    // The one attach attempt in flight per device. A connect can spend the whole lease timeout (30 s by
+    // default, unbounded when configured 0) waiting on a live commander, so the tick never awaits it:
+    // each device attaches on its own task and one slow axis cannot hold up another (review #13).
+    private readonly ConcurrentDictionary<DeviceId, Task> _attempts = new();
     private readonly IDeviceQuery? _devicesQuery;
     private readonly ILogger<GenericAxisConnector>? _logger;
     private readonly TimeProvider _time;
@@ -91,29 +95,26 @@ public sealed class GenericAxisConnector : BackgroundService
             TickInterval.TotalSeconds, FailureRetryInterval.TotalSeconds);
 
         using var timer = new PeriodicTimer(TickInterval, _time);
-        do
+        try
         {
-            foreach (var (id, device) in _devices)
+            do
             {
-                try
-                {
-                    await ReconcileAsync(id, device, stoppingToken).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-                {
-                    return;
-                }
-                catch (Exception ex)
-                {
-                    // One unreachable machine must not stop the others being attached.
-                    ReportFailure(id, ex);
-                }
+                foreach (var (id, device) in _devices)
+                    Reconcile(id, device, stoppingToken);
             }
+            while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false));
         }
-        while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false));
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            // Host shutdown; the in-flight attempts see the same token.
+        }
+        finally
+        {
+            await DrainAsync().ConfigureAwait(false);
+        }
     }
 
-    private async Task ReconcileAsync(DeviceId id, ModbusAxisDevice device, CancellationToken ct)
+    private void Reconcile(DeviceId id, ModbusAxisDevice device, CancellationToken ct)
     {
         // Removed from the hub: the read model disposed it and will never rebuild it.
         if (_devicesQuery is not null && _devicesQuery.GetById(id) is null)
@@ -133,7 +134,47 @@ public sealed class GenericAxisConnector : BackgroundService
 
         if (!IsDue(id)) return;
 
-        await AttachAsync(id, device.OwnerId, device.ConnectAsync, ct).ConfigureAwait(false);
+        StartAttempt(id, device.OwnerId, device.ConnectAsync, ct);
+    }
+
+    /// <summary>
+    /// Starts one attach attempt for <paramref name="id"/> on its own task, unless one is already in
+    /// flight for that device. The caller never waits for it.
+    /// </summary>
+    /// <returns><see langword="true"/> when an attempt was started; <see langword="false"/> when the
+    /// device already has one in flight.</returns>
+    internal bool StartAttempt(DeviceId id, int ownerId, Func<CancellationToken, Task> connect, CancellationToken ct)
+    {
+        var start = new Task<Task>(() => AttachAsync(id, ownerId, connect, ct));
+        var attempt = start.Unwrap();
+        if (!_attempts.TryAdd(id, attempt)) return false;
+
+        attempt.ContinueWith(
+            finished =>
+            {
+                _attempts.TryRemove(new KeyValuePair<DeviceId, Task>(id, finished));
+                // Observed here: the only exception AttachAsync lets out is the shutdown cancellation.
+                _ = finished.Exception;
+            },
+            CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        start.Start(TaskScheduler.Default);
+        return true;
+    }
+
+    /// <summary>The attempt in flight for <paramref name="id"/>, or <see langword="null"/>.</summary>
+    internal Task? AttemptFor(DeviceId id) => _attempts.TryGetValue(id, out var attempt) ? attempt : null;
+
+    /// <summary>Waits for every attempt in flight to finish; used at shutdown.</summary>
+    internal async Task DrainAsync()
+    {
+        try
+        {
+            await Task.WhenAll(_attempts.Values).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // The attempts were cancelled by the shutdown token; nothing to report.
+        }
     }
 
     /// <summary>
