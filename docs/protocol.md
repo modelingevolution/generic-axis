@@ -274,7 +274,7 @@ Every FAIL carries one class, decided by what the checker saw, in this order (§
 
 There is no Commander class in a checker FAIL: the checker writes raw registers and refuses nothing.
 
-- **The one retry.** A checker performs the one reconnect-and-retry the driver performs, logs it at Warning, and adds
+- **The one retry.** A checker performs the one reconnect-and-retry the driver performs, logs it at Warning, and
   counts it in that check's `retries` (§ Observed values). A second failure is a Transport FAIL.
 - **`lastRead`** is a fresh read of both blocks, taken when the failure is detected and before any restore write. If
   that read fails, it holds the last values read, with `null` for a register never read.
