@@ -1,4 +1,4 @@
-"""GA-I-30.py … GA-I-39: ``python -m generic_axis_check`` as a subprocess against a headless simulator process.
+"""GA-I-30.py … GA-I-43.py: ``python -m generic_axis_check`` as a subprocess against a headless simulator process.
 
 CI starts the built C# test app (``GENERIC_AXIS_TESTAPP_DLL``) with the scenario's options and faults as environment
 overrides (test-scenarios.md § Conformance checker against the simulator). ``GENERIC_AXIS_SIM_CMD`` can point the
@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -25,7 +26,7 @@ from generic_axis_check.client import PlcClient
 from generic_axis_check.registers import COMMAND_LENGTH, RegisterMap
 
 from .conftest import PYTHON_DIR
-from .simproc import Simulator, simulator_cwd
+from .simproc import Simulator, free_port, simulator_cwd
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(240)]
 MAP = RegisterMap()
@@ -135,6 +136,7 @@ async def test_ga_i_34_a_plc_without_the_watchdog_is_caught(simulator: START, tm
 
 async def test_ga_i_35_a_plc_that_never_acknowledges_is_caught(simulator: START, tmp_path: Path) -> None:
     sim = simulator(Simulator__Faults__SuppressAck="true")
+    at_rest = await registers(sim.port, MAP.status, 15)
     _code, doc = run_checker(sim.port, tmp_path)
     r = results(doc)
     assert r["CHK-06"][0] == "FAIL"
@@ -226,8 +228,150 @@ def test_ga_i_39_both_tools_agree(simulator: START, tmp_path: Path) -> None:
     _code, py = run_checker(sim.port, tmp_path, "--allow-motion")
     csharp = json.loads(cs_report.read_text(encoding="utf-8"))
 
-    def key(doc: dict[str, Any]) -> list[tuple[str, str, str, str]]:
-        return [(c["id"], c["title"], c["section"], c["result"]) for c in doc["checks"]]
+    def key(doc: dict[str, Any]) -> list[tuple[str, str, str, str, str | None, list[str]]]:
+        # Review #6: errorClass and the observed key lists (names AND order) are compared too.
+        return [
+            (c["id"], c["title"], c["section"], c["result"], c["errorClass"], list(c["observed"]))
+            for c in doc["checks"]
+        ]
+
+    def deterministic(doc: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        return {c["id"]: {k: v for k, v in c["observed"].items() if k in DETERMINISTIC} for c in doc["checks"]}
 
     assert key(py) == key(csharp)
+    assert deterministic(py) == deterministic(csharp)
     assert csharp["tool"]["language"] == "csharp"
+    for doc in (py, csharp):
+        assert all(v is None or isinstance(v, int) for c in doc["checks"] for v in c["observed"].values())
+
+
+DETERMINISTIC = frozenset(
+    {
+        # test-scenarios.md GA-I-39: every count key, and the values that do not depend on timing.
+        "reads",
+        "invalidStates",
+        "tripsWhileLatched",
+        "tripsWhileBeating",
+        "tripsAfterRelease",
+        "retries",
+        "mapVersion",
+        "travelMin",
+        "travelMax",
+        "maxVelocity",
+        "firstReadBack",
+        "secondReadBack",
+        "secondReadBackAfter1s",
+        "state",
+        "faultCode",
+        "watchdogFault",
+        "ownIdReadBack",
+        "leaseOwnerAfterRefusal",
+        "homedAfterTrip",
+        "target",
+        "commandedVelocity",
+    }
+)
+
+
+def dump_process(port: int, *args: str) -> subprocess.Popen[str]:
+    return subprocess.Popen(
+        [sys.executable, "-m", "generic_axis_check", f"127.0.0.1:{port}", "--dump", *args],
+        cwd=PYTHON_DIR,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+async def test_ga_i_40_dump_reads_without_touching(simulator: START) -> None:
+    sim = simulator()
+    before = await registers(sim.port, MAP.command, COMMAND_LENGTH)
+    once = dump_process(sim.port)
+    out, err = once.communicate(timeout=30)
+    assert once.returncode == 0, err
+    assert "C+0        0  Command" in out
+    assert "S+14     114  MapVersion             0x0001  1" in out
+
+    watch = dump_process(sim.port, "--watch")
+    await asyncio.sleep(2.0)
+    watch.send_signal(signal.SIGINT)
+    out, err = watch.communicate(timeout=30)
+    assert watch.returncode == 0, err
+    assert out.count("MapVersion") >= 10
+    assert await registers(sim.port, MAP.command, COMMAND_LENGTH) == before  # LeaseOwner included (C+9)
+
+    closed = dump_process(free_port())
+    _out, err = closed.communicate(timeout=30)
+    assert closed.returncode == 1
+    lines = err.splitlines()
+    assert lines[0].endswith("failed; retrying once")  # rule 3: the one retry, at Warning
+    assert re.fullmatch(
+        r"Transport/CommunicationLost: connect to 127\.0\.0\.1:\d+ failed .*Connection refused.*", lines[-1]
+    )
+
+
+async def test_ga_i_41_a_fail_carries_class_and_evidence(simulator: START, tmp_path: Path) -> None:
+    sim = simulator(Simulator__Faults__SuppressAck="true")
+    at_rest = await registers(sim.port, MAP.status, 15)
+    _code, doc = run_checker(sim.port, tmp_path)
+    chk06 = next(c for c in doc["checks"] if c["id"] == "CHK-06")
+    assert chk06["result"] == "FAIL"
+    assert chk06["errorClass"] == "Protocol"
+    assert re.search(r"CommandSeq \d+ written, CommandAck \d+ read after \d+ ms, State 0 read", chk06["message"])
+    # Under SuppressAck nothing before CHK-06 changes the status block (CHK-11's later trip does), so the block read
+    # before the run is the simulator's block at the FAIL.
+    assert chk06["lastRead"]["status"] == at_rest
+    markdown = (tmp_path / "report.md").read_text(encoding="utf-8")
+    failures = markdown.split("\nFailures:\n", 1)[1]
+    assert "CHK-06 Enable handshake (level): Protocol/NotAcknowledged: Enable 1 not accepted." in failures
+    assert "S+0      100  State                  0x0000  0 Disabled" in failures
+
+
+async def test_ga_i_43_a_second_tool_with_the_same_owner_id_is_refused(simulator: START, tmp_path: Path) -> None:
+    sim = simulator()
+    first_dir, second_dir = tmp_path / "first", tmp_path / "second"
+    first_dir.mkdir()
+    second_dir.mkdir()
+    first = checker(sim.port, first_dir / "report.md")
+    assert first.stderr is not None
+    for line in first.stderr:  # CHK-08 beats under the default owner 65535
+        if line.startswith("CHK-08 "):
+            break
+    second = checker(sim.port, second_dir / "report.md")
+    second.communicate(timeout=60)
+    first.communicate(timeout=200)
+    doc = json.loads((second_dir / "report.json").read_text(encoding="utf-8"))
+    message = doc["checks"][0]["message"]
+    assert second.returncode == 3
+    assert doc["summary"]["result"] == "REFUSED"
+    assert re.search(r"Heartbeat \(C\+8\) changed \d+( → \d+)+ within 1 s, LeaseOwner \(C\+9\) 65535;", message)
+    assert all(c["result"] == "SKIPPED" for c in doc["checks"])
+    assert doc["cleanup"] == []
+    first_doc = json.loads((first_dir / "report.json").read_text(encoding="utf-8"))
+    assert first.returncode == 0
+    assert first_doc["summary"]["result"] == "PASS"
+
+
+async def test_ga_i_43_a_beat_under_lease_owner_0_is_refused(simulator: START, tmp_path: Path) -> None:
+    sim = simulator()
+    commander = PlcClient("127.0.0.1", sim.port, 1)
+    await commander.connect()
+    beat = Beater(commander, MAP)  # LeaseOwner stays 0
+    await beat.start()
+    try:
+        before = await registers(sim.port, MAP.command, 8)
+        report = tmp_path / "report.md"
+        process = checker(sim.port, report, "--allow-motion")
+        while process.poll() is None:  # noqa: ASYNC110 — the commander keeps beating on this loop meanwhile
+            await asyncio.sleep(0.05)
+        after = await registers(sim.port, MAP.command, 8)
+        (lease,) = await registers(sim.port, MAP.lease_owner, 1)
+    finally:
+        await beat.stop()
+        commander.close()
+    doc = json.loads(report.with_suffix(".json").read_text(encoding="utf-8"))
+    assert process.returncode == 3
+    assert doc["summary"]["result"] == "REFUSED"
+    assert "LeaseOwner (C+9) 0;" in doc["checks"][0]["message"]
+    assert after[:8] == before[:8]
+    assert lease == 0
