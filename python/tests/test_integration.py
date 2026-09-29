@@ -8,8 +8,10 @@ same tests at another simulator, such as ``tests/stub_plc.py``, for development.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
+import random
 import re
 import signal
 import subprocess
@@ -22,7 +24,7 @@ from typing import Any
 import pytest
 
 from generic_axis_check.beat import Beater
-from generic_axis_check.client import PlcClient
+from generic_axis_check.client import PlcClient, PlcError
 from generic_axis_check.registers import COMMAND_LENGTH, RegisterMap
 
 from .conftest import PYTHON_DIR
@@ -431,3 +433,39 @@ async def test_ga_i_57_a_second_tool_during_the_firsts_chk03_is_refused(simulato
         assert first_doc["summary"]["result"] == "PASS"
         (lease,) = await registers(sim.port, MAP.lease_owner, 1)
         assert lease == 0
+
+
+CANCEL_CYCLES = 2000
+"""GA-I-44 (review #32): without the in-flight shield 0.5–3.5 % of cycles wedge, so 2000 catch it all but surely."""
+
+
+async def test_ga_i_44_cancelled_requests_leave_the_connection_clean(simulator: START) -> None:
+    # A request cancelled at a random point (0–4 ms after it was issued) must never spoil the next one on the same
+    # connection: every follow-up read answers within 0.3 s and no retry is ever needed. Needs a real server's timing
+    # (a stub cannot show the wedge: pymodbus skips a wrong-transaction-id reply and ignores one for a finished future).
+    sim = simulator()
+    client = PlcClient("127.0.0.1", sim.port, 1)
+    await client.connect()
+    rng = random.Random(32)
+    slowest = 0.0
+    failure: str | None = None
+    try:
+        for cycle in range(CANCEL_CYCLES):
+            pending = asyncio.create_task(client.read(MAP.status, 15))
+            await asyncio.sleep(rng.uniform(0, 0.004))
+            pending.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await pending
+            started = time.monotonic()
+            try:
+                await client.read(MAP.status, 15)
+            except PlcError as exc:
+                failure = f"cycle {cycle}: {exc}"
+                break
+            slowest = max(slowest, time.monotonic() - started)
+    finally:
+        client.close()
+    with cadence(sim):  # a starved simulator can fail a read on its own: INCONCLUSIVE, not a verdict
+        assert failure is None, failure
+        assert client.retries == 0, f"{client.retries} reconnect-and-retries in {CANCEL_CYCLES} cycles"
+        assert slowest <= 0.3, f"slowest follow-up read {slowest * 1000:.0f} ms"
