@@ -51,6 +51,8 @@ class StubOptions:
     watchdog_disabled: bool = False
     suppress_ack: bool = False
     swapped_word_order: bool = False
+    watchdog_s: float = WATCHDOG_S
+    """The FR-11 stall window; a PLC may trip anywhere in 1.0–1.5 s (ADR-31)."""
     stall_discrete: bool = False
     """MoveAbsolute is accepted (State 3) but the axis never moves: it never arrives (review #10)."""
     scan_s: float = SCAN_S
@@ -210,7 +212,7 @@ class StubPlc:
                 a.beat_changed = now
                 if r[C + 10] == 0:
                     a.armed = True
-            if a.armed and now - a.beat_changed >= WATCHDOG_S:
+            if a.armed and now - a.beat_changed >= self.o.watchdog_s:
                 self._error_stop(4)
                 r[C + 10] = 1
                 r[C + 11] = (r[C + 11] + 1) & 0xFFFF

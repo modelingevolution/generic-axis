@@ -113,12 +113,18 @@ async def test_run_refuses_a_live_foreign_commander_with_exit_3_and_writes_nothi
     assert report.cleanup == []
 
 
-async def test_run_takes_over_a_dead_foreign_lease(stub: StubPlc) -> None:
-    stub.regs[MAP.lease_owner] = 1  # a dead commander: owner set, beat never changes
+async def test_run_refuses_a_held_lease_with_no_beat_and_no_trip(stub: StubPlc) -> None:
+    # protocol.md "Pre-flight" (#35): a held lease, no beat and no trip within 1.6 s is a live commander or a PLC
+    # without a working watchdog: refused, naming LeaseOwner and WatchdogFault, nothing written.
+    stub.regs[MAP.lease_owner] = 1
     report = await run(options(stub), checks=upto("CHK-07"))
-    assert not report.refused
-    assert by_id(report)["CHK-06"][0] == PASS
-    assert stub.regs[MAP.lease_owner] == 0  # released by cleanup
+    assert report.exit_code == 3
+    assert report.checks[0].message == (
+        "pre-flight: LeaseOwner (C+9 = 9) = 1 is held and WatchdogFault (C+10 = 10) = 0: no beat and no trip within "
+        "1.6 s — a live commander, or a PLC without a working watchdog; release LeaseOwner by hand only if no "
+        "commander runs"
+    )
+    assert stub.writes == []
 
 
 async def test_run_catches_a_plc_that_never_acknowledges() -> None:
@@ -304,7 +310,7 @@ async def test_run_whose_preflight_read_fails_fails_chk01_skips_the_rest_and_wri
     assert chk01.result == FAIL
     assert chk01.error_class == "Transport"
     assert chk01.message.startswith(
-        "Transport/CommunicationLost: pre-flight did not complete, nothing was written: read C+8…C+9"
+        "Transport/CommunicationLost: pre-flight did not complete, nothing was written: read C+8…C+10"
     )
     assert chk01.observed["retries"] == 1
     assert all(c.result == SKIPPED and c.message == "needs CHK-01, which FAILED" for c in report.checks[1:])
@@ -577,3 +583,66 @@ async def test_a_lease_taken_by_another_owner_mid_run_fails_the_check_and_stops_
     assert len(after) <= 1  # at most the beat already in flight when LeaseOwner changed
     assert report.cleanup == ["C+8 (Heartbeat): stopped beating"]
     assert stub.regs[MAP.lease_owner] == 7
+
+
+async def test_a_commander_silent_for_1_1_s_is_still_refused() -> None:
+    # GA-U-119.py (#35): the PLC trips 1.4 s after the last beat; a commander that pauses 1.1 s as the checker starts
+    # still holds a valid lease. The held-lease watch runs to 1.6 s, sees the beat resume, and refuses.
+    async with StubPlc(stub_options(watchdog_s=1.4)) as plc:
+        commander = PlcClient("127.0.0.1", plc.port, 1)
+        await commander.connect()
+        await commander.write(MAP.lease_owner, [1])
+        beat = Beater(commander, MAP)
+        await beat.start()
+        await asyncio.sleep(0.3)  # armed
+        try:
+            await beat.stop()
+            before = len(plc.writes)
+            task = asyncio.create_task(run(options(plc, motion=True)))
+            await asyncio.sleep(1.1)
+            await beat.start()
+            report = await task
+            ours = [w for w in plc.writes[before:] if w[0] != MAP.heartbeat]
+        finally:
+            await beat.stop()
+            commander.close()
+        fault = plc.regs[MAP.watchdog_fault]
+    assert report.exit_code == 3
+    assert report.result == "REFUSED"
+    assert "another commander is live" in report.checks[0].message
+    assert ours == []
+    assert fault == 0
+
+
+@pytest.mark.timeout(60)
+async def test_a_dead_commander_whose_watchdog_trips_lets_the_run_proceed_and_its_trip_stays() -> None:
+    # GA-U-120.py (#35): the lease holder (owner 1, Enabled) dies just before the run; its watchdog trips during the
+    # watch. The run proceeds and says so after the heading; CHK-06 FAILs Machine/WatchdogTripped; nothing clears the
+    # trip, the lease or the Enable it left: cleanup is empty.
+    async with StubPlc() as plc:
+        commander = PlcClient("127.0.0.1", plc.port, 1)
+        await commander.connect()
+        await commander.write(MAP.lease_owner, [1])
+        beat = Beater(commander, MAP)
+        await beat.start()
+        await commander.write(MAP.command, [int(Command.ENABLE), 5])
+        await asyncio.sleep(0.3)
+        await beat.stop()  # dies
+        commander.close()
+        report = await run(options(plc, motion=True))
+        end = (plc.regs[MAP.watchdog_fault], plc.regs[MAP.lease_owner], plc.axis.state, plc.regs[MAP.command])
+    note = (
+        "LeaseOwner (C+9 = 9) = 1 held with no beat and WatchdogFault (C+10 = 10) = 1: the previous commander is dead; "
+        "its trip is left for its operator."
+    )
+    assert report.preflight == note
+    assert to_markdown(report).splitlines()[2] == f"Pre-flight: {note}"
+    results = by_id(report)
+    assert [results[f"CHK-{n:02d}"][0] for n in range(1, 6)] == [PASS] * 5
+    chk06 = report.checks[5]
+    assert (chk06.result, chk06.error_class) == (FAIL, "Machine")
+    assert chk06.message.startswith("Machine/WatchdogTripped: ")
+    assert all(c.result == SKIPPED for c in report.checks[6:])
+    assert report.cleanup == []
+    assert end == (1, 1, 7, int(Command.ENABLE))
+    assert report.exit_code == 1

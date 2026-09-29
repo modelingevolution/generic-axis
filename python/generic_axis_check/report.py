@@ -93,6 +93,7 @@ def to_markdown(report: Report) -> str:
         f"# {TOOL_NAME} ({LANGUAGE} {tool_version()}) — {o.host}:{o.port} unit {o.unit} "
         f"(C={o.command_base}, S={o.status_base}) — {_utc(report.started_at)}",
         "",
+        *([f"Pre-flight: {report.preflight}", ""] if report.preflight else []),
         f"Motion checks: {'allowed' if o.allow_motion else 'not allowed (CHK-12…16 SKIPPED)'}.",
         "",
         "| Id | Title | Result | Observed | Protocol section |",

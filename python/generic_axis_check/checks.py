@@ -27,6 +27,7 @@ from .errors import (
     HOME_LATCH_FAILED,
     MOTION_FAILED,
     PROTOCOL_MISMATCH,
+    WATCHDOG_TRIPPED,
     ErrorClass,
     Read,
     format_message,
@@ -367,6 +368,14 @@ async def chk06(ctx: CheckContext) -> Outcome:
         else:
             what = "precondition: the axis is not at rest"
             outcome = motion_failed(ctx, what, Read("State", status.state), Read("FaultCode", status.fault_code))
+        outcome.restore = False
+        return outcome
+    fault, _ = await ctx.watchdog()
+    if fault and ctx.foreign_trip:
+        # protocol.md "Pre-flight", dead commander: its trip is left for its operator. FR-11 "At attach" would clear
+        # it; the checker does not (review #35).
+        what = "the previous commander's watchdog trip is left for its operator; the checker does not clear it"
+        outcome = fail(ctx, ErrorClass.MACHINE, WATCHDOG_TRIPPED, what, Read("WatchdogFault", fault))
         outcome.restore = False
         return outcome
     await ctx.take_lease()

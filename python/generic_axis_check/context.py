@@ -110,6 +110,8 @@ class CheckContext:
     session_lease: bool = False
     """CHK-06 established the lease; every later check restores it."""
     caused_trip: bool = False
+    foreign_trip: bool = False
+    """Pre-flight found a dead lease holder's watchdog trip: it is left for its operator, never cleared (#35)."""
     connect_ms: int | None = None
     """How long the run's TCP connect took (CHK-01 ``connectMs``)."""
     evidence: LastRead | None = None

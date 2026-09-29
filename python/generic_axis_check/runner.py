@@ -43,6 +43,9 @@ REFUSED = "REFUSED"
 PREFLIGHT_WATCH_S = 1.0
 """protocol.md "Pre-flight": read ``LeaseOwner`` and watch ``Heartbeat`` for 1 s."""
 
+HELD_LEASE_WATCH_S = 1.6
+"""protocol.md "Pre-flight": with ``LeaseOwner ≠ 0``, 1.5 s (the latest FR-11 trip) plus one 100 ms read."""
+
 FIRST_LEASED_CHECK = "CHK-06"
 """protocol.md "Lease and beat between checks": from CHK-06 onwards the checker holds the lease and beats."""
 
@@ -71,6 +74,9 @@ class Report:
     cleanup: list[str]
     refused: bool = False
     interrupted: bool = False
+    preflight: str | None = None
+    """The pre-flight refusal, or its note when the run proceeded (a dead commander); the Markdown's "Pre-flight:"
+    line after the heading."""
     unknown_observed: set[str] = field(default_factory=set)
     """``check id.key`` a check reported that § Observed values does not list (dropped; a defect tests catch)."""
 
@@ -115,24 +121,73 @@ def prerequisite_problem(check: Check, results: dict[str, CheckResult]) -> str |
     return None
 
 
-async def preflight(client: PlcClient, registers: RegisterMap) -> str | None:
-    """protocol.md "Pre-flight": watch ``Heartbeat`` for 1 s before the tool's own first beat. Any change, whatever
-    ``LeaseOwner`` holds, is a live commander: returns what was seen, or None. Writes nothing (ADR-33)."""
-    beat, owner = await client.read(registers.heartbeat, 2)
+@dataclass(frozen=True, slots=True)
+class Preflight:
+    """The pre-flight verdict: a refusal (exit 3), or a note for the report when the run proceeds (or neither)."""
+
+    refusal: str | None = None
+    note: str | None = None
+    foreign_trip: bool = False
+    """The lease holder is dead and its watchdog trip is left for its operator: the checker never clears it."""
+
+
+async def preflight(client: PlcClient, registers: RegisterMap) -> Preflight:
+    """protocol.md "Pre-flight" (review #35): before the tool's own first beat, watch ``Heartbeat`` for 1 s; with
+    ``LeaseOwner ≠ 0`` also watch ``WatchdogFault`` for 1.6 s. A ``Heartbeat`` change is a live commander (refused,
+    whatever ``LeaseOwner`` holds). A held lease with ``WatchdogFault = 1`` and no beat is a dead commander (proceed,
+    and say so). A held lease with neither is refused. Writes nothing (ADR-33)."""
+    beat, owner, fault = await client.read(registers.heartbeat, 3)
     beats = [beat]
-    deadline = time.monotonic() + PREFLIGHT_WATCH_S
-    while time.monotonic() < deadline:
+    started = time.monotonic()
+
+    def watching() -> bool:
+        elapsed = time.monotonic() - started
+        if len(beats) > 1:
+            return elapsed < PREFLIGHT_WATCH_S  # a beat is still watched to 1 s so the refusal names several values
+        if owner != 0 and fault != 0:
+            return False
+        return elapsed < (PREFLIGHT_WATCH_S if owner == 0 else HELD_LEASE_WATCH_S)
+
+    while watching():
         await asyncio.sleep(BEAT_PERIOD_S)
-        now_beat, owner = await client.read(registers.heartbeat, 2)
+        now_beat, owner, fault = await client.read(registers.heartbeat, 3)
         if now_beat != beats[-1]:
             beats.append(now_beat)
-    if len(beats) == 1:
-        return None
-    seen = " → ".join(str(b) for b in beats)
-    return (
-        f"pre-flight: another commander is live: Heartbeat (C+8) changed {seen} within {PREFLIGHT_WATCH_S:g} s, "
-        f"LeaseOwner (C+9) {owner}; stop it first"
+    owner_at = f"LeaseOwner (C+9 = {registers.lease_owner}) = {owner}"
+    fault_at = f"WatchdogFault (C+10 = {registers.watchdog_fault}) = {fault}"
+    if len(beats) > 1:
+        seen = " → ".join(str(b) for b in beats)
+        return Preflight(
+            f"pre-flight: another commander is live: Heartbeat (C+8) changed {seen} within {PREFLIGHT_WATCH_S:g} s, "
+            f"LeaseOwner (C+9) {owner}; stop it first"
+        )
+    if owner == 0:
+        return Preflight()
+    if fault != 0:
+        note = (
+            f"{owner_at} held with no beat and {fault_at}: the previous commander is dead; its trip is left for its "
+            "operator."
+        )
+        return Preflight(note=note, foreign_trip=True)
+    return Preflight(
+        f"pre-flight: {owner_at} is held and {fault_at}: no beat and no trip within {HELD_LEASE_WATCH_S:g} s — "
+        "a live commander, or a PLC without a working watchdog; release LeaseOwner by hand only if no commander runs"
     )
+
+
+async def foreign_trip_problem(ctx: CheckContext) -> Outcome | None:
+    """protocol.md "Pre-flight", dead commander: "The tool never clears that trip: a restore that finds it FAILs
+    Machine/WatchdogTripped". Reads only."""
+    if not ctx.foreign_trip or ctx.caused_trip:
+        return None
+    fault, _ = await ctx.watchdog()
+    if fault == 0:
+        return None
+    (owner,) = await ctx.client.read(ctx.registers.lease_owner, 1)
+    what = "the previous commander's watchdog trip is left for its operator; the checker does not clear it"
+    reads = (Read("WatchdogFault", fault), Read("LeaseOwner", owner))
+    message = format_message(ErrorClass.MACHINE, WATCHDOG_TRIPPED, what, ctx.registers, reads)
+    return Outcome(FAIL, message, {}, ErrorClass.MACHINE, WATCHDOG_TRIPPED, restore=False)
 
 
 async def restore(ctx: CheckContext) -> Outcome | None:
@@ -195,9 +250,13 @@ async def cleanup(ctx: CheckContext) -> None:
             log.exception("cleanup %s: checker defect", label)
             journal.append(f"{label}: failed (checker defect: {type(exc).__name__}: {exc})")
 
+    # Nothing is written that the checker did not change: Stop and Enable 0 only once it wrote a command itself (a
+    # dead commander's Enable and motion are left for its operator, #35 and #18).
+    commanded = ctx.seq is not None
+
     async def stop_if_moving() -> None:
         status = await ctx.status()
-        if status.state in MOVING_STATES:
+        if commanded and status.state in MOVING_STATES:
             seq = ctx.seq = next_nonzero(ctx.seq if ctx.seq is not None else status.command_ack)
             word = int(ctx.enabled | Command.STOP)
             await ctx.client.write(registers.command, [word, seq], retry=False)  # a command is never re-sent
@@ -223,7 +282,7 @@ async def cleanup(ctx: CheckContext) -> None:
 
     async def enable_off() -> None:
         (word,) = await ctx.client.read(registers.command, 1)
-        if word & Command.ENABLE:
+        if commanded and word & Command.ENABLE:
             ctx.seq = next_nonzero(ctx.seq if ctx.seq is not None else (await ctx.status()).command_ack)
             await ctx.client.write(registers.command, [0, ctx.seq])
             ctx.command_word = 0
@@ -231,7 +290,7 @@ async def cleanup(ctx: CheckContext) -> None:
 
     async def clear_trip() -> None:
         fault, _ = await ctx.watchdog()
-        if fault and (ctx.caused_trip or ctx.holds_lease):
+        if fault and (ctx.caused_trip or (ctx.holds_lease and not ctx.foreign_trip)):
             await ctx.client.write(registers.watchdog_fault, [0])
             journal.append("C+10 = 0 (clear the watchdog fault the checker caused)")
 
@@ -269,12 +328,18 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
 
     running = "pre-flight"
     preflight_failure: Outcome | None = None
+    preflight_text: str | None = None
     try:
         try:
             connect_started = time.monotonic()
             await client.connect()
             ctx.connect_ms = ms(time.monotonic() - connect_started)
-            live = await preflight(client, registers)
+            verdict = await preflight(client, registers)
+            live = verdict.refusal
+            preflight_text = verdict.refusal or verdict.note
+            ctx.foreign_trip = verdict.foreign_trip
+            if verdict.note is not None:
+                say(f"pre-flight: {verdict.note}")
             proven_free = live is None
         except PlcError as exc:
             # Review #4: pre-flight did not prove the axis free, so nothing may be written. CHK-01 FAILs with the
@@ -348,6 +413,13 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
                     abort = f"{check.id}: {lost_outcome.message.split(': ', 1)[1]}"
                 elif outcome.defect:
                     abort = f"not run: checker defect during {check.id}"
+                elif check.id >= FIRST_LEASED_CHECK and (foreign := await foreign_trip_problem(ctx)) is not None:
+                    # A dead commander's trip is still latched: nothing may restore or clear it, so nothing more runs.
+                    if outcome.result != FAIL:
+                        outcome, last_read = foreign, await ctx.capture()
+                    elif outcome.message != foreign.message:
+                        outcome.message += f" Restore failed: {foreign.message}"
+                    abort = f"restore after {check.id} failed"
                 elif check.id >= FIRST_LEASED_CHECK and outcome.restore:
                     why = await _restore(ctx)
                     if why is not None:
@@ -407,6 +479,7 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
         refused=refused,
         interrupted=interrupted,
         unknown_observed=unknown,
+        preflight=preflight_text,
     )
 
 
