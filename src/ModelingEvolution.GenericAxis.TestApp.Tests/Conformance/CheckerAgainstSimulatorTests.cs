@@ -23,6 +23,17 @@ public sealed class CheckerAgainstSimulatorTests
 
     private static CheckResult Get(ConformanceReport r, string id) => r.Checks.Single(c => c.Id == id);
 
+    /// <summary>Waits for an observed condition (bounded, polled every 10 ms): never a fixed delay standing in for it.</summary>
+    internal static async Task Until(Func<bool> condition, string what, int boundSeconds = 10)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (!condition())
+        {
+            if (sw.Elapsed > TimeSpan.FromSeconds(boundSeconds)) throw new TimeoutException($"setup: not observed within {boundSeconds} s: {what}");
+            await Task.Delay(10);
+        }
+    }
+
     private static long Observed(CheckResult c, string key) =>
         c.Observed.Single(kv => kv.Key == key).Value ?? throw new InvalidOperationException($"{c.Id}.{key} is null");
 
@@ -174,9 +185,9 @@ public sealed class CheckerAgainstSimulatorTests
         var options = new GenericAxisOptions { Name = "carriage", Host = "127.0.0.1", Port = sim.Port };
         await using var commander = new ModbusLinearTrack(DeviceId.New("GenericLinearTrack"), options, ownerId: 1);
         await commander.ConnectAsync();
-        await Task.Delay(300);
+        var beat = sim.Snapshot.Heartbeat;
+        await Until(() => sim.Snapshot.LeaseOwner == 1 && sim.Snapshot.Heartbeat != beat, "the commander holds the lease and beats");
         var before = sim.Snapshot;
-        before.LeaseOwner.Should().Be(1);
 
         var started = DateTime.UtcNow;
         var report = await Check(sim, allowMotion: true);
@@ -315,7 +326,7 @@ public sealed class CheckerAgainstSimulatorTests
     public async Task AFaultTheCheckDidNotExpectIsAMachineError()
     {
         using var sim = new LiveSimulator(new SimulatedAxisOptions { Faults = new SimFaults { DriveFault = true } });
-        await Task.Delay(50);
+        await Until(() => sim.Snapshot.State == SimAxisState.ErrorStop, "the injected drive fault is published");
 
         var report = await Check(sim, allowMotion: false);
 
@@ -660,8 +671,9 @@ public sealed class CheckerAgainstSimulatorTests
         while (sim.Snapshot.WatchdogFault == 0 && tripWait.Elapsed < TimeSpan.FromSeconds(10)) await Task.Delay(10);
         sim.Snapshot.WatchdogFault.Should().Be(1, "setup: the commander's axis tripped");
         using var stop = new CancellationTokenSource();
+        var tripBeat = sim.Snapshot.Heartbeat;
         var beating = Task.Run(async () => { while (!stop.IsCancellationRequested) await commander.BeatAsync(TimeSpan.FromMilliseconds(100)); });
-        await Task.Delay(300);
+        await Until(() => sim.Snapshot.Heartbeat != tripBeat, "the tripped commander beats again");
         var before = await sim.SettledAsync();
 
         var report = await Check(sim, allowMotion: false);

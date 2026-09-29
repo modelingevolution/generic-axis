@@ -104,8 +104,8 @@ public sealed class SimulatorServiceCadenceTests
         using var client = new FluentModbus.ModbusTcpClient();
         client.Connect(new IPEndPoint(IPAddress.Loopback, host.Port), FluentModbus.ModbusEndianness.BigEndian);
         client.ReadHoldingRegisters<ushort>(1, 100, 15).ToArray();
-        await Task.Delay(100);
-        service.MaxScanGapSinceFirstClient.Should().BeGreaterThan(TimeSpan.Zero, "measured since the client connected");
+        await ModelingEvolution.GenericAxis.TestApp.Tests.Conformance.CheckerAgainstSimulatorTests.Until(
+            () => service.MaxScanGapSinceFirstClient > TimeSpan.Zero, "a gap measured since the client connected");
 
         await service.StopAsync(CancellationToken.None);
         service.MaxScanGapSinceFirstClient.Should().BeGreaterThan(TimeSpan.Zero, "kept after the stop, for the exit line");
