@@ -318,6 +318,12 @@ internal static class CheckCatalog
                                           + $"Read Heartbeat ({ctx.Where(ctx.Map.Heartbeat)}) = {v.Heartbeat}, LeaseOwner ({ownerAt}) = {v.LeaseOwner}, expected {ctx.Options.OwnerId}."));
         }
 
+        // The incumbent's death may still trip the PLC (1.0–1.5 s after its last beat) and nobody beats until the
+        // restore: settle that trip before restoring, or the restore reads WatchdogFault = 0, the trip lands, and the
+        // restore FAILs "did not clear" (seen on a 2-vCPU runner).
+        var settle = TimeSpan.FromMilliseconds(TripMaxMs + 100) - Stopwatch.GetElapsedTime(incumbent.LastBeatAt);
+        if (settle > TimeSpan.Zero) await ctx.WatchAsync(v => v.WatchdogFault != 0, settle, ct);
+
         return CheckOutcome.Judge(failures, $"(a) read back {aOwner}; (b) refused after {refusedMs?.ToString() ?? "—"} ms; (c) taken {takenMs?.ToString() ?? "—"} ms after the last beat",
             ("ownIdReadBack", aOwner), ("refusedAfterMs", refusedMs), ("leaseOwnerAfterRefusal", bOwner), ("takenAfterMs", takenMs));
     }

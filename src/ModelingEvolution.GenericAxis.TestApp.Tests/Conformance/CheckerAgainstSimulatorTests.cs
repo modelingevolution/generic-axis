@@ -823,5 +823,33 @@ public sealed class CheckerAgainstSimulatorTests
         end.LeaseOwner.Should().Be(1, "neither (b)'s 65534 nor a restore overwrote the other commander's lease");
     }
 
+    /// <summary>
+    /// GA-I-65 (2-vCPU runner, GA-I-61's real cause): CHK-11(c)'s incumbent dies and its trip lands 1.0–1.5 s after its
+    /// last beat, possibly after the lease client took the lease. CHK-11 settles that trip before restoring, so the
+    /// restore always sees and clears it, whatever the PLC's trip time.
+    /// </summary>
+    [Theory(Timeout = 180_000)]
+    [InlineData(1.0)]
+    [InlineData(1.25)]
+    [InlineData(1.45)] // 1.5 exactly puts the 10 ms-scanned trip at ~1520 ms, a legitimate CHK-08 FAIL
+    public async Task GA_I_65_Chk11RestoresAfterTheIncumbentsTripWhateverItsTiming(double tripSeconds)
+    {
+        using var sim = new LiveSimulator(new SimulatedAxisOptions { WatchdogTimeout = TimeSpan.FromSeconds(tripSeconds) });
+        int? tripsAtChk11 = null;
+
+        var report = await Check(sim, allowMotion: false, progress: r =>
+        {
+            if (r.Running == "CHK-11") tripsAtChk11 ??= sim.Snapshot.WatchdogTrips; // CHK-10's restore has settled by now
+        });
+
+        // The mechanism: the incumbent's death is always settled into its one trip before the restore, which clears it.
+        // Without the settle, a late-tripping PLC is beaten by the restore's first beat and the race stays hidden.
+        ((await sim.SettledAsync()).WatchdogTrips - tripsAtChk11).Should().Be(1, "CHK-11 waited for the incumbent's trip");
+        var chk11 = Get(report, "CHK-11");
+        chk11.Result.Should().Be(CheckResultKind.Pass, chk11.Message);
+        report.ExitCode.Should().Be(0, string.Join("; ", report.Checks.Where(c => c.Result == CheckResultKind.Fail).Select(c => $"{c.Id}: {c.Message}")));
+        (await sim.SettledAsync()).WatchdogFault.Should().Be(0, "cleanup cleared the trip the checker caused");
+    }
+
     private volatile bool _chk14Running;
 }
