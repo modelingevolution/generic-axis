@@ -23,6 +23,12 @@ public class HeartbeatContextTests
             try
             {
                 await rig.ConnectAsync();
+                // Since c77a901 ConnectAsync reaches Start() on the pool (its awaits are ConfigureAwait(false)), which
+                // would hide a loop that captures its starter's context. Start the loop from this thread directly: the
+                // heartbeat's own contract is that its loop never runs on the context that started it.
+                await rig.Device.Heartbeat.StopAsync();
+                SynchronizationContext.Current.Should().BeSameAs(caller, "anchor: Start() runs on the caller's context");
+                rig.Device.Heartbeat.Start();
                 connected.SetResult();
             }
             catch (Exception ex)
