@@ -85,6 +85,9 @@ internal sealed class MiniPlc : IAsyncDisposable
     private ushort _trips;
     private int _homeCommands;
 
+    // Scan cadence (adr.md, lead ruling "Two-vCPU flakes"): written by the scan thread, reset/read by the test.
+    private long _lastScanAt, _maxScanGapTicks;
+
     public MiniPlc(MiniPlcOptions? options = null)
     {
         Options = options ?? new MiniPlcOptions();
@@ -100,6 +103,7 @@ internal sealed class MiniPlc : IAsyncDisposable
         _server.AddUnit(Unit);
         _server.Start(_provider);
         lock (_server.Lock) Publish(Stopwatch.GetTimestamp());
+        _lastScanAt = Stopwatch.GetTimestamp();
         _thread = new Thread(Run) { IsBackground = true, Name = "MiniPlc scan" };
         _thread.Start();
     }
@@ -143,6 +147,34 @@ internal sealed class MiniPlc : IAsyncDisposable
     /// <summary>Runs an action on the scan thread before the next scan.</summary>
     public void OnScan(Action action) => _actions.Enqueue(action);
 
+    /// <summary>
+    /// The longest gap between two consecutive scans since <see cref="ResetMaxScanGap"/>, including the gap still open
+    /// now (a scan thread starved at the moment of reading counts). Nominal is one <see cref="MiniPlcOptions.ScanInterval"/>;
+    /// a timing test reads it at the end of its measured window to tell a starved fixture from a slow driver
+    /// (<see cref="Cadence"/>).
+    /// </summary>
+    public TimeSpan MaxScanGap
+    {
+        get
+        {
+            var open = Stopwatch.GetTimestamp() - Volatile.Read(ref _lastScanAt);
+            return Stopwatch.GetElapsedTime(0, Math.Max(Volatile.Read(ref _maxScanGapTicks), open));
+        }
+    }
+
+    /// <summary>Starts a measured window: forgets every scan gap recorded so far.</summary>
+    public void ResetMaxScanGap() => Volatile.Write(ref _maxScanGapTicks, 0);
+
+    private void RecordScan(long at)
+    {
+        var gap = at - Interlocked.Exchange(ref _lastScanAt, at);
+        long seen;
+        while (gap > (seen = Volatile.Read(ref _maxScanGapTicks))
+               && Interlocked.CompareExchange(ref _maxScanGapTicks, gap, seen) != seen)
+        {
+        }
+    }
+
     /// <summary>Waits until a scan that started after this call has published its truth — requests are served
     /// between scans, so a write awaited before this call is visible in <see cref="Truth"/> after it.</summary>
     public async Task NextScanAsync()
@@ -178,6 +210,7 @@ internal sealed class MiniPlc : IAsyncDisposable
                 // from one scan's image (protocol § Transport, Consistency).
                 lock (_server.Lock)
                 {
+                    RecordScan(Stopwatch.GetTimestamp());
                     while (_actions.TryDequeue(out var action)) action();
                     Scan(dt, now);
                 }

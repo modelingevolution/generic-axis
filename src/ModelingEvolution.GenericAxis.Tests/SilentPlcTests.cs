@@ -36,7 +36,7 @@ public class SilentPlcTests(ITestOutputHelper output)
                 {
                     while (true) _parked.Add(await _listener.AcceptTcpClientAsync());
                 }
-                catch (Exception) when (true)
+                catch (Exception)
                 {
                     // stopped
                 }

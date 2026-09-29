@@ -68,13 +68,15 @@ public class DriverIntegrationTests(ITestOutputHelper output)
         rig.Plc.Truth.Homed.Should().BeTrue();
     }
 
-    [Fact(DisplayName = "GA-I-03 MoveAbsolute arrives and the reading is the register")]
+    [TimingFact(DisplayName = "GA-I-03 MoveAbsolute arrives and the reading is the register")]
     public async Task MoveAbsolute_Arrives_ReadingEqualsRegister()
     {
         await using var rig = new LiveRig();
         var track = await rig.ConnectedTrack(power: true);
 
-        await track.Carriage.MoveAbsoluteAsync(new Mm(2500), new MmPerS(250)).WaitAsync(T);
+        // A fixture scan stalled ≥ 1 s trips the fixture's own watchdog mid-move (a false WatchdogTripped).
+        rig.Plc.ResetMaxScanGap();
+        await Cadence.Budget(rig.Plc, () => track.Carriage.MoveAbsoluteAsync(new Mm(2500), new MmPerS(250)).WaitAsync(T));
 
         var truth = rig.Plc.Truth;
         var register = Math.Round(truth.Position * 1000, MidpointRounding.AwayFromZero) / 1000;
@@ -96,46 +98,51 @@ public class DriverIntegrationTests(ITestOutputHelper output)
         rig.Plc.Truth.Position.Should().BeApproximately(2000, 0.005);
     }
 
-    [Fact(DisplayName = "GA-I-05 STOP halts within 200 ms")]
+    [TimingFact(DisplayName = "GA-I-05 STOP halts within 200 ms")]
     public async Task Stop_Cruising_HaltsWithin200ms()
     {
         await using var rig = new LiveRig();
         var track = await rig.ConnectedTrack(power: true);
         var move = await Cruise(rig, track, 9000, 500);
 
+        rig.Plc.ResetMaxScanGap();
         var sw = Stopwatch.StartNew();
         var halted = rig.Plc.WaitFor(t => t.Velocity == 0, T, "halted");
         var stop = track.Carriage.StopAsync();
         await halted;
         var haltMs = sw.Elapsed.TotalMilliseconds;
+        var gap = rig.Plc.MaxScanGap;
         await stop.WaitAsync(T);
 
-        output.WriteLine($"GA-I-05 halt after StopAsync: {haltMs:F0} ms");
-        haltMs.Should().BeLessThanOrEqualTo(200, "protocol: motion ceases within 200 ms of the Stop write");
+        output.WriteLine($"GA-I-05 halt after StopAsync: {haltMs:F0} ms, fixture max scan gap {gap.TotalMilliseconds:F0} ms");
+        Cadence.Budget(gap, () => haltMs.Should().BeLessThanOrEqualTo(200, "protocol: motion ceases within 200 ms of the Stop write"));
         track.Carriage.State.Should().Be(AxisState.Standstill);
         var ended = await move.Invoking(m => m.WaitAsync(T)).Should().ThrowAsync<Exception>();
         ended.Which.Should().Match<Exception>(e => e is OperationCanceledException
                                                    || (e is MotionException && ((MotionException)e).Error == MotionError.MotionFailed));
     }
 
-    [Fact(DisplayName = "GA-I-06 The station STOP path stops the axis")]
+    [TimingFact(DisplayName = "GA-I-06 The station STOP path stops the axis")]
     public async Task StopAll_Cruising_HaltsWithin200ms()
     {
         await using var rig = new LiveRig();
         var track = await rig.ConnectedTrack(power: true);
         var move = await Cruise(rig, track, 9000, 500);
 
+        rig.Plc.ResetMaxScanGap();
         var sw = Stopwatch.StartNew();
         var halted = rig.Plc.WaitFor(t => t.Velocity == 0, T, "halted");
         var stop = ((IMotionDevice)track).StopAllAsync();
         await halted;
-        output.WriteLine($"GA-I-06 halt after StopAllAsync: {sw.Elapsed.TotalMilliseconds:F0} ms");
-        sw.Elapsed.TotalMilliseconds.Should().BeLessThanOrEqualTo(200);
+        var haltMs = sw.Elapsed.TotalMilliseconds;
+        var gap = rig.Plc.MaxScanGap;
+        output.WriteLine($"GA-I-06 halt after StopAllAsync: {haltMs:F0} ms, fixture max scan gap {gap.TotalMilliseconds:F0} ms");
+        Cadence.Budget(gap, () => haltMs.Should().BeLessThanOrEqualTo(200));
         await stop.WaitAsync(T);
         await move.Invoking(m => m.WaitAsync(T)).Should().ThrowAsync<Exception>();
     }
 
-    [Fact(DisplayName = "GA-I-07 + GA-I-08 Killing the commander halts the axis within 1 s; recovery needs no re-home")]
+    [TimingFact(DisplayName = "GA-I-07 + GA-I-08 Killing the commander halts the axis within 1 s; recovery needs no re-home")]
     public async Task Kill_Cruising_WatchdogHaltsThenSuccessorRecoversWithoutHome()
     {
         await using var rig = new LiveRig();
@@ -144,14 +151,19 @@ public class DriverIntegrationTests(ITestOutputHelper output)
         _ = await Cruise(rig, track, 9000, 500);
 
         // GA-I-07: the in-process kill — no network I/O.
+        rig.Plc.ResetMaxScanGap();
         var sw = Stopwatch.StartNew();
         track.Dispose();
         await rig.Plc.WaitFor(t => t.Velocity == 0, T, "the watchdog halts the axis");
         var haltS = sw.Elapsed.TotalSeconds;
+        var gap = rig.Plc.MaxScanGap;
 
-        output.WriteLine($"GA-I-07 halt after the kill: {haltS * 1000:F0} ms");
-        haltS.Should().BeLessThanOrEqualTo(1.05, "FR-11: 1 s stall window (ADR-31 keeps 1.05 s for the simulator)");
-        haltS.Should().BeGreaterThanOrEqualTo(0.85, "the axis must not stop before the stall window (last beat ≤ 100 ms before the kill)");
+        output.WriteLine($"GA-I-07 halt after the kill: {haltS * 1000:F0} ms, fixture max scan gap {gap.TotalMilliseconds:F0} ms");
+        Cadence.Budget(gap, () =>
+        {
+            haltS.Should().BeLessThanOrEqualTo(1.05, "FR-11: 1 s stall window (ADR-31 keeps 1.05 s for the simulator)");
+            haltS.Should().BeGreaterThanOrEqualTo(0.85, "the axis must not stop before the stall window (last beat ≤ 100 ms before the kill)");
+        });
         var truth = rig.Plc.Truth;
         truth.FaultCode.Should().Be(4);
         truth.WatchdogFault.Should().Be(1);
@@ -175,7 +187,7 @@ public class DriverIntegrationTests(ITestOutputHelper output)
         rig.Plc.Truth.HomeCommandsAccepted.Should().Be(homesBefore, "restart = reset + re-command, no re-home");
     }
 
-    [Fact(DisplayName = "GA-I-09 A second commander is refused while the first beats")]
+    [TimingFact(DisplayName = "GA-I-09 A second commander is refused while the first beats")]
     public async Task SecondCommander_WhileFirstBeats_LeaseHeldAfterTimeout()
     {
         await using var rig = new LiveRig();
@@ -194,23 +206,25 @@ public class DriverIntegrationTests(ITestOutputHelper output)
         });
 
         var b = rig.Track(o => o with { LeaseTimeout = TimeSpan.FromSeconds(3) }, owner: 2);
+        rig.Plc.ResetMaxScanGap();
         var sw = Stopwatch.StartNew();
         var ex = await Throws(() => b.ConnectAsync());
         var refusedAfter = sw.Elapsed.TotalSeconds;
+        var gap = rig.Plc.MaxScanGap;
         await sampling.CancelAsync();
         await sampler;
 
         output.WriteLine($"GA-I-09 refused after {refusedAfter * 1000:F0} ms: {ex.Message}");
         ex.Error.Should().Be(MotionError.LeaseHeld);
         ex.Message.Should().Contain("Read LeaseOwner (C+9 = 9) = 1, expected 0 or 2");
-        refusedAfter.Should().BeInRange(3.0, 4.0);
+        Cadence.Budget(gap, () => refusedAfter.Should().BeInRange(3.0, 4.0));
         owners.Should().NotBeEmpty().And.OnlyContain(o => o == 1);
         move.IsCompleted.Should().BeFalse("A's move is undisturbed");
         rig.Plc.Truth.State.Should().Be(3);
         await a.Carriage.StopAsync().WaitAsync(T);
     }
 
-    [Fact(DisplayName = "GA-I-10 The successor attaches within 2 s of the incumbent's death")]
+    [TimingFact(DisplayName = "GA-I-10 The successor attaches within 2 s of the incumbent's death")]
     public async Task Successor_IncumbentKilled_AttachesWithin2s()
     {
         await using var rig = new LiveRig();
@@ -220,18 +234,20 @@ public class DriverIntegrationTests(ITestOutputHelper output)
         await Task.Delay(500);
         connecting.IsCompleted.Should().BeFalse("B is watching a live incumbent");
 
+        rig.Plc.ResetMaxScanGap();
         var sw = Stopwatch.StartNew();
         a.Dispose();
         await connecting.WaitAsync(T);
         var attachedAfter = sw.Elapsed;
+        var gap = rig.Plc.MaxScanGap;
         await rig.Plc.NextScanAsync();
 
-        output.WriteLine($"GA-I-10 successor attached {attachedAfter.TotalMilliseconds:F0} ms after the kill");
-        attachedAfter.TotalSeconds.Should().BeLessThanOrEqualTo(2.0);
+        output.WriteLine($"GA-I-10 successor attached {attachedAfter.TotalMilliseconds:F0} ms after the kill, fixture max scan gap {gap.TotalMilliseconds:F0} ms");
+        Cadence.Budget(gap, () => attachedAfter.TotalSeconds.Should().BeLessThanOrEqualTo(2.0));
         rig.Plc.Truth.LeaseOwner.Should().Be(2);
     }
 
-    [Fact(DisplayName = "GA-I-11 A clean disconnect trips nothing")]
+    [TimingFact(DisplayName = "GA-I-11 A clean disconnect trips nothing")]
     public async Task Disconnect_Clean_DisabledReleasedNoTrip()
     {
         await using var rig = new LiveRig();
@@ -241,16 +257,20 @@ public class DriverIntegrationTests(ITestOutputHelper output)
 
         await a.DisconnectAsync().WaitAsync(T);
         // The writes have landed; the PLC publishes them at its next scan (10 ms).
-        await rig.Plc.WaitFor(t => t.State == 0 && t.LeaseOwner == 0, TimeSpan.FromMilliseconds(200),
-            "Disabled and released one scan after the disconnect");
+        rig.Plc.ResetMaxScanGap();
+        await Cadence.Budget(rig.Plc, () => rig.Plc.WaitFor(t => t.State == 0 && t.LeaseOwner == 0,
+            TimeSpan.FromMilliseconds(200), "Disabled and released one scan after the disconnect"));
         await Task.Delay(2000);
 
         rig.Plc.Truth.WatchdogTrips.Should().Be(trips);
         rig.Plc.Truth.WatchdogFault.Should().Be(0);
         rig.Plc.Truth.FaultCode.Should().Be(0);
+        rig.Plc.ResetMaxScanGap();
         var sw = Stopwatch.StartNew();
         await rig.ConnectedTrack(owner: 2);
-        sw.Elapsed.TotalSeconds.Should().BeLessThan(1.0, "a released lease is taken without waiting for expiry");
+        var attachedS = sw.Elapsed.TotalSeconds;
+        var gap = rig.Plc.MaxScanGap;
+        Cadence.Budget(gap, () => attachedS.Should().BeLessThan(1.0, "a released lease is taken without waiting for expiry"));
     }
 
     [Fact(DisplayName = "GA-I-12 Another map version is refused")]
@@ -289,21 +309,24 @@ public class DriverIntegrationTests(ITestOutputHelper output)
         rig.Plc.Truth.Position.Should().Be(position);
     }
 
-    [Fact(DisplayName = "GA-I-14 A communication drop surfaces as CommunicationLost")]
+    [TimingFact(DisplayName = "GA-I-14 A communication drop surfaces as CommunicationLost")]
     public async Task CommsDrop_Cruising_CommunicationLostWatchdogHaltsRecoveryByReset()
     {
         await using var rig = new LiveRig();
         var track = await rig.ConnectedTrack(power: true);
         var move = await Cruise(rig, track, 9000, 500);
 
+        rig.Plc.ResetMaxScanGap();
         var sw = Stopwatch.StartNew();
         rig.Plc.SetCommunicationDown(true);
         var ex = await move.Invoking(m => m.WaitAsync(T)).Should().ThrowAsync<MotionException>();
         var thrownS = sw.Elapsed.TotalSeconds;
         await rig.Plc.WaitFor(t => t.Velocity == 0, T, "the watchdog halts the axis");
         var haltS = sw.Elapsed.TotalSeconds;
+        var gap = rig.Plc.MaxScanGap;
 
-        output.WriteLine($"GA-I-14 CommunicationLost after {thrownS * 1000:F0} ms, halted after {haltS * 1000:F0} ms");
+        output.WriteLine($"GA-I-14 CommunicationLost after {thrownS * 1000:F0} ms, halted after {haltS * 1000:F0} ms, "
+                         + $"fixture max scan gap {gap.TotalMilliseconds:F0} ms");
         ex.Which.Error.Should().Be(MotionError.CommunicationLost);
         ex.Which.Message.Should().StartWith("carriage: CommunicationLost: ")
             .And.Contain($"127.0.0.1:{rig.Plc.Port} unit 1 failed twice (reconnected once): ")
@@ -311,10 +334,13 @@ public class DriverIntegrationTests(ITestOutputHelper output)
         rig.Logs.GetSnapshot().Should().Contain(r => r.Level == LogLevel.Warning && r.Exception != null
                                                      && r.Message.Contains("reconnecting and retrying once"),
             "the one retry is logged at Warning with the exception");
-        thrownS.Should().BeLessThanOrEqualTo(1.0);
+        Cadence.Budget(gap, () =>
+        {
+            thrownS.Should().BeLessThanOrEqualTo(1.0);
+            haltS.Should().BeLessThanOrEqualTo(1.05);
+        });
         track.Carriage.State.Should().Be(AxisState.ErrorStop);
         track.Carriage.Status.Error.Should().Be(MotionError.CommunicationLost);
-        haltS.Should().BeLessThanOrEqualTo(1.05);
         rig.Plc.Truth.FaultCode.Should().Be(4);
 
         rig.Plc.SetCommunicationDown(false);
@@ -332,13 +358,14 @@ public class DriverIntegrationTests(ITestOutputHelper output)
         rig.Plc.Truth.Homed.Should().BeTrue();
     }
 
-    [Fact(DisplayName = "GA-I-25 A silent PLC surfaces as CommunicationLost and a STOP to it returns")]
+    [TimingFact(DisplayName = "GA-I-25 A silent PLC surfaces as CommunicationLost and a STOP to it returns")]
     public async Task SilentPlc_Cruising_CommunicationLostStopReturnsRecoveryByReset()
     {
         await using var rig = new LiveRig();
         var track = await rig.ConnectedTrack(power: true);
         var move = await Cruise(rig, track, 9000, 500);
 
+        rig.Plc.ResetMaxScanGap();
         var sw = Stopwatch.StartNew();
         rig.Plc.SetSilent(true);
         var ex = await move.Invoking(m => m.WaitAsync(T)).Should().ThrowAsync<MotionException>();
@@ -351,17 +378,21 @@ public class DriverIntegrationTests(ITestOutputHelper output)
         var stopSw = Stopwatch.StartNew();
         var stop = await track.Carriage.Invoking(c => c.StopAsync().WaitAsync(T)).Should().ThrowAsync<MotionException>();
         var stopS = stopSw.Elapsed.TotalSeconds;
+        var gap = rig.Plc.MaxScanGap;
 
         output.WriteLine($"GA-I-25 CommunicationLost after {thrownS * 1000:F0} ms, halted after {haltS * 1000:F0} ms, "
-                         + $"STOP returned after {stopS * 1000:F0} ms: {stop.Which.Message}");
+                         + $"STOP returned after {stopS * 1000:F0} ms, fixture max scan gap {gap.TotalMilliseconds:F0} ms: {stop.Which.Message}");
         ex.Which.Error.Should().Be(MotionError.CommunicationLost);
-        thrownS.Should().BeLessThanOrEqualTo(1.8, "≤ 1.6 s for the failing call plus one tick interval");
         track.Carriage.Status.Error.Should().Be(MotionError.CommunicationLost);
-        haltS.Should().BeLessThanOrEqualTo(1.05);
         rig.Plc.Truth.FaultCode.Should().Be(4);
         stop.Which.Error.Should().Be(MotionError.CommunicationLost);
         stop.Which.Message.Should().Contain("timed out");
-        stopS.Should().BeLessThanOrEqualTo(3.5, "an in-flight frame (≤ 1.3 s) plus the Stop's own two attempts (≤ 1.3 s), plus scheduling slack; never unbounded");
+        Cadence.Budget(gap, () =>
+        {
+            thrownS.Should().BeLessThanOrEqualTo(1.8, "≤ 1.6 s for the failing call plus one tick interval");
+            haltS.Should().BeLessThanOrEqualTo(1.05);
+            stopS.Should().BeLessThanOrEqualTo(3.5, "an in-flight frame (≤ 1.3 s) plus the Stop's own two attempts (≤ 1.3 s), plus scheduling slack; never unbounded");
+        });
 
         rig.Plc.SetSilent(false);
         var ticks = track.Heartbeat.TickCount;
@@ -374,18 +405,21 @@ public class DriverIntegrationTests(ITestOutputHelper output)
         rig.Plc.Truth.Homed.Should().BeTrue();
     }
 
-    [Fact(DisplayName = "GA-I-15 A missing ack is NotAcknowledged, not a link failure")]
+    [TimingFact(DisplayName = "GA-I-15 A missing ack is NotAcknowledged, not a link failure")]
     public async Task Home_SuppressAck_CommunicationLostWithin700msBeatContinues()
     {
         await using var rig = new LiveRig();
         var track = await rig.ConnectedTrack();
         rig.Plc.Faults.SuppressAck = true;
 
+        rig.Plc.ResetMaxScanGap();
         var sw = Stopwatch.StartNew();
         var ex = await Throws(() => track.Carriage.HomeAsync());
+        var failedMs = sw.Elapsed.TotalMilliseconds;
+        var gap = rig.Plc.MaxScanGap;
 
-        output.WriteLine($"GA-I-15 {sw.Elapsed.TotalMilliseconds:F0} ms: {ex.Message}");
-        sw.Elapsed.TotalMilliseconds.Should().BeLessThanOrEqualTo(700);
+        output.WriteLine($"GA-I-15 {failedMs:F0} ms, fixture max scan gap {gap.TotalMilliseconds:F0} ms: {ex.Message}");
+        Cadence.Budget(gap, () => failedMs.Should().BeLessThanOrEqualTo(700));
         ex.Error.Should().Be(MotionError.NotAcknowledged);
         MotionErrorClasses.Of(ex.Error).Should().Be(ErrorClass.Protocol);
         ex.Message.Should().MatchRegex("CommandSeq [0-9]+ written, CommandAck [0-9]+ read after 500 ms, State [0-9]+ read");
@@ -573,7 +607,7 @@ public class DriverIntegrationTests(ITestOutputHelper output)
         rig.Plc.Truth.CommandSeq.Should().Be(seq);
     }
 
-    [Fact(DisplayName = "GA-I-24 Status is published at the tick cadence (NFR-2)")]
+    [TimingFact(DisplayName = "GA-I-24 Status is published at the tick cadence (NFR-2)")]
     public async Task StatusChanged_IdleAndCruising_AtLeast5PerSecondAndPublishedValues()
     {
         await using var rig = new LiveRig();
@@ -581,25 +615,31 @@ public class DriverIntegrationTests(ITestOutputHelper output)
         var events = new ConcurrentQueue<(long At, AxisStatus Status)>();
         track.Carriage.StatusChanged += (_, s) => events.Enqueue((Stopwatch.GetTimestamp(), s));
 
+        rig.Plc.ResetMaxScanGap();
         var idleStart = Stopwatch.GetTimestamp();
         await Task.Delay(2000);
         var move = track.Carriage.MoveAbsoluteAsync(new Mm(9000), new MmPerS(500));
         var cruiseStart = Stopwatch.GetTimestamp();
         await Task.Delay(2000);
         var end = Stopwatch.GetTimestamp();
+        var gap = rig.Plc.MaxScanGap;
         await track.Carriage.StopAsync().WaitAsync(T);
         await move.Invoking(m => m.WaitAsync(T)).Should().ThrowAsync<Exception>();
 
         var all = events.ToArray();
-        foreach (var (from, name) in new[] { (idleStart, "idle"), (cruiseStart, "cruising") })
+        output.WriteLine($"GA-I-24 {all.Length} events in 4 s, fixture max scan gap {gap.TotalMilliseconds:F0} ms");
+        Cadence.Budget(gap, () =>
         {
-            for (var w = 0; w < 2; w++)
+            foreach (var (from, name) in new[] { (idleStart, "idle"), (cruiseStart, "cruising") })
             {
-                var lo = from + w * Stopwatch.Frequency;
-                var hi = Math.Min(lo + Stopwatch.Frequency, end);
-                all.Count(e => e.At >= lo && e.At < hi).Should().BeGreaterThanOrEqualTo(5, $"{name} window {w + 1}");
+                for (var w = 0; w < 2; w++)
+                {
+                    var lo = from + w * Stopwatch.Frequency;
+                    var hi = Math.Min(lo + Stopwatch.Frequency, end);
+                    all.Count(e => e.At >= lo && e.At < hi).Should().BeGreaterThanOrEqualTo(5, $"{name} window {w + 1}");
+                }
             }
-        }
+        });
 
         var positions = all.Where(e => e.Status.Position is not null).Select(e => e.Status.Position!.Value).ToArray();
         positions.Should().NotBeEmpty();
