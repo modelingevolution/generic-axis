@@ -494,6 +494,27 @@ public sealed class AxisPlcTests
         bench.ActualVelocityRaw.Should().Be(500_000, "MaxVelocity itself is inside the limit");
     }
 
+    /// <summary>Review #37: the boundaries themselves are inside the limits (MoveAbsolute at MaxVelocity is the driver's default move).</summary>
+    [Theory]
+    [InlineData(SimCommandBits.MoveVelocity, 0.0, 500.0)]
+    [InlineData(SimCommandBits.MoveAbsolute, 10000.0, 500.0)]
+    [InlineData(SimCommandBits.MoveAbsolute, 0.0, 100.0)]
+    [InlineData(SimCommandBits.MoveAbsolute, 10000.0, 100.0)]
+    public void GA_U_90_TheLimitsThemselves_AreAccepted(SimCommandBits move, double target, double velocity)
+    {
+        using var bench = new PlcBench();
+        bench.Energise();
+        bench.Log.Clear();
+
+        bench.Parameters(target: target, velocity: velocity);
+        bench.Command(SimCommandBits.Enable | move);
+        bench.Tick();
+
+        bench.State.Should().Be(move == SimCommandBits.MoveVelocity ? (ushort)SimAxisState.ContinuousMotion : (ushort)SimAxisState.DiscreteMotion,
+            $"{move} to {target} at {velocity} is inside TravelMin..TravelMax and MaxVelocity");
+        bench.Log.At(LogLevel.Warning).Should().BeEmpty();
+    }
+
     [Fact]
     public void GA_U_90_OptionsThatCannotBePublished_AreRefusedAtStartup()
     {
