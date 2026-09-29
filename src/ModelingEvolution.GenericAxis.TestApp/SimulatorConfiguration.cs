@@ -9,7 +9,7 @@ namespace ModelingEvolution.GenericAxis.TestApp;
 public static class SimulatorConfiguration
 {
     private const string UrlsKey = "urls";
-    private const string DefaultUrls = "http://0.0.0.0:5070";
+    internal const string DefaultUrls = "http://localhost:5070";
 
     /// <summary>
     /// Section <c>Simulator</c> bound onto <see cref="SimulatedAxisOptions"/>; the record's initialisers are the
@@ -19,7 +19,8 @@ public static class SimulatorConfiguration
         (configuration.GetSection(SimulatedAxisOptions.SectionName).Get<SimulatedAxisOptions>() ?? new SimulatedAxisOptions())
         .Validate();
 
-    /// <summary>The UI address: <c>urls</c> / <c>ASPNETCORE_URLS</c> when set, else port 5070 on every interface.</summary>
+    /// <summary>The UI address: <c>urls</c> / <c>ASPNETCORE_URLS</c> when set, else port 5070 on
+    /// localhost only: <c>/driver</c> commands a real PLC and nothing authenticates it, so only <c>--urls</c> widens it.</summary>
     public static string GetUiUrls(this IConfiguration configuration) =>
         string.IsNullOrWhiteSpace(configuration[UrlsKey]) ? DefaultUrls : configuration[UrlsKey]!;
 

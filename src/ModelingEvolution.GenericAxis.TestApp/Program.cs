@@ -6,6 +6,11 @@ using MudBlazor.Services;
 ThreadPoolFloor.Ensure();
 if (args.Contains(CheckCommandLine.Flag)) return await CheckMode.RunAsync(args);
 if (args.Contains(HeadlessMode.Flag)) return await HeadlessMode.RunAsync(args);
+if (WebMode.Validate(args) is { } usageError)
+{
+    await Console.Error.WriteLineAsync($"error: {usageError}\n{WebMode.Usage}");
+    return 2;
+}
 
 var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.UseUrls(builder.Configuration.GetUiUrls());
