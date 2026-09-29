@@ -61,6 +61,7 @@ def class_of(motion_error: str) -> ErrorClass:
     """The class of a MotionError name; a name the protocol's table does not list is unmapped (``KeyError``)."""
     return MOTION_ERROR_CLASSES[motion_error]
 
+
 VENDOR_FAULT_BASE = 100
 """protocol.md § Status block: ``FaultCode`` 100+ is vendor-specific."""
 

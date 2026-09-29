@@ -5,10 +5,9 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
-from generic_axis_check.context import Options
+from generic_axis_check.context import LastRead, Options
 from generic_axis_check.errors import ErrorClass
 from generic_axis_check.report import to_json, to_json_text, to_markdown
-from generic_axis_check.context import LastRead
 from generic_axis_check.runner import CheckResult, Report
 
 TOP_KEYS = {
