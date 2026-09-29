@@ -369,7 +369,9 @@ JSON (`schema: "generic-axis-conformance/1"`). Both tools emit exactly these fie
 
 - `result` is `PASS`, `FAIL` or `SKIPPED`. `summary.result` is `REFUSED` if pre-flight refused to start (exit 3),
   otherwise `INTERRUPTED` if the operator interrupted the run, otherwise `FAIL` if any check failed, otherwise `PASS`.
-- `errorClass` is `Transport`, `Protocol`, `Machine` or `Commander` on a FAIL, and `null` otherwise. A FAIL also
+- `errorClass` is `Transport`, `Protocol`, `Machine` or `Commander` on a FAIL, and `null` otherwise.
+  `errorClass` is `null` on a FAIL only when the checker itself failed (message `checker error: …`); such a run is not
+  a verdict on the PLC and must be repeated after the tool is fixed. A FAIL also
   carries `lastRead`, the raw values of C+0…C+11 and S+0…S+14 taken as § Error class of a FAIL says: a fresh read
   when the failure is detected, before any restore write. If that read fails, the last values read, with `null` for a
   register never read.

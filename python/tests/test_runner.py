@@ -519,9 +519,10 @@ async def test_a_checker_defect_ends_in_a_report_exit_1_and_a_logged_traceback(
     assert chk02.result == FAIL
     assert chk02.error_class is None
     assert chk02.message == (
-        "checker defect during CHK-02: ZeroDivisionError: planted. The traceback is logged; not a PLC finding."
+        "checker error: ZeroDivisionError: planted (during CHK-02; the traceback is logged). Not a verdict on the "
+        "PLC: repeat the run after the tool is fixed."
     )
-    assert all(c.result == SKIPPED and c.message == "not run: checker defect during CHK-02" for c in report.checks[2:])
+    assert all(c.result == SKIPPED and c.message == "not run: checker error during CHK-02" for c in report.checks[2:])
     assert report.exit_code == 1
     assert to_json(report)["checks"][1]["errorClass"] is None
     record = next(r for r in caplog.records if r.getMessage() == "CHK-02: checker defect")

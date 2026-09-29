@@ -412,7 +412,7 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
                     last_read = last_read or await ctx.capture()
                     abort = f"{check.id}: {lost_outcome.message.split(': ', 1)[1]}"
                 elif outcome.defect:
-                    abort = f"not run: checker defect during {check.id}"
+                    abort = f"not run: checker error during {check.id}"
                 elif check.id >= FIRST_LEASED_CHECK and (foreign := await foreign_trip_problem(ctx)) is not None:
                     # A dead commander's trip is still latched: nothing may restore or clear it, so nothing more runs.
                     if outcome.result != FAIL:
@@ -507,7 +507,10 @@ def lease_lost_outcome(lost: LeaseLost, registers: RegisterMap) -> Outcome:
 def defect_outcome(exc: Exception, where: str) -> Outcome:
     """A defect of the checker, not a PLC finding: it carries no error class, because none of the four is what was
     seen (§ Errors and debugging: never claim a cause not observed). The traceback is in the log."""
-    message = f"checker defect during {where}: {type(exc).__name__}: {exc}. The traceback is logged; not a PLC finding."
+    message = (
+        f"checker error: {type(exc).__name__}: {exc} (during {where}; the traceback is logged). Not a verdict on the "
+        "PLC: repeat the run after the tool is fixed."
+    )
     return Outcome(FAIL, message, {}, None, defect=True)
 
 
