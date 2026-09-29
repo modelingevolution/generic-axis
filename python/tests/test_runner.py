@@ -10,7 +10,7 @@ import re
 import pytest
 
 from generic_axis_check.beat import Beater
-from generic_axis_check.checks import CHECKS, FAIL, OBSERVED, PASS, SKIPPED, Check, Outcome
+from generic_axis_check.checks import CHECKS, FAIL, OBSERVED, PASS, SKIPPED, Check, Outcome, beat_for
 from generic_axis_check.client import PlcClient
 from generic_axis_check.context import CheckContext, Options
 from generic_axis_check.registers import Command, RegisterMap
@@ -452,3 +452,21 @@ async def test_run_refuses_a_commander_beating_with_lease_owner_0(stub: StubPlc)
     assert report.result == "REFUSED"
     assert "LeaseOwner (C+9) 0;" in report.checks[0].message
     assert ours == []
+
+
+async def test_beat_for_counts_from_the_step_not_from_the_beats_start(stub: StubPlc) -> None:
+    # GA-U-82.py (review #13): the beat has run 1.5 s since restore; "beat for 2 s" still beats 2 s from the step.
+    client = PlcClient("127.0.0.1", stub.port, 1)
+    await client.connect()
+    ctx = CheckContext(client, MAP, options(stub), Beater(client, MAP))
+    try:
+        await ctx.beater.start()
+        await asyncio.sleep(1.5)
+        started = asyncio.get_running_loop().time()
+        await beat_for(ctx, 2.0)
+        elapsed = asyncio.get_running_loop().time() - started
+        assert ctx.beater.running
+    finally:
+        await ctx.beater.stop()
+        client.close()
+    assert elapsed >= 2.0

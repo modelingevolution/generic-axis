@@ -240,10 +240,10 @@ def judge_trip(ctx: CheckContext, watch: TripWatch, label: str, **observed: int 
 
 
 async def beat_for(ctx: CheckContext, seconds: float) -> None:
-    """Make sure the checker's beat has run for ``seconds`` (starting it if needed)."""
+    """Beat for ``seconds`` from now (starting the beat if needed): the procedure's step ("WatchdogFault = 0, beat
+    for 2 s"), not the beat's age — a beat already running since restore does not shorten the step (review #13)."""
     await ctx.beater.start()
-    started = ctx.beater.started_at or time.monotonic()
-    await asyncio.sleep(max(0.0, started + seconds - time.monotonic()))
+    await asyncio.sleep(seconds)
     ctx.beater.raise_if_failed()
 
 

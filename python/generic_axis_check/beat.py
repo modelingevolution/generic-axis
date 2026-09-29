@@ -32,7 +32,6 @@ class Beater:
         self._task: asyncio.Task[None] | None = None
         self._value = 0
         self.last_beat: float | None = None
-        self.started_at: float | None = None
 
     @property
     def running(self) -> bool:
@@ -44,7 +43,6 @@ class Beater:
         (current,) = await self._client.read(self._registers.heartbeat, 1)
         self._value = current
         await self._beat()  # the first beat is written before start() returns, so the PLC sees a change now
-        self.started_at = self.last_beat
         self._task = asyncio.create_task(self._loop(), name="heartbeat")
 
     async def _beat(self) -> None:
