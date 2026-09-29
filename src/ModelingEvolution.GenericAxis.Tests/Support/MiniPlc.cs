@@ -163,6 +163,18 @@ internal sealed class MiniPlc : IAsyncDisposable
         }
     }
 
+    /// <summary>Test hook: holds the server's lock (as a long request would) until disposed.</summary>
+    internal IDisposable HoldLock()
+    {
+        Monitor.Enter(_server.Lock);
+        return new Releaser(_server.Lock);
+    }
+
+    private sealed class Releaser(object gate) : IDisposable
+    {
+        public void Dispose() => Monitor.Exit(gate);
+    }
+
     /// <summary>Starts a measured window: forgets every scan gap recorded so far.</summary>
     public void ResetMaxScanGap() => Volatile.Write(ref _maxScanGapTicks, 0);
 
@@ -221,16 +233,18 @@ internal sealed class MiniPlc : IAsyncDisposable
         while (!_stop.IsCancellationRequested)
         {
             Thread.Sleep(period);
-            var now = Stopwatch.GetTimestamp();
-            var dt = Stopwatch.GetElapsedTime(last, now).TotalSeconds;
-            last = now;
             try
             {
                 // One scan under the server's lock: requests land between scans, and a status read is served
                 // from one scan's image (protocol § Transport, Consistency).
                 lock (_server.Lock)
                 {
-                    RecordScan(Stopwatch.GetTimestamp());
+                    // Stamped once the lock is held (review #44): a request served while the scan waited for the
+                    // lock is applied in this scan, so the scan's time (PlcTruth.At, dt, the watchdog) is after it.
+                    var now = Stopwatch.GetTimestamp();
+                    var dt = Stopwatch.GetElapsedTime(last, now).TotalSeconds;
+                    last = now;
+                    RecordScan(now);
                     while (_actions.TryDequeue(out var action)) action();
                     Scan(dt, now);
                 }

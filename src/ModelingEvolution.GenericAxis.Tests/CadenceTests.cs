@@ -52,6 +52,26 @@ public class CadenceTests
             .Should().ThrowAsync<TimeoutException>().WithMessage("*never*");
     }
 
+    [Fact(DisplayName = "GA-U-130 A scan is stamped after it acquired the lock, never before a request it applies")]
+    public async Task Scan_WaitedForLock_TruthStampedAfterTheWait()
+    {
+        await using var plc = new MiniPlc();
+        await plc.NextScanAsync();
+
+        long released;
+        Task<PlcTruth> next;
+        using (plc.HoldLock())
+        {
+            next = plc.WhenScan(_ => true, LiveRig.T, "the scan that waited for the lock");
+            Thread.Sleep(60); // the scan is due and blocks on the lock; a request served now lands in that scan
+            released = System.Diagnostics.Stopwatch.GetTimestamp();
+        }
+
+        var truth = await next;
+        truth.At.Should().BeGreaterThanOrEqualTo(released,
+            "the scan applies what was served during its wait, so its time is after the wait (review #44)");
+    }
+
     private static readonly TimeSpan OnCadence = TimeSpan.FromMilliseconds(12);
     private static readonly TimeSpan Missed = TimeSpan.FromMilliseconds(51);
 
