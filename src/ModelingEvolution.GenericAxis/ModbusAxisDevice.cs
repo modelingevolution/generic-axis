@@ -235,6 +235,7 @@ public abstract class ModbusAxisDevice : IMotionDevice, IAsyncDisposable
 
     private async Task DetachAsync()
     {
+        _engine.BeginDetach();
         try
         {
             await StopAllAsync(CancellationToken.None);

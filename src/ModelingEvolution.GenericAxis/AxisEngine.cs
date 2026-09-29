@@ -50,6 +50,7 @@ internal sealed class AxisEngine : IDisposable
     private readonly string _speedSymbol;
 
     private bool _attached;
+    private bool _detaching;
     private PlcSnapshot? _snapshot;
     private long _tickNo;
     private Overlay? _overlay;
@@ -271,6 +272,7 @@ internal sealed class AxisEngine : IDisposable
             _snapshot = fresh;
             _overlay = null;
             _tickOkSinceOverlay = false;
+            _detaching = false;
             _attached = true;
             _tickNo++;
             UpdateLimits(s, attach: true);
@@ -279,6 +281,21 @@ internal sealed class AxisEngine : IDisposable
         }
 
         RaiseStatus(status);
+    }
+
+    /// <summary>
+    /// The start of a clean disconnect (review #8): the verb in flight — which the disconnect's Stop is about to
+    /// cancel — fails with CommunicationLost "detached during &lt;verb&gt;", not a bare cancellation, and no new verb
+    /// starts. Stop and the disconnect's Enable 0 are not verbs and still go out.
+    /// </summary>
+    public void BeginDetach()
+    {
+        lock (_sync)
+        {
+            if (!_attached) return;
+            _detaching = true;
+            _running?.MarkDetached();
+        }
     }
 
     /// <summary>Stops mirroring: pending commands fail with CommunicationLost, the state reads Disabled.</summary>
@@ -290,7 +307,9 @@ internal sealed class AxisEngine : IDisposable
         {
             if (!_attached) return;
             _attached = false;
+            _detaching = false;
             running = _running;
+            running?.MarkDetached();
             status = StatusOf();
             SignalLocked();
         }
@@ -872,6 +891,8 @@ internal sealed class AxisEngine : IDisposable
                 if (!_attached || _snapshot is null)
                     throw Error(MotionError.CommunicationLost,
                         $"{verb} not sent: the device is not attached (ConnectAsync has not completed)");
+                if (_detaching)
+                    throw Error(MotionError.CommunicationLost, $"{verb} not sent: the device is disconnecting");
                 if (requireConnection && _overlay is { } overlay)
                     throw new MotionException(overlay.Error, $"{overlay.Message} {verb} refused until it clears.", Name);
 
@@ -908,6 +929,15 @@ internal sealed class AxisEngine : IDisposable
             }
 
             throw;
+        }
+        catch (Exception ex) when (running.Detached
+                                   && ex is OperationCanceledException or MotionException { Error: MotionError.CommunicationLost })
+        {
+            // Review #8: from the verb's point of view the link is gone — the caller did not cancel.
+            var lost = Error(MotionError.CommunicationLost,
+                $"the device was detached during {verb}; {verb} did not complete");
+            _logger?.LogWarning("{Message}", lost.Message);
+            throw lost;
         }
         catch (MotionException ex)
         {
@@ -1128,6 +1158,13 @@ internal sealed class AxisEngine : IDisposable
         public string Verb { get; } = verb;
 
         public CancellationToken Token { get; } = cts.Token;
+
+        /// <summary>Set when the device detaches under this verb (review #8).</summary>
+        public bool Detached => Volatile.Read(ref _detached) != 0;
+
+        private int _detached;
+
+        public void MarkDetached() => Volatile.Write(ref _detached, 1);
 
         public void Cancel()
         {
