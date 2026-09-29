@@ -247,8 +247,10 @@ the operator (Ctrl-C / SIGINT) before the list finished.
 - **Cleanup, always, even after a FAIL or Ctrl-C:** Stop edge if State is 2, 3 or 4 · clear edge bits · Enable 0 ·
   `WatchdogFault = 0` if the checker caused a trip · `LeaseOwner = 0` if it holds the checker's id. Each cleanup
   write is logged in the report.
-- **Lease and beat between checks.** From CHK-06 onwards the checker holds the lease under its own id and beats,
-  except where a check says it stops. If a beating checker reads `LeaseOwner` ≠ its own id, the running check FAILs
+- **Lease and beat between checks.** From the end of pre-flight onwards the checker holds the lease under its own id
+  and beats: it writes `LeaseOwner` = its id and starts its beat as soon as pre-flight passes and `MapVersion` (S+14)
+  reads 1, so a second tool is refused from CHK-01 on. The exception is where a check says it stops. After a dead holder's trip (Pre-flight) it
+  takes no lease and does not beat. If a beating checker reads `LeaseOwner` ≠ its own id, the running check FAILs
   Protocol/`ProtocolMismatch` "Read LeaseOwner (C+9 = 9) = n, expected 65535" (the register does not hold what was
   written), every later check is SKIPPED with that reason, and the checker writes nothing more to that axis except to
   stop its own beat.

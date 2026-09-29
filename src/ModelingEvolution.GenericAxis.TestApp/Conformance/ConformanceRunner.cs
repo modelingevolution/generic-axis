@@ -76,6 +76,31 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
             }
             else
             {
+                // protocol § Rules, "Lease and beat between checks": take the lease and beat as soon as pre-flight
+                // passes, so a second tool is refused from CHK-01 on. Not over a dead holder's trip: that axis is left
+                // as found for its operator (review #35).
+                if (!ctx.ForeignTrip)
+                {
+                    try
+                    {
+                        // Only on a PLC that speaks map v1: a wrong MapVersion stops the run at CHK-02 with nothing written.
+                        var mapVersion = (await ctx.ReadAsync(ctx.Map.MapVersion, 1, ct))[0];
+                        if (mapVersion == RegisterMap.Version)
+                        {
+                            await ctx.TakeLeaseAsync(ct);
+                            await ctx.Beater.StartAsync(ct);
+                        }
+                    }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                    {
+                        // Ctrl-C here: RunChecksAsync reports every check interrupted, and cleanup undoes the lease.
+                    }
+                    catch (MotionException ex)
+                    {
+                        _log.LogWarning("Taking the lease after pre-flight failed ({Message}); CHK-01 will report the transport", CheckerText.Describe(ex));
+                    }
+                }
+
                 await RunChecksAsync(ctx, options, results, Publish, ct);
             }
         }

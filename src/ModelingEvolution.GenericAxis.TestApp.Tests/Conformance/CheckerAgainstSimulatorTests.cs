@@ -539,5 +539,32 @@ public sealed class CheckerAgainstSimulatorTests
         end.State.Should().Be(SimAxisState.ErrorStop);
     }
 
+    /// <summary>
+    /// GA-I-57 (review #35 (b), the live repro): the lease and the beat start as soon as pre-flight passes, so a second
+    /// tool started during the first's CHK-03 is refused, and the first run is unaffected.
+    /// </summary>
+    [Fact]
+    public async Task GA_I_57_ASecondToolStartedDuringTheFirstsChk03IsRefused()
+    {
+        using var sim = new LiveSimulator();
+        Task<ConformanceReport>? second = null;
+        long leaseOwnerAtChk01 = -1;
+
+        var first = await Check(sim, allowMotion: false, progress: r =>
+        {
+            if (r.Running == "CHK-02" && leaseOwnerAtChk01 < 0) leaseOwnerAtChk01 = sim.Snapshot.LeaseOwner; // a scan after CHK-01 started
+            if (r.Running == "CHK-03" && second is null) second = Check(sim, allowMotion: false);
+        });
+        var refused = await second!;
+
+        leaseOwnerAtChk01.Should().Be(65535, "the lease is taken before CHK-01");
+        refused.ExitCode.Should().Be(3, refused.Preflight);
+        refused.SummaryResult.Should().Be("REFUSED");
+        refused.Preflight.Should().StartWith("refused to start: another commander is beating")
+            .And.Contain("LeaseOwner (C+9 = 9) = 65535");
+        first.ExitCode.Should().Be(0, string.Join("; ", first.Checks.Where(c => c.Result == CheckResultKind.Fail).Select(c => $"{c.Id}: {c.Message}")));
+        (await sim.SettledAsync()).LeaseOwner.Should().Be(0, "the first run released its lease in cleanup");
+    }
+
     private volatile bool _chk14Running;
 }
