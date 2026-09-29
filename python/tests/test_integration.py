@@ -136,7 +136,6 @@ async def test_ga_i_34_a_plc_without_the_watchdog_is_caught(simulator: START, tm
 
 async def test_ga_i_35_a_plc_that_never_acknowledges_is_caught(simulator: START, tmp_path: Path) -> None:
     sim = simulator(Simulator__Faults__SuppressAck="true")
-    at_rest = await registers(sim.port, MAP.status, 15)
     _code, doc = run_checker(sim.port, tmp_path)
     r = results(doc)
     assert r["CHK-06"][0] == "FAIL"
