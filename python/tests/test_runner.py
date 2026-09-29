@@ -800,9 +800,11 @@ async def test_stopping_the_beat_during_a_write_keeps_that_write_as_the_last_bea
     assert last_beat >= heartbeat_applied[-1], last_beat - heartbeat_applied[-1]
 
 
-def _trip(after_ms: int, before_ms: int, *, met: bool = True) -> TripWatch:
+def _trip(after_ms: int, before_ms: int, *, before_end_ms: int | None = None, met: bool = True) -> TripWatch:
+    """after_ms: END of the first read with the trip; before_ms: START of the last read without it (C# 6888f34)."""
     status = StatusBlock.parse([7, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 1])
-    return TripWatch(met, after_ms, before_ms, status, 1, 1, 0.0)
+    end = before_ms + 5 if before_end_ms is None else before_end_ms
+    return TripWatch(met, after_ms, before_ms, end, status, 1, 1, 0.0)
 
 
 def test_a_trip_window_is_judged_at_the_read_cadence() -> None:
@@ -812,6 +814,8 @@ def test_a_trip_window_is_judged_at_the_read_cadence() -> None:
     ctx = CheckContext(client, MAP, Options(host="127.0.0.1"), Beater(client, MAP))
     assert judge_trip(ctx, _trip(1514, 1494), "stalled beat") is None  # crossed 1.5 s between two reads
     assert judge_trip(ctx, _trip(1012, 992), "stalled beat") is None  # crossed 1.0 s between two reads
+    # The trip landed while the last clean read was in flight (started 1497 ms, answered 1503 ms): late is not certain.
+    assert judge_trip(ctx, _trip(1523, 1497, before_end_ms=1503), "stalled beat") is None
     late = judge_trip(ctx, _trip(1530, 1510), "stalled beat")
     assert late is not None
     assert late.message.startswith(

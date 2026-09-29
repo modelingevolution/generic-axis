@@ -203,10 +203,13 @@ class Check:
 class TripWatch:
     met: bool
     after_ms: int
-    """From the last beat to the first read that showed the whole trip (or to the last read)."""
+    """From the last beat to the END of the first read that showed the whole trip (or of the last read). Only then is
+    an early trip certain."""
     before_ms: int
-    """From the last beat to the last read that did not show it (0: the last beat itself). The trip happened in
-    ``before_ms``…``after_ms`` (protocol.md § Rules, "Timing": bounds are judged at the read cadence, #31)."""
+    """From the last beat to the START of the last read that did not show it (0: the last beat itself). Only then is a
+    late trip certain: the trip may have landed while that read was in flight (protocol.md § Rules, "Timing"; #31)."""
+    before_end_ms: int
+    """From the last beat to the END of that last clean read (reported; never used to judge lateness)."""
     status: StatusBlock
     watchdog_fault: int
     trips: int
@@ -220,8 +223,9 @@ async def watch_trip(ctx: CheckContext, last_beat: float, trips_before: int, *, 
     ``WatchdogTrips`` + 1 (CHK-08/09). CHK-16 asks for ``FaultCode 4`` and ``State 7`` only.
     """
     deadline = last_beat + TRIP_WINDOW_MS[1] / 1000
-    before_ms = 0
+    before_ms = before_end_ms = 0
     while True:
+        read_started = time.monotonic()
         status = await ctx.status()
         fault, trips = await ctx.watchdog()
         stamp = time.monotonic()
@@ -231,8 +235,8 @@ async def watch_trip(ctx: CheckContext, last_beat: float, trips_before: int, *, 
         if tripped or fault == 1:
             ctx.caused_trip = True
         if tripped or stamp >= deadline:
-            return TripWatch(tripped, ms(stamp - last_beat), before_ms, status, fault, trips, stamp)
-        before_ms = ms(stamp - last_beat)
+            return TripWatch(tripped, ms(stamp - last_beat), before_ms, before_end_ms, status, fault, trips, stamp)
+        before_ms, before_end_ms = ms(read_started - last_beat), ms(stamp - last_beat)
         await asyncio.sleep(POLL_PERIOD_S)
 
 
