@@ -236,7 +236,10 @@ the operator (Ctrl-C / SIGINT) before the list finished.
   `WatchdogFault = 0` if the checker caused a trip · `LeaseOwner = 0` if it holds the checker's id. Each cleanup
   write is logged in the report.
 - **Lease and beat between checks.** From CHK-06 onwards the checker holds the lease under its own id and beats,
-  except where a check says it stops.
+  except where a check says it stops. If a beating checker reads `LeaseOwner` ≠ its own id, the running check FAILs
+  Protocol/`ProtocolMismatch` "Read LeaseOwner (C+9 = 9) = n, expected 65535" (the register does not hold what was
+  written), every later check is SKIPPED with that reason, and the checker writes nothing more to that axis except to
+  stop its own beat.
 - **Each check restores.** Every check ends with the axis in State 0 or 1, no latched fault, the lease held and the
   beat running: Reset, `WatchdogFault = 0` and re-take as needed. If it cannot restore, it FAILs with the reason, and
   every later check is SKIPPED.

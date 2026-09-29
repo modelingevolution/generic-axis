@@ -37,6 +37,23 @@ public sealed record Failure(ErrorClass Class, string Name, int Rank, string Tex
     /// <summary>Rank 5: the PLC answered, but against the protocol.</summary>
     public static Failure Protocol(string text) => new(ErrorClass.Protocol, "ProtocolMismatch", 5, text);
 
+    /// <summary>
+    /// A driver exception under its own MotionError name and the protocol's class for it (review #33): never
+    /// relabelled. Rank follows the class: Transport 1, NotAcknowledged 2, other Protocol 5, Machine 6, Commander 7.
+    /// </summary>
+    public static Failure FromMotion(RocketWelder.SDK.Devices.Motion.MotionException ex)
+    {
+        var cls = MotionErrorClasses.Of(ex.Error);
+        var rank = cls switch
+        {
+            ErrorClass.Transport => 1,
+            ErrorClass.Protocol => ex.Error == RocketWelder.SDK.Devices.Motion.MotionError.NotAcknowledged ? 2 : 5,
+            ErrorClass.Machine => 6,
+            _ => 7,
+        };
+        return new(cls, ex.Error.ToString(), rank, CheckerText.Facts(ex));
+    }
+
     /// <summary>Rank 6: an accepted command whose effect never came.</summary>
     public static Failure Machine(string name, string text) => new(ErrorClass.Machine, name, 6, text);
 

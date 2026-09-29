@@ -118,6 +118,9 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
                 continue;
             }
 
+            // A check may catch the guard's exception itself; the lost lease still fails it.
+            if (ctx.LeaseLost is { } lost) outcome = outcome.With([Failure.Protocol(lost)]);
+
             LastRead? lastRead = null;
             if (outcome.Result == CheckResultKind.Fail)
             {
@@ -126,7 +129,12 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
                 outcome = outcome.With(SeenIn(lastRead, def, ctx));
             }
 
-            if (def.Restores)
+            if (ctx.LeaseLost is { } lostLease)
+            {
+                // Another commander owns the axis now: no restore, and every later check is SKIPPED with the reason.
+                blocked = $"{def.Id}: {lostLease}";
+            }
+            else if (def.Restores)
             {
                 var failed = await RestoreAsync(ctx, ct);
                 if (ct.IsCancellationRequested) blocked = Interrupted(def.Id);
@@ -134,7 +142,7 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
                 {
                     lastRead ??= ctx.LastValues();
                     outcome = outcome.With([failed with { Text = $"cannot restore the axis: {failed.Text}" }]);
-                    blocked = $"{def.Id} could not restore the axis";
+                    blocked = ctx.LeaseLost is { } lostInRestore ? $"{def.Id}: {lostInRestore}" : $"{def.Id} could not restore the axis";
                 }
             }
 
@@ -209,13 +217,10 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
         {
             outcome = CheckOutcome.Skipped(Interrupted(def.Id));
         }
-        catch (MotionException ex) when (ex.Error == MotionError.CommunicationLost)
-        {
-            outcome = CheckOutcome.Fail(Failure.Transport(ex.Message));
-        }
         catch (MotionException ex)
         {
-            outcome = CheckOutcome.Fail(Failure.Protocol($"{ex.Error}: {ex.Message}"));
+            // Under its own MotionError name and the protocol's class for it; never relabelled (review #33).
+            outcome = CheckOutcome.Fail(Failure.FromMotion(ex));
         }
         catch (Exception ex)
         {
@@ -256,14 +261,14 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
         }
         catch (MotionException ex)
         {
-            _log.LogWarning("Pre-flight could not read the PLC ({Message}); CHK-01 will report it", ex.Message);
+            _log.LogWarning("Pre-flight could not read the PLC ({Message}); CHK-01 will report it", CheckerText.Describe(ex));
             return null;
         }
     }
 
     private static async Task<(ushort Beat, ushort Owner)> ReadBeatAndOwnerAsync(CheckContext ctx, CancellationToken ct)
     {
-        var words = await ctx.Channel.ReadHoldingAsync(ctx.Unit, ctx.Map.Heartbeat, 2, $"read C+8…C+9 unit {ctx.Unit} (pre-flight: Heartbeat, LeaseOwner)",
+        var words = await ctx.Channel.ReadHoldingAsync(ctx.Unit, ctx.Map.Heartbeat, 2, "read C+8…C+9 (pre-flight: Heartbeat, LeaseOwner)",
             ChannelPriority.Move, ct);
         return (words[0], words[1]);
     }
@@ -291,6 +296,7 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
             }
 
             if (v.LeaseOwner != ctx.Options.OwnerId) await ctx.TakeLeaseAsync(ct);
+            else ctx.HoldsLease = true; // e.g. taken by CHK-11's lease client
             if (v.WatchdogFault != 0) await ctx.ClearWatchdogFaultAsync(ct);
             await ctx.Beater.StartAsync(ct);
 
@@ -315,7 +321,7 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
         }
         catch (MotionException ex)
         {
-            return ex.Error == MotionError.CommunicationLost ? Failure.Transport(ex.Message) : Failure.Protocol($"{ex.Error}: {ex.Message}");
+            return Failure.FromMotion(ex);
         }
     }
 
@@ -331,6 +337,19 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
         var c = ctx.Map;
         try
         {
+            if (ctx.LeaseLost is { } lost)
+            {
+                // The axis has another owner: stop our beat and write nothing to it (no Stop, no Enable 0, no release).
+                if (ctx.Beater.IsRunning)
+                {
+                    await ctx.Beater.StopAsync();
+                    ctx.Journal($"C+{c.Heartbeat - c.CommandBase} (Heartbeat): stopped beating");
+                }
+
+                _log.LogWarning("Cleanup: {Lost} Nothing else is written to an axis the checker no longer owns", lost);
+                return;
+            }
+
             if (!ctx.Commands.Used && !ctx.TookLease && !ctx.Beater.IsRunning && !ctx.CausedTrip)
             {
                 _log.LogInformation("Cleanup: the checker wrote no command, lease or beat — nothing to undo");
