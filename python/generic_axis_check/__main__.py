@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import signal
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,11 +18,13 @@ from .dump import dump
 from .errors import COMMUNICATION_LOST, ErrorClass, format_message
 from .registers import RegisterMap
 from .report import to_json_text, to_markdown
-from .runner import run
+from .runner import Report, run
 
 DEFAULT_PORT = 502
 USAGE_ERROR = 2
 """protocol.md: exit code 2 = usage error (argparse's own code)."""
+INTERRUPTED_EXIT = 4
+"""protocol.md: exit code 4 = interrupted by the operator."""
 
 BANNER = (
     "generic-axis-check: CHK-06 energises the drive (no motion is commanded without --allow-motion).\n"
@@ -153,7 +156,22 @@ def main(argv: list[str] | None = None) -> int:
     if invocation.dump:
         return asyncio.run(run_dump(invocation.options, invocation.watch))
     print(BANNER, file=sys.stderr)
-    report = asyncio.run(run(invocation.options, progress=lambda line: print(line, file=sys.stderr, flush=True)))
+    produced: list[Report] = []
+
+    async def checklist() -> None:
+        produced.append(await run(invocation.options, progress=lambda line: print(line, file=sys.stderr, flush=True)))
+
+    try:
+        asyncio.run(checklist())
+    except KeyboardInterrupt:
+        # A Ctrl-C after the run finished (asyncio.run re-raises it once the task is done), or a second Ctrl-C.
+        if not produced:
+            print("interrupted before a report was produced", file=sys.stderr)
+            return INTERRUPTED_EXIT
+    finally:
+        # Lead ruling (2026-09-29): once the run is over, a late Ctrl-C must not lose the report or its exit code.
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+    report = produced[0]
     markdown = to_markdown(report)
     sys.stdout.write(markdown)
     sys.stdout.flush()

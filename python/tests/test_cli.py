@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import os
+import signal
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from generic_axis_check import __main__ as cli
 from generic_axis_check.__main__ import UsageError, main, parse
+from generic_axis_check.context import Options
+from generic_axis_check.runner import Report
 
 
 def test_parse_host_only_takes_the_protocol_defaults() -> None:
@@ -74,3 +80,30 @@ def test_main_usage_errors_exit_2(argv: list[str]) -> None:
     except SystemExit as exc:  # argparse's own usage errors
         code = int(exc.code or 0)
     assert code == 2
+
+
+def test_a_ctrl_c_while_the_report_is_written_keeps_the_report_and_its_exit_code(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # GA-U-121.py (lead ruling on the late Ctrl-C): SIGINT after the run finished must not end in KeyboardInterrupt.
+    options = Options(host="127.0.0.1", port=1)
+    now = datetime.now(UTC)
+    finished = Report(options, now, now, [], [])
+
+    async def fake_run(*_args: object, **_kwargs: object) -> Report:
+        return finished
+
+    def to_markdown_under_ctrl_c(report: Report) -> str:
+        os.kill(os.getpid(), signal.SIGINT)  # the operator presses Ctrl-C as the report is being written
+        return real_to_markdown(report)
+
+    real_to_markdown = cli.to_markdown
+    monkeypatch.setattr(cli, "run", fake_run)
+    monkeypatch.setattr(cli, "to_markdown", to_markdown_under_ctrl_c)
+    handler = signal.getsignal(signal.SIGINT)
+    try:
+        code = cli.main(["127.0.0.1:1", "--report", str(tmp_path / "r.md")])
+    finally:
+        signal.signal(signal.SIGINT, handler)
+    assert code == 0
+    assert (tmp_path / "r.md").read_text(encoding="utf-8").endswith("RESULT: PASS\n")
