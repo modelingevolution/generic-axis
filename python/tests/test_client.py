@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import time
 
 import pytest
 
-from generic_axis_check.client import PlcClient, PlcError
+from generic_axis_check.client import REQUEST_TIMEOUT_S, PlcClient, PlcError, connect_timeout
 
 from .stub_plc import StubPlc
 
@@ -40,3 +42,38 @@ async def test_connect_to_a_closed_port_raises_plc_error() -> None:
         port = plc.port
     with pytest.raises(PlcError, match="connect"):
         await PlcClient("127.0.0.1", port, 1).connect()
+
+
+async def test_read_from_a_silent_server_fails_after_two_half_second_attempts() -> None:
+    # GA-U-72.py (review #19): "a request got no answer within 500 ms" is Transport. One attempt, the one reconnect,
+    # one more attempt: ≈ 2 × 0.5 s, never pymodbus's 1.5 s per attempt.
+    async def never_answer(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        with contextlib.suppress(ConnectionError):
+            while await reader.read(256):
+                pass
+        writer.close()
+
+    server = await asyncio.start_server(never_answer, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    client = PlcClient("127.0.0.1", port, 1)
+    try:
+        await client.connect()
+        started = time.monotonic()
+        with pytest.raises(PlcError, match="failed"):
+            await client.read(100, 15)
+        elapsed = time.monotonic() - started
+    finally:
+        client.close()
+        server.close()
+        await server.wait_closed()
+    assert client.retries == 1
+    assert 0.9 <= elapsed <= 1.6, elapsed
+
+
+def test_connect_timeout_is_2_s_and_both_attempts_fit_chk01s_3_s_budget() -> None:
+    # Review #19 / design.md: connect timeout 2 s, distinct from the 0.5 s request timeout; CHK-01 budget ≤ 3 s.
+    assert connect_timeout(0.0) == 2.0
+    assert connect_timeout(2.0) == 1.0
+    assert connect_timeout(0.1) == 2.0
+    assert connect_timeout(3.5) == 0.0
+    assert REQUEST_TIMEOUT_S == 0.5

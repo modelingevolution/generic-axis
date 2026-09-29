@@ -14,8 +14,16 @@ from pymodbus.pdu import ModbusPDU
 from .registers import STATUS_LENGTH, RegisterMap, StatusBlock, describe_range
 
 CONNECT_ATTEMPTS = 2
-CONNECT_ATTEMPT_S = 1.5
-"""CHK-01: the TCP connect has a budget of ≤ 3 s including the tool's own retry: two attempts of 1.5 s."""
+CONNECT_TIMEOUT_S = 2.0
+"""design.md § Python: connect timeout 2 s (per attempt)."""
+CONNECT_BUDGET_S = 3.0
+"""CHK-01: the TCP connect has a budget of ≤ 3 s including the tool's own retry; the retry gets what is left."""
+
+
+def connect_timeout(elapsed_s: float) -> float:
+    """The timeout of the next connect attempt: 2 s, capped so both attempts together stay within 3 s."""
+    return max(0.0, min(CONNECT_TIMEOUT_S, CONNECT_BUDGET_S - elapsed_s))
+
 
 REQUEST_TIMEOUT_S = 0.5
 """design.md § Python: request timeout 0.5 s (the protocol's ack budget; no single request may take longer)."""
@@ -68,18 +76,19 @@ class PlcClient:
 
     async def connect(self) -> None:
         """Connect within CHK-01's budget. pymodbus uses one timeout for connect and for requests, so the client
-        connects with the attempt timeout and then switches to the 0.5 s request timeout. Automatic reconnection is
+        connects with the 2 s connect timeout and then switches to the 0.5 s request timeout. Automatic reconnection is
         off (``reconnect_delay=0``): a lost link is reported, never silently recovered (protocol.md § Errors and
         debugging, rule 3)."""
         started = time.monotonic()
         last: BaseException | None = None
         for _ in range(CONNECT_ATTEMPTS):
-            client = AsyncModbusTcpClient(
-                self.host, port=self.port, timeout=CONNECT_ATTEMPT_S, retries=0, reconnect_delay=0
-            )
+            timeout = connect_timeout(time.monotonic() - started)
+            client = AsyncModbusTcpClient(self.host, port=self.port, timeout=timeout, retries=0, reconnect_delay=0)
             try:
                 if await client.connect():
-                    client.comm_params.timeout_connect = REQUEST_TIMEOUT_S
+                    # pymodbus's TransactionManager (``client.ctx``) waits for an answer on ITS OWN copy of the
+                    # parameters (``timeout_connect``); ``client.comm_params`` is not read after construction (#19).
+                    client.ctx.comm_params.timeout_connect = REQUEST_TIMEOUT_S
                     self._client = client
                     self._generation += 1
                     return
