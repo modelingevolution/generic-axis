@@ -285,7 +285,7 @@ the operator (Ctrl-C / SIGINT) before the list finished.
 
 ### Error class of a FAIL
 
-Every FAIL carries one class, decided by what the checker saw, in this order (§ Errors and debugging):
+Every FAIL carries one class (a checker error carries none, § Report schema), decided by what the checker saw, in this order (§ Errors and debugging):
 
 | Seen | Class / name |
 |---|---|
