@@ -242,6 +242,14 @@ def test_ga_i_39_both_tools_agree(simulator: START, tmp_path: Path) -> None:
     assert csharp["preflight"] is None
     assert key(py) == key(csharp)
     assert deterministic(py) == deterministic(csharp)
+    # Lead ruling: `retries` depends on the host's load ("normally 0"), not on the tools' agreement. It is only held to
+    # being present, an integer ≥ 0, in every non-skipped check of both reports.
+    for doc in (py, csharp):
+        for c in doc["checks"]:
+            if c["result"] != "SKIPPED":
+                retries = c["observed"]["retries"]
+                assert isinstance(retries, int), (doc["tool"]["language"], c["id"], retries)
+                assert retries >= 0, (doc["tool"]["language"], c["id"], retries)
     assert csharp["tool"]["language"] == "csharp"
     for doc in (py, csharp):
         assert all(v is None or isinstance(v, int) for c in doc["checks"] for v in c["observed"].values())
@@ -249,13 +257,13 @@ def test_ga_i_39_both_tools_agree(simulator: START, tmp_path: Path) -> None:
 
 DETERMINISTIC = frozenset(
     {
-        # test-scenarios.md GA-I-39: every count key, and the values that do not depend on timing.
+        # test-scenarios.md GA-I-39: every count key except `retries` (host-dependent, checked separately), and the
+        # values that do not depend on timing.
         "reads",
         "invalidStates",
         "tripsWhileLatched",
         "tripsWhileBeating",
         "tripsAfterRelease",
-        "retries",
         "mapVersion",
         "travelMin",
         "travelMax",
