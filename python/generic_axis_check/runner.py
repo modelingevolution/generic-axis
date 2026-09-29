@@ -29,6 +29,7 @@ from .lease import LeaseHeld
 from .poll import ms, wait_for
 from .registers import (
     EDGE_BITS,
+    MAP_VERSION,
     MOVING_STATES,
     AxisState,
     Command,
@@ -173,6 +174,20 @@ async def preflight(client: PlcClient, registers: RegisterMap) -> Preflight:
         f"pre-flight: {owner_at} is held and {fault_at}: no beat and no trip within {HELD_LEASE_WATCH_S:g} s — "
         "a live commander, or a PLC without a working watchdog; release LeaseOwner by hand only if no commander runs"
     )
+
+
+async def hold_from_preflight(ctx: CheckContext) -> None:
+    """protocol.md § Rules, "Lease and beat between checks" (review #35 b): from the end of pre-flight the checker
+    holds the lease under its own id and beats, so a second tool is refused from CHK-01 on. Only on a PLC whose
+    ``MapVersion`` reads 1 (a wrong map version is never written), and never over a dead holder's trip."""
+    try:
+        (version,) = await ctx.client.read(ctx.registers.map_version, 1)
+        if version != MAP_VERSION:
+            return
+        await ctx.take_lease()
+        await ctx.beater.start()
+    except (PlcError, LeaseHeld) as exc:
+        log.warning("taking the lease after pre-flight failed (%s); CHK-01 reports the transport", exc)
 
 
 async def foreign_trip_problem(ctx: CheckContext) -> Outcome | None:
@@ -364,6 +379,8 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
             refused = True
             abort = live
             say(abort)
+        elif proven_free and not ctx.foreign_trip:
+            await hold_from_preflight(ctx)
 
         for check in checks:
             if preflight_failure is not None and check.id == "CHK-01":

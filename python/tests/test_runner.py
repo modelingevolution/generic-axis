@@ -410,7 +410,7 @@ async def test_an_unacknowledged_edge_is_in_last_read_before_the_edge_is_cleared
     assert cleared == 0  # the edge was cleared after the evidence was taken
 
 
-async def test_chk06_fails_an_axis_found_in_error_stop_and_writes_nothing(stub: StubPlc) -> None:
+async def test_chk06_fails_an_axis_found_in_error_stop_and_commands_nothing(stub: StubPlc) -> None:
     # GA-U-108.py (review #9): "Precondition State 0 or 1" and "No silent recovery": the axis the checker found in
     # ErrorStop (FaultCode 2, limit switch) is reported as read, never Reset behind the operator's back.
     stub.axis.state, stub.axis.fault, stub.axis.enable_blocked = 7, 2, True
@@ -425,8 +425,11 @@ async def test_chk06_fails_an_axis_found_in_error_stop_and_writes_nothing(stub: 
     # Lead ruling on #9: a precondition FAIL is a failure to restore: CHK-11 (needs only 02) is SKIPPED too.
     assert by_id(report)["CHK-07"] == (SKIPPED, "restore after CHK-06 failed")
     assert by_id(report)["CHK-11"] == (SKIPPED, "restore after CHK-06 failed")
-    assert stub.writes == []
-    assert report.cleanup == []
+    # Since #35 (b) the checker holds the lease and beats from the end of pre-flight; it never commands, Resets or
+    # clears anything on this axis, and cleanup only releases its own lease.
+    assert {address for address, _ in stub.writes} <= {MAP.heartbeat, MAP.lease_owner}
+    assert report.cleanup == ["C+9 = 0 (release lease)"]
+    assert stub.regs[MAP.lease_owner] == 0
     assert (stub.axis.state, stub.axis.fault) == (7, 2)
 
 
@@ -647,3 +650,25 @@ async def test_a_dead_commander_whose_watchdog_trips_lets_the_run_proceed_and_it
     assert report.cleanup == []
     assert end == (1, 1, 7, int(Command.ENABLE))
     assert report.exit_code == 1
+
+
+@pytest.mark.timeout(60)
+async def test_a_second_tool_started_during_the_firsts_chk03_is_refused(stub: StubPlc) -> None:
+    # GA-U-122.py (#35 b): the first tool holds the lease and beats from the end of pre-flight, so a second tool with
+    # the same id started during CHK-03 is refused, naming LeaseOwner 65535; the first run passes.
+    in_chk03 = asyncio.Event()
+
+    def progress(line: str) -> None:
+        if line.startswith("CHK-03 "):
+            in_chk03.set()
+
+    first = asyncio.create_task(run(options(stub), progress, checks=upto("CHK-05")))
+    await in_chk03.wait()
+    second = await run(options(stub), checks=upto("CHK-05"))
+    report = await first
+    assert second.exit_code == 3
+    assert second.result == "REFUSED"
+    assert "LeaseOwner (C+9) 65535" in second.checks[0].message
+    assert second.cleanup == []
+    assert report.exit_code == 0
+    assert stub.regs[MAP.lease_owner] == 0

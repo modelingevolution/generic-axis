@@ -380,3 +380,29 @@ async def test_ga_i_43_a_beat_under_lease_owner_0_is_refused(simulator: START, t
     assert "LeaseOwner (C+9) 0;" in doc["checks"][0]["message"]
     assert after[:8] == before[:8]
     assert lease == 0
+
+
+async def test_ga_i_57_a_second_tool_during_the_firsts_chk03_is_refused(simulator: START, tmp_path: Path) -> None:
+    # #35 (b): the first tool holds the lease and beats from the end of pre-flight, so CHK-01…05 are covered too.
+    sim = simulator()
+    first_dir, second_dir = tmp_path / "first", tmp_path / "second"
+    first_dir.mkdir()
+    second_dir.mkdir()
+    first = checker(sim.port, first_dir / "report.md")
+    assert first.stderr is not None
+    for line in first.stderr:
+        if line.startswith("CHK-03 "):
+            break
+    second = checker(sim.port, second_dir / "report.md")
+    second.communicate(timeout=60)
+    first.communicate(timeout=200)
+    doc = json.loads((second_dir / "report.json").read_text(encoding="utf-8"))
+    assert second.returncode == 3
+    assert doc["summary"]["result"] == "REFUSED"
+    assert "LeaseOwner (C+9) 65535" in doc["checks"][0]["message"]
+    assert doc["cleanup"] == []
+    first_doc = json.loads((first_dir / "report.json").read_text(encoding="utf-8"))
+    assert first.returncode == 0
+    assert first_doc["summary"]["result"] == "PASS"
+    (lease,) = await registers(sim.port, MAP.lease_owner, 1)
+    assert lease == 0
