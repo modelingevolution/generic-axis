@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using ModelingEvolution.GenericAxis.TestApp.Simulation;
 
 namespace ModelingEvolution.GenericAxis.TestApp.Tests.Simulation;
@@ -433,5 +434,72 @@ public sealed class AxisPlcTests
         bench.Ack.Should().Be(0);
         bench.Flags.Should().HaveFlag(SimStatusFlags.Homed);
         bench.Snap.WatchdogArmed.Should().BeFalse();
+    }
+
+    // ---- GA-U-90 (review #21): refuse, never clamp ---------------------------------------------------------------
+
+    [Theory]
+    [InlineData(SimCommandBits.MoveAbsolute, 600.0)]
+    [InlineData(SimCommandBits.MoveVelocity, 600.0)]
+    [InlineData(SimCommandBits.MoveVelocity, -600.0)]
+    public void GA_U_90_VelocityAboveMaxVelocity_IsAcknowledgedAndIgnoredWithOneWarning(SimCommandBits move, double velocity)
+    {
+        using var bench = new PlcBench();
+        bench.Energise();
+        var before = bench.Snap;
+        bench.Log.Clear();
+
+        bench.Parameters(target: 2000, velocity: velocity); // MaxVelocity is 500 mm/s
+        var seq = bench.Command(SimCommandBits.Enable | move);
+        bench.Tick(20);
+
+        bench.Ack.Should().Be(seq, "a refused command is still acknowledged");
+        bench.State.Should().Be(Standstill, "the refused move never started");
+        bench.ActualVelocityRaw.Should().Be(0);
+        bench.ActualPositionRaw.Should().Be((int)Math.Round(before.PublishedPosition * 1000), "no motion at a clamped speed");
+        var warning = bench.Log.At(LogLevel.Warning).Should().ContainSingle().Subject;
+        warning.Should().Contain("Velocity (C+4)").And.Contain($"{velocity}").And.Contain("MaxVelocity 500");
+    }
+
+    [Theory]
+    [InlineData(10000.5)]
+    [InlineData(-0.5)]
+    public void GA_U_90_TargetOutsideTravel_IsAcknowledgedAndIgnoredWithOneWarning(double target)
+    {
+        using var bench = new PlcBench();
+        bench.Energise();
+        bench.Log.Clear();
+
+        bench.Parameters(target: target, velocity: 100);
+        var seq = bench.Command(SimCommandBits.Enable | SimCommandBits.MoveAbsolute);
+        bench.Tick(20);
+
+        bench.Ack.Should().Be(seq);
+        bench.State.Should().Be(Standstill);
+        var warning = bench.Log.At(LogLevel.Warning).Should().ContainSingle().Subject;
+        warning.Should().Contain("TargetPosition (C+2)").And.Contain($"{target}").And.Contain("TravelMin..TravelMax 0..10000");
+    }
+
+    [Fact]
+    public void GA_U_90_VelocityAtMaxVelocity_IsAccepted()
+    {
+        using var bench = new PlcBench();
+        bench.Energise();
+
+        bench.Parameters(target: 0, velocity: 500);
+        bench.Command(SimCommandBits.Enable | SimCommandBits.MoveVelocity);
+        bench.Tick(200);
+
+        bench.State.Should().Be((ushort)SimAxisState.ContinuousMotion);
+        bench.ActualVelocityRaw.Should().Be(500_000, "MaxVelocity itself is inside the limit");
+    }
+
+    [Fact]
+    public void GA_U_90_OptionsThatCannotBePublished_AreRefusedAtStartup()
+    {
+        var act = () => new SimulatedAxisOptions { TravelMax = 3_000_000 }.Validate();
+
+        act.Should().Throw<ArgumentException>().WithMessage("*TravelMax*int32*",
+            "a position that does not fit its register would otherwise be published clamped");
     }
 }
