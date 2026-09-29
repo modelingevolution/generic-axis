@@ -247,6 +247,9 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
     started_at = datetime.now(UTC)
     results: dict[str, CheckResult] = {}
     refused = interrupted = False
+    proven_free = False
+    """Pre-flight proved no other commander beats. Until then the tool has written nothing, so cleanup has nothing
+    to undo and must write nothing either: the axis may belong to a live commander (ADR-33, review #18)."""
     abort: str | None = None
     unknown: set[str] = set()
 
@@ -257,6 +260,7 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
             await client.connect()
             ctx.connect_ms = ms(time.monotonic() - connect_started)
             live = await preflight(client, registers)
+            proven_free = live is None
         except PlcError as exc:
             live = None  # CHK-01 reports the transport failure
             say(f"pre-flight: {exc}")
@@ -329,7 +333,7 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
         for check in checks:
             results.setdefault(check.id, _skip(check, f"interrupted by the operator during {running}"))
     finally:
-        if client.connected and not refused:
+        if client.connected and proven_free:
             await cleanup(ctx)
         with contextlib.suppress(PlcError):
             await ctx.beater.stop()  # already stopped by cleanup unless the connection was lost

@@ -13,7 +13,7 @@ from generic_axis_check.beat import Beater
 from generic_axis_check.checks import CHECKS, FAIL, OBSERVED, PASS, SKIPPED, Check, Outcome
 from generic_axis_check.client import PlcClient
 from generic_axis_check.context import CheckContext, Options
-from generic_axis_check.registers import RegisterMap
+from generic_axis_check.registers import Command, RegisterMap
 from generic_axis_check.runner import Report, run
 
 from .stub_plc import StubPlc
@@ -235,3 +235,52 @@ async def test_every_failure_path_reports_only_listed_observed_keys() -> None:
         for c in report.checks:
             expected = [] if c.result == SKIPPED else [*OBSERVED[c.id], "retries"]
             assert list(c.observed) == expected, (fault, c.id)
+
+
+async def _moving_commander(stub: StubPlc) -> tuple[PlcClient, Beater]:
+    """A live commander as owner 1: beating, Enabled, in MoveVelocity (State 4) — the reviewer's #18 setup."""
+    commander = PlcClient("127.0.0.1", stub.port, 1)
+    await commander.connect()
+    await commander.write(MAP.lease_owner, [1])
+    beat = Beater(commander, MAP)
+    await beat.start()
+    await commander.write(MAP.target_position, [0, 0, 1000, 0, 0, 0])
+    await commander.write(MAP.command, [int(Command.ENABLE | Command.MOVE_VELOCITY), 48])
+    while stub.axis.state != 4:  # noqa: ASYNC110 — polls the stub's scan state; there is no event to await
+        await asyncio.sleep(0.005)
+    return commander, beat
+
+
+async def test_run_interrupted_during_preflight_writes_nothing_to_a_live_commanders_axis(stub: StubPlc) -> None:
+    # GA-U-70.py (review #18): Ctrl-C in the 1 s pre-flight watch → exit 4, no write at all, the commander untouched.
+    commander, beat = await _moving_commander(stub)
+    try:
+        before = len(stub.writes)
+        task = asyncio.create_task(run(options(stub, motion=True)))
+        await asyncio.sleep(0.5)  # inside the 1 s Heartbeat watch
+        task.cancel()
+        report = await task
+        ours = [w for w in stub.writes[before:] if w[0] != MAP.heartbeat]
+        command = stub.regs[MAP.command : MAP.command + 2]
+    finally:
+        await beat.stop()
+        commander.close()
+    assert report.interrupted
+    assert report.exit_code == 4
+    assert all(c.result == SKIPPED for c in report.checks)
+    assert report.checks[0].message == "interrupted by the operator during pre-flight"
+    assert ours == []
+    assert report.cleanup == []
+    assert command == [int(Command.ENABLE | Command.MOVE_VELOCITY), 48]
+    assert stub.axis.state == 4
+
+
+async def test_run_interrupted_during_preflight_on_an_idle_axis_writes_nothing(stub: StubPlc) -> None:
+    # GA-U-70.py (review #18), idle case: nothing was written before the interruption, so nothing is undone.
+    task = asyncio.create_task(run(options(stub, motion=True)))
+    await asyncio.sleep(0.5)
+    task.cancel()
+    report = await task
+    assert report.exit_code == 4
+    assert stub.writes == []
+    assert report.cleanup == []
