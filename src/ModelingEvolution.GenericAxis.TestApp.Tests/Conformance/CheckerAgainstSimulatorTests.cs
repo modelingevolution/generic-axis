@@ -562,16 +562,27 @@ public sealed class CheckerAgainstSimulatorTests
     {
         using var sim = new LiveSimulator();
         Task<ConformanceReport>? second = null;
-        long leaseOwnerAtChk01 = -1;
+        // The simulator's own write journal, in the order it served the writes, plus a marker when CHK-01 starts. The
+        // tool publishes CHK-01 only after its lease write was answered, so the order is causal, not a sampled moment.
+        var journal = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        sim.Host.OnClientWrite = addresses =>
+        {
+            foreach (var a in addresses) journal.Enqueue($"C+{a} = {sim.Host.Registers.Read(a)}");
+        };
 
         var first = await Check(sim, allowMotion: false, progress: r =>
         {
-            if (r.Running == "CHK-02" && leaseOwnerAtChk01 < 0) leaseOwnerAtChk01 = sim.Snapshot.LeaseOwner; // a scan after CHK-01 started
+            if (r.Running == "CHK-01" && !journal.Contains("CHK-01 running")) journal.Enqueue("CHK-01 running");
             if (r.Running == "CHK-03" && second is null) second = Check(sim, allowMotion: false);
         });
         var refused = await second!;
+        sim.Host.OnClientWrite = null;
 
-        leaseOwnerAtChk01.Should().Be(65535, "the lease is taken before CHK-01");
+        var entries = journal.ToList();
+        var lease = entries.IndexOf("C+9 = 65535");
+        lease.Should().BeGreaterThanOrEqualTo(0, "the tool took the lease");
+        entries.Take(lease).Where(e => !e.StartsWith("C+8 = ", StringComparison.Ordinal)).Should().BeEmpty("the lease is the tool's first write");
+        lease.Should().BeLessThan(entries.IndexOf("CHK-01 running"), "the lease is taken before CHK-01: " + string.Join(", ", entries.Take(8)));
         refused.ExitCode.Should().Be(3, refused.Preflight);
         refused.SummaryResult.Should().Be("REFUSED");
         refused.Preflight.Should().StartWith("refused to start: another commander is beating")
