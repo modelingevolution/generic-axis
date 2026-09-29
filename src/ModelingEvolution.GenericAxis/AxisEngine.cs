@@ -262,7 +262,7 @@ internal sealed class AxisEngine : IDisposable
         var word = (ushort)(enable ? CommandBits.Enable : CommandBits.None);
 
         await _channel.WriteRegistersAsync(_unit, _map.Command, [word, s.CommandAck], "clear stale edges at attach",
-            ChannelPriority.Move, ct);
+            ChannelPriority.Move, ct).ConfigureAwait(false);
         _logger?.LogInformation(
             "{Axis}: attach — Command ({Command}) = 0x{Word:X4}, CommandSeq ({Seq}) = {Ack} (continuing from CommandAck); "
             + "PLC state {State}",
@@ -530,24 +530,24 @@ internal sealed class AxisEngine : IDisposable
             {
                 bool alreadyOn;
                 lock (_sync) alreadyOn = _enable && StateOf() == AxisState.Standstill;
-                if (!alreadyOn) await EnergiseAsync(token);
+                if (!alreadyOn) await EnergiseAsync(token).ConfigureAwait(false);
             }, ct)
         : RunVerbAsync("PowerAsync(false)", null, async token =>
             {
                 var state = State;
                 if (state is AxisState.Homing or AxisState.DiscreteMotion or AxisState.ContinuousMotion
                     or AxisState.Stopping)
-                    await StopCoreAsync(token);
+                    await StopCoreAsync(token).ConfigureAwait(false);
 
                 var (_, ackTick) = await SendCommandAsync("Enable 0", CommandBits.None, null, false,
-                    ChannelPriority.Move, token);
+                    ChannelPriority.Move, token).ConfigureAwait(false);
                 await AwaitAsync(ackTick - 1,
                     s => MapState(s.Status.State) is AxisState.Disabled or AxisState.ErrorStop,
                     failOnErrorStop: false, _options.EnableTimeout,
                     () => Error(MotionError.DriveFault,
                         $"did not reach Disabled within {Secs(_options.EnableTimeout)} after Enable 0",
                         StateRead("0 (Disabled)")),
-                    token);
+                    token).ConfigureAwait(false);
             }, ct);
 
     /// <summary>Energise: a fresh 0→1 of Enable (protocol § Enable), then Standstill within the enable budget.</summary>
@@ -559,16 +559,16 @@ internal sealed class AxisEngine : IDisposable
         {
             // The register already holds Enable 1 while the PLC is Disabled: the PLC energises only on a fresh
             // 0→1, so drop the level first.
-            await SendCommandAsync("Enable 0 before a fresh Enable", CommandBits.None, null, false, ChannelPriority.Move, ct);
+            await SendCommandAsync("Enable 0 before a fresh Enable", CommandBits.None, null, false, ChannelPriority.Move, ct).ConfigureAwait(false);
         }
 
-        var (_, ackTick) = await SendCommandAsync("Enable 1", CommandBits.None, null, true, ChannelPriority.Move, ct);
+        var (_, ackTick) = await SendCommandAsync("Enable 1", CommandBits.None, null, true, ChannelPriority.Move, ct).ConfigureAwait(false);
         await AwaitAsync(ackTick - 1, s => MapState(s.Status.State) == AxisState.Standstill,
             failOnErrorStop: true, _options.EnableTimeout,
             () => Error(MotionError.DriveFault,
                 $"did not reach Standstill within {Secs(_options.EnableTimeout)} after Enable 1",
                 StateRead("1 (Standstill)")),
-            ct);
+            ct).ConfigureAwait(false);
     }
 
     /// <summary><c>HomeAsync</c>: energise first when Disabled (FR-3), then the Home edge; Standstill + Homed.</summary>
@@ -580,19 +580,19 @@ internal sealed class AxisEngine : IDisposable
             },
             async token =>
             {
-                if (State == AxisState.Disabled) await EnergiseAsync(token);
+                if (State == AxisState.Disabled) await EnergiseAsync(token).ConfigureAwait(false);
 
                 var (_, ackTick) = await SendCommandAsync("Home", CommandBits.Home, null, null, ChannelPriority.Move,
-                    token);
+                    token).ConfigureAwait(false);
                 try
                 {
                     await AwaitAsync(ackTick - 1,
                         s => MapState(s.Status.State) == AxisState.Standstill && s.Status.Homed,
-                        failOnErrorStop: true, _options.HomingTimeout, () => new BudgetExceeded(), token);
+                        failOnErrorStop: true, _options.HomingTimeout, () => new BudgetExceeded(), token).ConfigureAwait(false);
                 }
                 catch (BudgetExceeded)
                 {
-                    await StopCoreAsync(CancellationToken.None);
+                    await StopCoreAsync(CancellationToken.None).ConfigureAwait(false);
                     throw Error(MotionError.HomeLatchFailed,
                         $"homing did not finish within {Secs(_options.HomingTimeout)}; the axis was stopped",
                         StateRead("1 (Standstill)"), FlagsRead("Homed set"));
@@ -642,13 +642,13 @@ internal sealed class AxisEngine : IDisposable
             async token =>
             {
                 var (_, ackTick) = await SendCommandAsync("MoveVelocity", CommandBits.MoveVelocity,
-                    [0, rawVelocity, RawAcceleration()], null, ChannelPriority.Move, token);
+                    [0, rawVelocity, RawAcceleration()], null, ChannelPriority.Move, token).ConfigureAwait(false);
                 await AwaitAsync(ackTick - 1, s => MapState(s.Status.State) == AxisState.ContinuousMotion,
                     failOnErrorStop: true, ContinuousMotionConfirmTimeout,
                     () => Error(MotionError.MotionFailed,
                         $"ContinuousMotion not observed within {ContinuousMotionConfirmTimeout.TotalMilliseconds} ms "
                         + "of the MoveVelocity ack", StateRead("4 (ContinuousMotion)")),
-                    token);
+                    token).ConfigureAwait(false);
             }, ct);
     }
 
@@ -661,7 +661,7 @@ internal sealed class AxisEngine : IDisposable
         Running? running;
         lock (_sync) running = _running;
         running?.Cancel();
-        await StopCoreAsync(ct);
+        await StopCoreAsync(ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -676,7 +676,7 @@ internal sealed class AxisEngine : IDisposable
         }
 
         await SendCommandAsync("disconnect: Enable 0", CommandBits.None, null, false, ChannelPriority.Move, ct,
-            honourOverlay: false);
+            honourOverlay: false).ConfigureAwait(false);
     }
 
     private async Task StopCoreAsync(CancellationToken ct)
@@ -692,13 +692,13 @@ internal sealed class AxisEngine : IDisposable
         }
 
         var (_, ackTick) = await SendCommandAsync("Stop", CommandBits.Stop, null, null, ChannelPriority.Stop, ct,
-            honourOverlay: false);
+            honourOverlay: false).ConfigureAwait(false);
         await AwaitAsync(ackTick - 1,
             s => MapState(s.Status.State) is AxisState.Standstill or AxisState.Disabled or AxisState.ErrorStop,
             failOnErrorStop: false, _options.StopTimeout,
             () => Error(MotionError.MotionFailed, $"still moving {Secs(_options.StopTimeout)} after Stop",
                 StateRead("1 (Standstill)"), VelocityRead()),
-            ct, honourOverlay: false);
+            ct, honourOverlay: false).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -746,22 +746,22 @@ internal sealed class AxisEngine : IDisposable
                 if (snapshot.WatchdogFault != 0)
                 {
                     await _channel.WriteRegisterAsync(_unit, _map.WatchdogFault, 0, "clear watchdog fault",
-                        ChannelPriority.Move, token);
+                        ChannelPriority.Move, token).ConfigureAwait(false);
                     _logger?.LogInformation("{Axis}: ResetAsync — WatchdogFault ({Register}) = 0", Name,
                         _map.Describe(_map.WatchdogFault));
                 }
 
                 if (MapState(snapshot.Status.State) != AxisState.ErrorStop) return;
 
-                await SendCommandAsync("Enable 0 (before Reset)", CommandBits.None, null, false, ChannelPriority.Move, token);
+                await SendCommandAsync("Enable 0 (before Reset)", CommandBits.None, null, false, ChannelPriority.Move, token).ConfigureAwait(false);
                 var (_, ackTick) = await SendCommandAsync("Reset", CommandBits.Reset, null, null,
-                    ChannelPriority.Move, token);
+                    ChannelPriority.Move, token).ConfigureAwait(false);
                 await AwaitAsync(ackTick - 1, s => MapState(s.Status.State) != AxisState.ErrorStop,
                     failOnErrorStop: false, _options.EnableTimeout,
                     () => Error(MotionError.DriveFault,
                         $"the fault would not reset within {Secs(_options.EnableTimeout)} after the Reset edge",
                         StateRead("not 7 (ErrorStop)"), FaultRead()),
-                    token);
+                    token).ConfigureAwait(false);
             }, ct, requireConnection: false);
     }
 
@@ -787,7 +787,7 @@ internal sealed class AxisEngine : IDisposable
         CancellationToken ct)
     {
         var (_, ackTick) = await SendCommandAsync("MoveAbsolute", CommandBits.MoveAbsolute,
-            [rawTarget, rawSpeed, RawAcceleration()], null, ChannelPriority.Move, ct);
+            [rawTarget, rawSpeed, RawAcceleration()], null, ChannelPriority.Move, ct).ConfigureAwait(false);
 
         var distance = Math.Abs(Words.FromRaw(rawTarget) - reading);
         var budget = TimeSpan.FromSeconds(distance / Words.FromRaw(rawSpeed)) + _options.MoveTimeoutMargin;
@@ -795,11 +795,11 @@ internal sealed class AxisEngine : IDisposable
         try
         {
             (arrived, _) = await AwaitAsync(ackTick - 1, s => MapState(s.Status.State) == AxisState.Standstill,
-                failOnErrorStop: true, budget, () => new BudgetExceeded(), ct);
+                failOnErrorStop: true, budget, () => new BudgetExceeded(), ct).ConfigureAwait(false);
         }
         catch (BudgetExceeded)
         {
-            await StopCoreAsync(CancellationToken.None);
+            await StopCoreAsync(CancellationToken.None).ConfigureAwait(false);
             throw Error(MotionError.MotionFailed,
                 $"{verb} to {Fmt(Words.FromRaw(rawTarget))} {_unitSymbol} did not arrive within {Secs(budget)} "
                 + "(distance ÷ speed + margin); the axis was stopped",
@@ -943,7 +943,7 @@ internal sealed class AxisEngine : IDisposable
 
         try
         {
-            await body(running.Token);
+            await body(running.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -951,7 +951,7 @@ internal sealed class AxisEngine : IDisposable
             _logger?.LogInformation("{Axis}: {Verb} cancelled by the caller; stopping the axis", Name, verb);
             try
             {
-                await StopCoreAsync(CancellationToken.None);
+                await StopCoreAsync(CancellationToken.None).ConfigureAwait(false);
             }
             catch (MotionException ex)
             {
@@ -999,7 +999,7 @@ internal sealed class AxisEngine : IDisposable
         {
             var words = new ushort[RegisterMap.ParametersLength];
             for (var i = 0; i < parameters.Length; i++) Words.Write(words.AsSpan(i * 2), parameters[i]);
-            await _channel.WriteRegistersAsync(_unit, _map.Parameters, words, $"{verb} parameters", lane, ct);
+            await _channel.WriteRegistersAsync(_unit, _map.Parameters, words, $"{verb} parameters", lane, ct).ConfigureAwait(false);
             _logger?.LogInformation(
                 "{Axis}: {Verb} — TargetPosition ({Target}) = {TargetRaw}, Velocity ({Velocity}) = {VelocityRaw}, "
                 + "Acceleration ({Acceleration}) = {AccelerationRaw} (raw, 0.001 unit)",
@@ -1019,7 +1019,7 @@ internal sealed class AxisEngine : IDisposable
             tickAtWrite = _tickNo;
         }
 
-        await _channel.WriteRegistersAsync(_unit, _map.Command, [word, seq], verb, lane, ct);
+        await _channel.WriteRegistersAsync(_unit, _map.Command, [word, seq], verb, lane, ct).ConfigureAwait(false);
         _logger?.LogInformation("{Axis}: {Verb} — Command ({Command}) = 0x{Word:X4}, CommandSeq ({SeqRegister}) = {Seq}",
             Name, verb, _map.Describe(_map.Command), word, _map.Describe(_map.CommandSeq), seq);
 
@@ -1027,18 +1027,18 @@ internal sealed class AxisEngine : IDisposable
         try
         {
             (_, ackTick) = await AwaitAsync(tickAtWrite, s => s.Status.CommandAck == seq, failOnErrorStop: false,
-                RegisterMap.AckTimeout, () => new BudgetExceeded(), ct, honourOverlay);
+                RegisterMap.AckTimeout, () => new BudgetExceeded(), ct, honourOverlay).ConfigureAwait(false);
         }
         catch (BudgetExceeded)
         {
             var seen = LastBlock();
-            await ClearEdgeAsync(verb, level, seq, lane, CancellationToken.None, bestEffort: true);
+            await ClearEdgeAsync(verb, level, seq, lane, CancellationToken.None, bestEffort: true).ConfigureAwait(false);
             throw AxisErrors.Command(Name, MotionError.NotAcknowledged, $"{verb} not accepted", seq, seen.CommandAck,
                 seen.State, $"after {RegisterMap.AckTimeout.TotalMilliseconds.ToString(Inv)} ms");
         }
 
         if (edge != CommandBits.None)
-            await ClearEdgeAsync(verb, level, seq, lane, ct, bestEffort: false);
+            await ClearEdgeAsync(verb, level, seq, lane, ct, bestEffort: false).ConfigureAwait(false);
         return (seq, ackTick);
     }
 
@@ -1047,7 +1047,7 @@ internal sealed class AxisEngine : IDisposable
     {
         try
         {
-            await _channel.WriteRegistersAsync(_unit, _map.Command, [level, seq], $"{verb} clear edge", lane, ct);
+            await _channel.WriteRegistersAsync(_unit, _map.Command, [level, seq], $"{verb} clear edge", lane, ct).ConfigureAwait(false);
             _logger?.LogInformation(
                 "{Axis}: {Verb} — clear edge: Command ({Command}) = 0x{Word:X4}, CommandSeq ({SeqRegister}) = {Seq}",
                 Name, verb, _map.Describe(_map.Command), level, _map.Describe(_map.CommandSeq), seq);
@@ -1102,7 +1102,7 @@ internal sealed class AxisEngine : IDisposable
 
             try
             {
-                await signal.WaitAsync(remaining, _time, ct);
+                await signal.WaitAsync(remaining, _time, ct).ConfigureAwait(false);
             }
             catch (TimeoutException)
             {

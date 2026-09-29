@@ -201,7 +201,7 @@ internal sealed class PriorityGate : IDisposable
                 // flight and dropping it would leak the gate.
                 if (Interlocked.CompareExchange(ref self._claimed, 2, 0) == 0)
                     self._tcs.TrySetCanceled();
-            }, this);
+            }, this).ConfigureAwait(false);
 
             return await _tcs.Task.ConfigureAwait(false);
         }

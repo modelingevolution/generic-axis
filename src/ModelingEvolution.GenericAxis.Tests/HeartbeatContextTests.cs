@@ -12,40 +12,6 @@ namespace ModelingEvolution.GenericAxis.Tests;
 /// </summary>
 public class HeartbeatContextTests
 {
-    /// <summary>A single-threaded context whose one thread can be held by the test.</summary>
-    private sealed class HoldableContext : SynchronizationContext, IDisposable
-    {
-        private readonly BlockingCollection<(SendOrPostCallback, object?)> _queue = new();
-        private readonly ManualResetEventSlim _released = new(true);
-        private readonly Thread _thread;
-
-        public HoldableContext()
-        {
-            _thread = new Thread(() =>
-            {
-                SetSynchronizationContext(this);
-                foreach (var (callback, state) in _queue.GetConsumingEnumerable())
-                {
-                    _released.Wait();
-                    callback(state);
-                }
-            }) { IsBackground = true, Name = "caller context" };
-            _thread.Start();
-        }
-
-        public override void Post(SendOrPostCallback d, object? state) => _queue.Add((d, state));
-
-        public void Hold() => _released.Reset();
-
-        public void Release() => _released.Set();
-
-        public void Dispose()
-        {
-            Release();
-            _queue.CompleteAdding();
-        }
-    }
-
     [Fact(DisplayName = "GA-U-129 The heartbeat keeps beating while the context that connected the device is busy")]
     public async Task Heartbeat_CallerContextHeld_KeepsBeating()
     {

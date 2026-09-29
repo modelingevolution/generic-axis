@@ -106,11 +106,11 @@ public abstract class ModbusAxisDevice : IMotionDevice, IAsyncDisposable
     public async Task ConnectAsync(CancellationToken ct = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        await _lifecycle.WaitAsync(ct);
+        await _lifecycle.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             if (_connected) return;
-            await AttachAsync(ct);
+            await AttachAsync(ct).ConfigureAwait(false);
         }
         finally
         {
@@ -124,29 +124,29 @@ public abstract class ModbusAxisDevice : IMotionDevice, IAsyncDisposable
         var leaseTaken = false;
         try
         {
-            await _channel.ConnectAsync(ct);
+            await _channel.ConnectAsync(ct).ConfigureAwait(false);
 
-            var first = await _heartbeat.ReadSnapshotAsync(ChannelPriority.Move, ct);
+            var first = await _heartbeat.ReadSnapshotAsync(ChannelPriority.Move, ct).ConfigureAwait(false);
             CheckMap(first.Status);
 
-            await _heartbeat.AcquireAsync(o.LeaseTimeout, ct);
+            await _heartbeat.AcquireAsync(o.LeaseTimeout, ct).ConfigureAwait(false);
             leaseTaken = true;
 
-            await _heartbeat.ClearWatchdogFaultAsync(ct);
+            await _heartbeat.ClearWatchdogFaultAsync(ct).ConfigureAwait(false);
 
-            var fresh = await _heartbeat.ReadSnapshotAsync(ChannelPriority.Move, ct);
+            var fresh = await _heartbeat.ReadSnapshotAsync(ChannelPriority.Move, ct).ConfigureAwait(false);
             CheckMap(fresh.Status);
-            await _engine.AttachAsync(fresh, ct);
+            await _engine.AttachAsync(fresh, ct).ConfigureAwait(false);
 
             _heartbeat.Start();
         }
         catch (Exception ex)
         {
             _engine.Detach();
-            if (leaseTaken) await _heartbeat.StopAsync();
+            if (leaseTaken) await _heartbeat.StopAsync().ConfigureAwait(false);
             try
             {
-                await _channel.DisconnectAsync(CancellationToken.None);
+                await _channel.DisconnectAsync(CancellationToken.None).ConfigureAwait(false);
             }
             catch (Exception closeError)
             {
@@ -227,11 +227,11 @@ public abstract class ModbusAxisDevice : IMotionDevice, IAsyncDisposable
     public async Task DisconnectAsync(CancellationToken ct = default)
     {
         if (_disposed) return;
-        await _lifecycle.WaitAsync(ct);
+        await _lifecycle.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             if (!_connected) return;
-            await DetachAsync();
+            await DetachAsync().ConfigureAwait(false);
         }
         finally
         {
@@ -244,7 +244,7 @@ public abstract class ModbusAxisDevice : IMotionDevice, IAsyncDisposable
         _engine.BeginDetach();
         try
         {
-            await StopAllAsync(CancellationToken.None);
+            await StopAllAsync(CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is MotionException or OperationCanceledException)
         {
@@ -253,7 +253,7 @@ public abstract class ModbusAxisDevice : IMotionDevice, IAsyncDisposable
 
         try
         {
-            await _engine.DisableForDetachAsync(CancellationToken.None);
+            await _engine.DisableForDetachAsync(CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is MotionException or OperationCanceledException)
         {
@@ -261,10 +261,10 @@ public abstract class ModbusAxisDevice : IMotionDevice, IAsyncDisposable
         }
 
         _engine.Detach();
-        await _heartbeat.StopAsync();
+        await _heartbeat.StopAsync().ConfigureAwait(false);
         try
         {
-            await _channel.DisconnectAsync(CancellationToken.None);
+            await _channel.DisconnectAsync(CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -288,7 +288,7 @@ public abstract class ModbusAxisDevice : IMotionDevice, IAsyncDisposable
         if (_disposed) return;
         try
         {
-            await DisconnectAsync();
+            await DisconnectAsync().ConfigureAwait(false);
         }
         catch (Exception ex)
         {

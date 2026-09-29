@@ -88,7 +88,7 @@ internal sealed class ModbusChannel : IModbusChannel
     {
         if (_disposed) return;
         // Stop lane: disconnect is part of the shutdown path and must not queue behind a move.
-        using var _ = await _gate.AcquireAsync(ChannelPriority.Stop, ct);
+        using var _ = await _gate.AcquireAsync(ChannelPriority.Stop, ct).ConfigureAwait(false);
         try
         {
             if (_client.IsConnected) _client.Disconnect();
@@ -110,11 +110,11 @@ internal sealed class ModbusChannel : IModbusChannel
     private async Task EnsureConnectedAsync()
     {
         if (_client.IsConnected) return;
-        var ip = IPAddress.TryParse(Host, out var parsed) ? parsed : (await Dns.GetHostAddressesAsync(Host))[0];
+        var ip = IPAddress.TryParse(Host, out var parsed) ? parsed : (await Dns.GetHostAddressesAsync(Host).ConfigureAwait(false))[0];
         var tcp = new TcpClient();
         try
         {
-            await tcp.ConnectAsync(ip, Port).WaitAsync(ConnectTimeout);
+            await tcp.ConnectAsync(ip, Port).WaitAsync(ConnectTimeout).ConfigureAwait(false);
             _client.Initialize(tcp, ModbusEndianness.BigEndian);
         }
         catch
@@ -147,7 +147,7 @@ internal sealed class ModbusChannel : IModbusChannel
         IDisposable slot;
         try
         {
-            slot = await _gate.AcquireAsync(priority, ct);
+            slot = await _gate.AcquireAsync(priority, ct).ConfigureAwait(false);
         }
         catch (ObjectDisposedException)
         {
@@ -164,7 +164,7 @@ internal sealed class ModbusChannel : IModbusChannel
                 {
                     // Any failure to open the socket is a transport failure by definition (FluentModbus reports a
                     // connect timeout as a plain Exception and a refusal wrapped in an AggregateException).
-                    await EnsureConnectedAsync();
+                    await EnsureConnectedAsync().ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
@@ -176,7 +176,7 @@ internal sealed class ModbusChannel : IModbusChannel
                 {
                     // The frame itself is never cancelled: a lane preempts the queue, never an in-flight frame
                     // (design § PriorityGate); IoTimeout bounds it (FrameAsync).
-                    return await FrameAsync(operation);
+                    return await FrameAsync(operation).ConfigureAwait(false);
                 }
                 catch (Exception ex) when (IsTransport(ex))
                 {
@@ -192,7 +192,7 @@ internal sealed class ModbusChannel : IModbusChannel
                     _logger?.LogWarning(failure,
                         "{Label}: {What}{Range} on {Host}:{Port} unit {Unit} failed ({Message}); reconnecting "
                         + "and retrying once", _label, what, range is null ? "" : " " + range, Host, Port, unit, reason);
-                    await Task.Delay(RetryPause, ct);
+                    await Task.Delay(RetryPause, ct).ConfigureAwait(false);
                     continue;
                 }
 
@@ -216,10 +216,10 @@ internal sealed class ModbusChannel : IModbusChannel
     {
         using var timeout = new CancellationTokenSource(IoTimeout);
         var socket = _tcp;
-        await using var close = timeout.Token.Register(() => socket?.Dispose());
+        await using var close = timeout.Token.Register(() => socket?.Dispose()).ConfigureAwait(false);
         try
         {
-            return await operation(_client);
+            return await operation(_client).ConfigureAwait(false);
         }
         catch (Exception ex) when (timeout.IsCancellationRequested)
         {
@@ -265,19 +265,19 @@ internal sealed class ModbusChannel : IModbusChannel
     /// <inheritdoc/>
     public Task<ushort[]> ReadHoldingAsync(byte unit, ushort address, ushort count, string what,
         ChannelPriority priority = ChannelPriority.Move, CancellationToken ct = default)
-        => ExecuteAsync(async c => (await c.ReadHoldingRegistersAsync<ushort>(unit, address, count)).ToArray(), what,
+        => ExecuteAsync(async c => (await c.ReadHoldingRegistersAsync<ushort>(unit, address, count).ConfigureAwait(false)).ToArray(), what,
             Range("read", address, count), priority, ct, unit);
 
     /// <inheritdoc/>
     public Task WriteRegisterAsync(byte unit, ushort address, ushort value, string what,
         ChannelPriority priority = ChannelPriority.Move, CancellationToken ct = default)
-        => ExecuteAsync<object?>(async c => { await c.WriteSingleRegisterAsync(unit, address, value); return null; },
+        => ExecuteAsync<object?>(async c => { await c.WriteSingleRegisterAsync(unit, address, value).ConfigureAwait(false); return null; },
             what, Range("write", address, 1), priority, ct, unit);
 
     /// <inheritdoc/>
     public Task WriteRegistersAsync(byte unit, ushort address, ushort[] values, string what,
         ChannelPriority priority = ChannelPriority.Move, CancellationToken ct = default)
-        => ExecuteAsync<object?>(async c => { await c.WriteMultipleRegistersAsync(unit, address, values); return null; },
+        => ExecuteAsync<object?>(async c => { await c.WriteMultipleRegistersAsync(unit, address, values).ConfigureAwait(false); return null; },
             what, Range("write", address, values.Length), priority, ct, unit);
 
     /// <inheritdoc/>

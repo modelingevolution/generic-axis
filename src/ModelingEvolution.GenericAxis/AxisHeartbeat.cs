@@ -90,7 +90,7 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
     public async Task<LeaseDecision> AcquireAsync(TimeSpan? timeout, CancellationToken ct)
     {
         var started = _time.GetTimestamp();
-        var (beat, owner) = await ReadBeatAndOwnerAsync(ct);
+        var (beat, owner) = await ReadBeatAndOwnerAsync(ct).ConfigureAwait(false);
         var lastChange = _time.GetTimestamp();
         var lastRefusalLog = long.MinValue;
 
@@ -100,7 +100,7 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
             if (decision.Granted)
             {
                 await _channel.WriteRegisterAsync(_unit, _map.LeaseOwner, OwnerId, "take lease",
-                    ChannelPriority.Heartbeat, ct);
+                    ChannelPriority.Heartbeat, ct).ConfigureAwait(false);
                 _leaseHeld = true;
                 _logger?.LogInformation(
                     "{Axis}: lease taken on {Host}:{Port} — LeaseOwner ({Register}) = {Owner}; {Reason}",
@@ -124,9 +124,9 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
                         $"{beat} (changed {_time.GetElapsedTime(lastChange).TotalSeconds.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)} s ago)",
                         $"unchanged for {AdvisoryLease.Expiry.TotalSeconds.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)} s"));
 
-            await Task.Delay(Interval, _time, ct);
+            await Task.Delay(Interval, _time, ct).ConfigureAwait(false);
 
-            var (nextBeat, nextOwner) = await ReadBeatAndOwnerAsync(ct);
+            var (nextBeat, nextOwner) = await ReadBeatAndOwnerAsync(ct).ConfigureAwait(false);
             if (nextOwner != owner || nextBeat != beat) lastChange = _time.GetTimestamp();
             beat = nextBeat;
             owner = nextOwner;
@@ -137,14 +137,14 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
     {
         // C+8 Heartbeat and C+9 LeaseOwner are adjacent: one transaction observes both.
         var words = await _channel.ReadHoldingAsync(_unit, _map.Heartbeat, 2, "read heartbeat and lease owner",
-            ChannelPriority.Heartbeat, ct);
+            ChannelPriority.Heartbeat, ct).ConfigureAwait(false);
         return (words[0], words[1]);
     }
 
     /// <summary>Writes <c>WatchdogFault = 0</c> on the stop lane (design § Device lifecycle step 4).</summary>
     public async Task ClearWatchdogFaultAsync(CancellationToken ct)
     {
-        await _channel.WriteRegisterAsync(_unit, _map.WatchdogFault, 0, "clear watchdog fault", ChannelPriority.Stop, ct);
+        await _channel.WriteRegisterAsync(_unit, _map.WatchdogFault, 0, "clear watchdog fault", ChannelPriority.Stop, ct).ConfigureAwait(false);
         _lastWatchdogFault = 0;
         _logger?.LogInformation("{Axis}: WatchdogFault ({Register}) = 0 written on {Host}:{Port}",
             _axis, _map.Describe(_map.WatchdogFault), _channel.Host, _channel.Port);
@@ -175,11 +175,11 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
         using var _ = timer;
         try
         {
-            while (await timer.WaitForNextTickAsync(ct))
+            while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
             {
                 try
                 {
-                    await TickOnceAsync(ct);
+                    await TickOnceAsync(ct).ConfigureAwait(false);
                 }
                 catch (MotionException ex)
                 {
@@ -206,11 +206,11 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
     internal async Task<PlcSnapshot> TickOnceAsync(CancellationToken ct)
     {
         var next = NextBeat(_beat);
-        await _channel.WriteRegisterAsync(_unit, _map.Heartbeat, next, "heartbeat", ChannelPriority.Heartbeat, ct);
+        await _channel.WriteRegisterAsync(_unit, _map.Heartbeat, next, "heartbeat", ChannelPriority.Heartbeat, ct).ConfigureAwait(false);
         Volatile.Write(ref _beat, next);
         _logger?.LogTrace("{Axis}: Heartbeat ({Register}) = {Beat}", _axis, _map.Describe(_map.Heartbeat), next);
 
-        var snapshot = await ReadSnapshotAsync(ChannelPriority.Heartbeat, ct);
+        var snapshot = await ReadSnapshotAsync(ChannelPriority.Heartbeat, ct).ConfigureAwait(false);
         _logger?.LogTrace(
             "{Axis}: tick read LeaseOwner {Owner}, WatchdogFault {Fault}, trips {Trips}, State {State}, Flags 0x{Flags:X4}, "
             + "ActualPosition {Position}, CommandAck {Ack}",
@@ -233,10 +233,10 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
     internal async Task<PlcSnapshot> ReadSnapshotAsync(ChannelPriority lane, CancellationToken ct)
     {
         var watchdog = await _channel.ReadHoldingAsync(_unit, _map.LeaseOwner, RegisterMap.WatchdogBlockLength,
-            "read lease and watchdog", lane, ct);
+            "read lease and watchdog", lane, ct).ConfigureAwait(false);
         CheckLength(watchdog, _map.LeaseOwner, RegisterMap.WatchdogBlockLength, "lease and watchdog block");
         var status = await _channel.ReadHoldingAsync(_unit, _map.Status, RegisterMap.StatusLength,
-            "read status block", lane, ct);
+            "read status block", lane, ct).ConfigureAwait(false);
         CheckLength(status, _map.Status, RegisterMap.StatusLength, "status block");
         return new PlcSnapshot(StatusBlock.Parse(status), watchdog[0], watchdog[1], watchdog[2], _time.GetTimestamp());
     }
@@ -278,17 +278,17 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
     /// </summary>
     public async Task StopAsync()
     {
-        await StopLoopAsync();
+        await StopLoopAsync().ConfigureAwait(false);
         if (!_leaseHeld) return;
 
         try
         {
             var owner = (await _channel.ReadHoldingAsync(_unit, _map.LeaseOwner, 1, "read lease owner",
-                ChannelPriority.Stop, CancellationToken.None))[0];
+                ChannelPriority.Stop, CancellationToken.None).ConfigureAwait(false))[0];
             if (owner == OwnerId)
             {
                 await _channel.WriteRegisterAsync(_unit, _map.LeaseOwner, AdvisoryLease.Unowned, "release lease",
-                    ChannelPriority.Stop, CancellationToken.None);
+                    ChannelPriority.Stop, CancellationToken.None).ConfigureAwait(false);
                 _logger?.LogInformation("{Axis}: lease released on {Host}:{Port} — LeaseOwner ({Register}) = 0",
                     _axis, _channel.Host, _channel.Port, _map.Describe(_map.LeaseOwner));
             }
@@ -314,10 +314,10 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
         var loop = _loop;
         if (stop is null || loop is null) return;
 
-        await stop.CancelAsync();
+        await stop.CancelAsync().ConfigureAwait(false);
         try
         {
-            await loop;
+            await loop.ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -346,5 +346,5 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
     }
 
     /// <inheritdoc/>
-    public async ValueTask DisposeAsync() => await StopAsync();
+    public async ValueTask DisposeAsync() => await StopAsync().ConfigureAwait(false);
 }
