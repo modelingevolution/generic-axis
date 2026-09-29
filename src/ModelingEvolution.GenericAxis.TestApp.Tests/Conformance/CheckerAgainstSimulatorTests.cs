@@ -214,8 +214,13 @@ public sealed class CheckerAgainstSimulatorTests
         before.State.Should().Be(SimAxisState.ContinuousMotion);
         before.LeaseOwner.Should().Be(1);
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(500)); // inside the 1 s watch
-        var report = await Check(sim, allowMotion: true, cts.Token);
+        // Cancel on the runner's first line, which it logs before pre-flight: always inside pre-flight, never a timer.
+        using var cts = new CancellationTokenSource();
+        var log = new RecordingLoggerProvider();
+        log.Logger.OnMessage = m => { if (m.StartsWith("Conformance check of", StringComparison.Ordinal)) cts.Cancel(); };
+        using var factory = LoggerFactory.Create(b => b.AddProvider(log).SetMinimumLevel(LogLevel.Information));
+        var report = await new ConformanceRunner(factory).RunAsync(
+            new CheckerOptions { Host = "127.0.0.1", Port = sim.Port, AllowMotion = true }, cts.Token);
 
         report.ExitCode.Should().Be(4);
         report.SummaryResult.Should().Be("INTERRUPTED");
@@ -425,19 +430,26 @@ public sealed class CheckerAgainstSimulatorTests
         var log = new RecordingLoggerProvider();
         using var factory = Microsoft.Extensions.Logging.LoggerFactory.Create(b => b.AddProvider(log).SetMinimumLevel(Microsoft.Extensions.Logging.LogLevel.Information));
         Task? drop = null;
+        var armed = false;
+        // The drop follows the simulator serving CHK-05's second parameter write (C+2 = 0xFFFE): an event, not a timer.
+        // It runs once the served write releases the scan lock, and re-opens the port at once.
+        sim.Host.OnClientWrite = addresses =>
+        {
+            if (!armed || !addresses.Contains(SimRegisters.TargetPosition) || sim.Host.Registers.Read(SimRegisters.TargetPosition) != 0xFFFE) return;
+            armed = false;
+            drop = Task.Run(() =>
+            {
+                sim.Host.Faults = new SimFaults { CommunicationDown = true };
+                sim.Host.Faults = SimFaults.None;
+            });
+        };
 
         var report = await new ConformanceRunner(factory).RunAsync(
             new CheckerOptions { Host = "127.0.0.1", Port = sim.Port }, CancellationToken.None, r =>
             {
-                if (drop is not null || r.Running != "CHK-05") return;
-                drop = Task.Run(async () =>
-                {
-                    await Task.Delay(400); // inside CHK-05's 1 s wait, between two reads
-                    sim.Host.Faults = new SimFaults { CommunicationDown = true };
-                    await Task.Delay(20);
-                    sim.Host.Faults = SimFaults.None;
-                });
+                if (r.Running == "CHK-05" && drop is null) armed = true;
             });
+        drop.Should().NotBeNull("setup: CHK-05 wrote its second parameter");
         await drop!;
 
         var chk05 = Get(report, "CHK-05");
@@ -637,8 +649,9 @@ public sealed class CheckerAgainstSimulatorTests
         using var sim = new LiveSimulator();
         using var commander = new RawCommander(sim.Port);
         await commander.BeatAsync(TimeSpan.FromSeconds(0.5));
-        await Task.Delay(1300); // the watchdog trips 1.0 s after the last beat
-        (await sim.SettledAsync()).WatchdogFault.Should().Be(1, "setup: the commander's axis tripped");
+        var tripWait = System.Diagnostics.Stopwatch.StartNew(); // the watchdog trips 1.0 s after the last beat
+        while (sim.Snapshot.WatchdogFault == 0 && tripWait.Elapsed < TimeSpan.FromSeconds(10)) await Task.Delay(10);
+        sim.Snapshot.WatchdogFault.Should().Be(1, "setup: the commander's axis tripped");
         using var stop = new CancellationTokenSource();
         var beating = Task.Run(async () => { while (!stop.IsCancellationRequested) await commander.BeatAsync(TimeSpan.FromMilliseconds(100)); });
         await Task.Delay(300);
@@ -749,30 +762,22 @@ public sealed class CheckerAgainstSimulatorTests
     public async Task GA_I_63_ALeaseLostMidCheckStopsThatCheckBeforeItsNextCommand()
     {
         using var sim = new LiveSimulator(new SimulatedAxisOptions { EnableDelay = TimeSpan.FromMilliseconds(300) });
-        using var intruder = new FluentModbus.ModbusTcpClient();
-        intruder.Connect(new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, sim.Port), FluentModbus.ModbusEndianness.BigEndian);
         ushort seqAtIntrusion = 0;
-        Task? intrusion = null;
-        using var runDone = new CancellationTokenSource();
+        var armed = false;
+        // The intruder answers CHK-06's Enable 1 inside the served write (the command word and CommandSeq arrive in one
+        // FC16), so the intrusion precedes the checker's next request deterministically.
+        sim.Host.OnClientWrite = addresses =>
+        {
+            if (!armed || !addresses.Contains(SimRegisters.Command) || (sim.Host.Registers.Read(SimRegisters.Command) & 1) == 0) return;
+            armed = false;
+            seqAtIntrusion = sim.Host.Registers.Read(SimRegisters.CommandSeq);
+            sim.Host.Registers.Write(SimRegisters.LeaseOwner, 1);
+        };
 
         var report = await Check(sim, allowMotion: false, progress: r =>
         {
-            if (r.Running != "CHK-06" || intrusion is not null) return;
-            intrusion = Task.Run(async () =>
-            {
-                // Wait for CHK-06's Enable 1 on the wire; bounded by the run, so a run that never reaches it cannot hang the test.
-                while ((sim.Snapshot.CommandBlock[0] & 1) == 0)
-                {
-                    if (runDone.IsCancellationRequested) return;
-                    await Task.Delay(1);
-                }
-
-                seqAtIntrusion = sim.Snapshot.CommandSeq;
-                intruder.WriteSingleRegister(1, 9, 1);
-            });
+            if (r.Running == "CHK-06" && seqAtIntrusion == 0) armed = true;
         });
-        await runDone.CancelAsync();
-        await intrusion!;
         seqAtIntrusion.Should().NotBe(0, $"setup: CHK-06 sent Enable 1 ({Get(report, "CHK-06").Message})");
 
         var chk06 = Get(report, "CHK-06");
