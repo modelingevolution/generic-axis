@@ -33,6 +33,34 @@ HOME_LATCH_FAILED = "HomeLatchFailed"
 SAFETY_STOP = "SafetyStop"
 LEASE_HELD = "LeaseHeld"
 
+MOTION_ERROR_CLASSES: dict[str, ErrorClass] = {
+    # protocol.md § Errors and debugging, class table: every SDK 2.30.0 MotionError member in exactly one row.
+    COMMUNICATION_LOST: ErrorClass.TRANSPORT,
+    PROTOCOL_MISMATCH: ErrorClass.PROTOCOL,
+    NOT_ACKNOWLEDGED: ErrorClass.PROTOCOL,
+    DRIVE_FAULT: ErrorClass.MACHINE,
+    LIMIT_TRIPPED: ErrorClass.MACHINE,
+    MOTION_FAILED: ErrorClass.MACHINE,
+    WATCHDOG_TRIPPED: ErrorClass.MACHINE,
+    HOME_LATCH_FAILED: ErrorClass.MACHINE,
+    SAFETY_STOP: ErrorClass.MACHINE,
+    "Busy": ErrorClass.COMMANDER,
+    "NotHomed": ErrorClass.COMMANDER,
+    "OutOfRange": ErrorClass.COMMANDER,
+    "UnreachableSpeed": ErrorClass.COMMANDER,
+    "UnsupportedSense": ErrorClass.COMMANDER,
+    LEASE_HELD: ErrorClass.COMMANDER,
+    "UnknownAxis": ErrorClass.COMMANDER,
+    "WrongAxisKind": ErrorClass.COMMANDER,
+}
+"""The MotionError name → class map (design.md § Python, ``errors.py``). The checker itself never reports a
+Commander FAIL (§ Error class of a FAIL); the map is here so the field tool and the driver name classes alike."""
+
+
+def class_of(motion_error: str) -> ErrorClass:
+    """The class of a MotionError name; a name the protocol's table does not list is unmapped (``KeyError``)."""
+    return MOTION_ERROR_CLASSES[motion_error]
+
 VENDOR_FAULT_BASE = 100
 """protocol.md § Status block: ``FaultCode`` 100+ is vendor-specific."""
 
@@ -68,6 +96,8 @@ def format_message(
     reads: Sequence[Read] = (),
     detail: str | None = None,
 ) -> str:
+    if MOTION_ERROR_CLASSES[motion_error] != error_class:
+        raise ValueError(f"{motion_error} is {MOTION_ERROR_CLASSES[motion_error]}, not {error_class} (rule 2)")
     parts = [f"{error_class}/{motion_error}: {_sentence(what)}"]
     if detail:
         parts.append(_sentence(detail))

@@ -2,13 +2,34 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 
 from generic_axis_check.context import AckTimeout, command_label
-from generic_axis_check.errors import ErrorClass, Read, format_message, machine_error, state_is_invalid
-from generic_axis_check.registers import Command, RegisterMap, StatusBlock, describe_range, register_ref
+from generic_axis_check.errors import (
+    MOTION_ERROR_CLASSES,
+    ErrorClass,
+    Read,
+    class_of,
+    format_message,
+    machine_error,
+    state_is_invalid,
+)
+from generic_axis_check.registers import (
+    REGISTERS,
+    Command,
+    RegisterMap,
+    StatusBlock,
+    describe_range,
+    register_ref,
+)
 
 MAP = RegisterMap()
+PROTOCOL = Path(__file__).resolve().parents[2] / "docs" / "protocol.md"
+
+REGISTER_NAMES = {name for name, _block, _offset, _unit in REGISTERS}
 
 
 def status(state: int, fault: int, ack: int = 0) -> StatusBlock:
@@ -84,3 +105,28 @@ def test_register_refs_follow_the_bases() -> None:
     assert describe_range(MAP, 100, 15) == "S+0…S+14 (100…114)"
     assert describe_range(MAP, 9, 1) == "C+9 (9)"
     assert describe_range(MAP, 50, 2) == "50…51"
+
+
+def _class_rows() -> dict[str, str]:
+    """protocol.md § Errors and debugging: the class table, ``{class: its SDK MotionError cell}``."""
+    text = PROTOCOL.read_text(encoding="utf-8")
+    rows = re.findall(r"^\| \*\*(Transport|Protocol|Machine|Commander)\*\* \| [^|]+ \| ([^|]+) \|", text, re.M)
+    return dict(rows)
+
+
+def test_every_motion_error_maps_to_the_class_row_that_names_it() -> None:
+    # GA-U-66.py (review #2 a): the map equals protocol.md's table — each member in its row, each member of a row mapped.
+    rows = _class_rows()
+    assert set(rows) == {c.value for c in ErrorClass}
+    for class_name, cell in rows.items():
+        named = {n for n in re.findall(r"`([A-Z][A-Za-z]+)`", cell) if n not in REGISTER_NAMES}
+        mapped = {name for name, c in MOTION_ERROR_CLASSES.items() if c == class_name}
+        assert named == mapped, class_name
+    assert class_of("UnknownAxis") == ErrorClass.COMMANDER
+    assert class_of("WrongAxisKind") == ErrorClass.COMMANDER
+
+
+def test_a_message_cannot_name_a_motion_error_under_another_class() -> None:
+    # Rule 2, "one cause, one class": the builder refuses a Transport WatchdogTripped.
+    with pytest.raises(ValueError, match="WatchdogTripped is Machine, not Transport"):
+        format_message(ErrorClass.TRANSPORT, "WatchdogTripped", "tripped", MAP)
