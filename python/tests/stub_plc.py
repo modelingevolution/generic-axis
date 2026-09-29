@@ -51,6 +51,8 @@ class StubOptions:
     watchdog_disabled: bool = False
     suppress_ack: bool = False
     swapped_word_order: bool = False
+    stall_discrete: bool = False
+    """MoveAbsolute is accepted (State 3) but the axis never moves: it never arrives (review #10)."""
     scan_s: float = SCAN_S
     """The PLC scan; a real PLC scans every 10–20 ms, a slow one more (review #5)."""
 
@@ -262,7 +264,9 @@ class StubPlc:
 
     def _move(self, dt: float) -> None:
         a, o = self.axis, self.o
-        if a.state == DISCRETE:
+        if a.state == DISCRETE and o.stall_discrete:
+            a.v = 0.0
+        elif a.state == DISCRETE:
             d = a.target - a.p
             self._slew(math.copysign(min(a.vcmd, math.sqrt(2 * a.accel * abs(d))), d), a.accel, dt)
             a.p += a.v * dt

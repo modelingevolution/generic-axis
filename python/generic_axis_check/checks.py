@@ -625,11 +625,12 @@ async def chk13(ctx: CheckContext) -> Outcome:
     if ack.poll.status.state != AxisState.DISCRETE_MOTION:
         what = "the MoveAbsolute ack did not show its state (ack in the scan that enters it)"
         return mismatch(ctx, what, Read("State", ack.poll.status.state, int(AxisState.DISCRETE_MOTION)), **observed)
+    budget_s = travel_timeout_s(target - start.actual_position, velocity)
     done = await wait_for(
         ctx.client,
         ctx.registers,
         lambda s: s.state == AxisState.ERROR_STOP or (s.state == AxisState.STANDSTILL and s.in_position),
-        travel_timeout_s(target - start.actual_position, velocity),
+        budget_s,
         since=ack.written_at,
     )
     s = done.status
@@ -643,7 +644,12 @@ async def chk13(ctx: CheckContext) -> Outcome:
             Read("Flags", int(s.flags)),
             Read("ActualPosition", s.actual_position, target),
         )
-        return motion_failed(ctx, "not arrived in position", *reads, **observed)
+        # Review #10: the protocol sets no arrival budget, so the FAIL states the one the checker used.
+        what = (
+            f"not arrived in position within the checker's arrival budget of {budget_s:.1f} s "
+            f"(2 × travel time at the commanded speed + {STATE_TIMEOUT_S:g} s; the protocol sets none)"
+        )
+        return motion_failed(ctx, what, *reads, **observed)
     tolerance = round(ctx.options.tolerance * UNITS)
     if error > tolerance:
         what = f"stopped outside the in-position tolerance: error {error / UNITS:.3f} > {ctx.options.tolerance:g}"
@@ -667,7 +673,11 @@ async def stop_and_measure(
         # Keep watching, so the report says how long it did take.
         late = await wait_for(ctx.client, ctx.registers, halted, STATE_TIMEOUT_S, since=ack.written_at)
         observed["haltMs"] = late.elapsed_ms
-        outcome = f"halted after {late.elapsed_ms} ms" if late.met else "still moving"
+        outcome = (
+            f"halted after {late.elapsed_ms} ms"
+            if late.met
+            else f"still moving after the checker's {STATE_TIMEOUT_S:g} s watch; the protocol sets no budget"
+        )
         what = f"still moving {ms(STOP_HALT_S)} ms after the Stop write ({outcome})"
         reads = (
             Read("State", late.status.state, int(AxisState.STANDSTILL)),
@@ -762,7 +772,8 @@ async def chk16(ctx: CheckContext) -> Outcome:
             Read("State", moving.status.state, int(AxisState.CONTINUOUS_MOTION)),
             Read("ActualVelocity", moving.status.actual_velocity),
         )
-        return motion_failed(ctx, "not moving before the kill", *reads, **observed)
+        what = f"not moving within the checker's {CRUISE_WAIT_S:g} s of MoveVelocity (the protocol sets none), before the kill"
+        return motion_failed(ctx, what, *reads, **observed)
     last_beat = await ctx.beater.stop_beating()
     watch = await watch_trip(ctx, last_beat, 0, need_latch=False)
     observed |= {"tripAfterMs": watch.after_ms}

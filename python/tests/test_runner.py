@@ -18,6 +18,7 @@ from generic_axis_check.registers import Command, RegisterMap
 from generic_axis_check.report import to_json, to_markdown
 from generic_axis_check.runner import Report, run
 
+from .conftest import stub_options
 from .stub_plc import StubPlc
 
 MAP = RegisterMap()
@@ -519,3 +520,18 @@ async def test_a_checker_defect_ends_in_a_report_exit_1_and_a_logged_traceback(
     assert to_json(report)["checks"][1]["errorClass"] is None
     record = next(r for r in caplog.records if r.getMessage() == "CHK-02: checker defect")
     assert record.exc_info is not None
+
+
+@pytest.mark.timeout(60)
+async def test_chk13_not_arrived_states_the_arrival_budget_it_used() -> None:
+    # GA-U-85.py (review #10): the protocol sets no arrival budget, so the FAIL names the checker's: 10 mm at
+    # 50 mm/s → 2 × 0.2 s + 5 s = 5.4 s.
+    wanted = {"CHK-01", "CHK-02", "CHK-03", "CHK-06", "CHK-12", "CHK-13"}
+    async with StubPlc(stub_options(initial_position=20_000, stall_discrete=True)) as plc:
+        report = await run(options(plc, motion=True), checks=tuple(c for c in CHECKS if c.id in wanted))
+    chk13 = next(c for c in report.checks if c.id == "CHK-13")
+    assert (chk13.result, chk13.error_class) == (FAIL, "Machine")
+    assert chk13.message.startswith(
+        "Machine/MotionFailed: not arrived in position within the checker's arrival budget of 5.4 s "
+        "(2 × travel time at the commanded speed + 5 s; the protocol sets none)."
+    ), chk13.message
