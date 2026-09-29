@@ -49,14 +49,14 @@ def _failure(what: str, exc: BaseException) -> BaseException:
     return PlcError(f"{what}: {exc}")
 
 
-async def _open(client: AsyncModbusTcpClient, timeout: float) -> None:
+async def _open(client: AsyncModbusTcpClient) -> None:
     """``AsyncModbusTcpClient.connect()`` without its swallowing: pymodbus catches the connect exception, logs it and
     returns False, so the message would lose "Connection refused" (protocol.md § Errors and debugging, rule 1; review
     #2). This is its body (pymodbus 3.15.0, pinned) with the exception left to the caller."""
     ctx = client.ctx
     ctx.reset_delay()
     ctx.is_closing = False
-    ctx.transport, _protocol = await asyncio.wait_for(ctx.call_create(), timeout=timeout)
+    ctx.transport, _protocol = await ctx.call_create()
 
 
 def _reason(exc: BaseException) -> str:
@@ -112,7 +112,8 @@ class PlcClient:
             timeout = connect_timeout(time.monotonic() - started)
             client = AsyncModbusTcpClient(self.host, port=self.port, timeout=timeout, retries=0, reconnect_delay=0)
             try:
-                await _open(client, timeout)
+                async with asyncio.timeout(timeout):
+                    await _open(client)
             except (OSError, TimeoutError, ModbusException) as exc:
                 last = exc
                 client.close()
