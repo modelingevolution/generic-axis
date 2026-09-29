@@ -68,7 +68,8 @@ class AxisState(IntEnum):
 
 
 VALID_STATES = frozenset(int(s) for s in AxisState)
-"""protocol.md: any other ``State`` value is read as ErrorStop; CHK-04 requires one of these."""
+"""protocol.md § Status block: any other ``State`` value is a Protocol error (``ProtocolMismatch``); CHK-04 requires one
+of these."""
 
 MOVING_STATES = frozenset({AxisState.HOMING, AxisState.DISCRETE_MOTION, AxisState.CONTINUOUS_MOTION})
 """protocol.md § Conformance checks, cleanup rule: Stop edge if State is 2, 3 or 4."""

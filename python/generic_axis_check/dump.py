@@ -97,7 +97,7 @@ def _decode(name: str, value: int) -> str:
             return _bits(value, _FLAG_BITS)
         case "State":
             label = _STATE_NAMES.get(AxisState(value)) if value in VALID_STATES else None
-            return f"{value} {label}" if label else f"{value} (invalid: read as ErrorStop)"
+            return f"{value} {label}" if label else f"{value} (invalid: Protocol/ProtocolMismatch)"
         case "FaultCode":
             if value >= 100:
                 return f"{value} vendor-specific"

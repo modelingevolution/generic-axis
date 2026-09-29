@@ -32,9 +32,10 @@ def test_render_decodes_every_register_by_name() -> None:
     assert len([r for r in rows if r[:1] in ("C", "S")]) == 27
 
 
-def test_render_names_an_invalid_state() -> None:
+def test_render_names_an_invalid_state_as_the_protocol_class_not_an_interpretation() -> None:
+    # GA-U-69.py + review #2 d: an invalid State is Protocol/ProtocolMismatch; the dump never claims "ErrorStop".
     rows = render(MAP, [0] * 12, [5, *([0] * 13), 1]).splitlines()
-    assert "S+0      100  State                  0x0005  5 (invalid: read as ErrorStop)" in rows
+    assert "S+0      100  State                  0x0005  5 (invalid: Protocol/ProtocolMismatch)" in rows
 
 
 async def test_dump_reads_both_blocks_and_writes_nothing(stub: StubPlc) -> None:
