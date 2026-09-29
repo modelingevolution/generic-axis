@@ -319,7 +319,7 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
                     # § Error class of a FAIL, "lastRead": the read the check took at detection, before any write
                     # of its own undid the evidence (an edge clear, CHK-11's recovery); else a fresh read now.
                     last_read = ctx.evidence or await ctx.capture()
-                if check.id >= FIRST_LEASED_CHECK:
+                if check.id >= FIRST_LEASED_CHECK and outcome.restore:
                     why = await _restore(ctx)
                     if why is not None:
                         if outcome.result != FAIL:

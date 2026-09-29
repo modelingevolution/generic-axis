@@ -115,6 +115,8 @@ class Outcome:
     """Set on a FAIL (protocol.md § Report schema, ``errorClass``)."""
     motion_error: str | None = None
     """The SDK ``MotionError`` name of a FAIL (the runner re-checks a ``WatchdogTripped`` against the beat, #7)."""
+    restore: bool = True
+    """False when the check wrote nothing and found the axis unfit: the runner then writes nothing either (#9)."""
 
 
 def passed(message: str, **observed: int | None) -> Outcome:
@@ -354,17 +356,23 @@ async def chk05(ctx: CheckContext) -> Outcome:
 
 
 async def chk06(ctx: CheckContext) -> Outcome:
+    # "Precondition State 0 or 1", checked before the first write. No silent recovery (rule 3, review #9): an axis
+    # found faulted or moving FAILs with what was read, and nothing is written to it (no restore after this FAIL).
+    status = await ctx.status()
+    if status.state not in (AxisState.DISABLED, AxisState.STANDSTILL):
+        if status.state == AxisState.ERROR_STOP:
+            outcome = faulted(ctx, "precondition: State 0 or 1 expected; reset the axis first", status)
+        else:
+            what = "precondition: the axis is not at rest"
+            outcome = motion_failed(ctx, what, Read("State", status.state), Read("FaultCode", status.fault_code))
+        outcome.restore = False
+        return outcome
     await ctx.take_lease()
     ctx.session_lease = True
     fault, _ = await ctx.watchdog()
     if fault:
         await ctx.clear_watchdog_fault()  # FR-11 "At attach": a latched trip belongs to a dead predecessor
     await ctx.beater.start()
-    status = await ctx.status()
-    if status.state not in (AxisState.DISABLED, AxisState.STANDSTILL):
-        status = await ctx.recover()
-    if status.state not in (AxisState.DISABLED, AxisState.STANDSTILL):
-        return faulted(ctx, "precondition: the axis did not leave ErrorStop or motion", status)
 
     on = await ctx.command(Command.ENABLE)
     on_state = await wait_for(

@@ -395,3 +395,21 @@ async def test_an_unacknowledged_edge_is_in_last_read_before_the_edge_is_cleared
     assert chk01.last_read is not None
     assert chk01.last_read.command[:2] == [int(Command.RESET), 1]
     assert cleared == 0  # the edge was cleared after the evidence was taken
+
+
+async def test_chk06_fails_an_axis_found_in_error_stop_and_writes_nothing(stub: StubPlc) -> None:
+    # GA-U-78.py (review #9): "Precondition State 0 or 1" and "No silent recovery": the axis the checker found in
+    # ErrorStop (FaultCode 2, limit switch) is reported as read, never Reset behind the operator's back.
+    stub.axis.state, stub.axis.fault, stub.axis.enable_blocked = 7, 2, True
+    wanted = {"CHK-01", "CHK-02", "CHK-06", "CHK-07"}
+    report = await run(options(stub), checks=tuple(c for c in CHECKS if c.id in wanted))
+    chk06 = next(c for c in report.checks if c.id == "CHK-06")
+    assert (chk06.result, chk06.error_class) == (FAIL, "Machine")
+    assert chk06.message == (
+        "Machine/LimitTripped: precondition: State 0 or 1 expected; reset the axis first. "
+        "Read State (S+0 = 100) = 7, FaultCode (S+6 = 106) = 2."
+    )
+    assert by_id(report)["CHK-07"] == (SKIPPED, "needs CHK-06, which FAILED")
+    assert stub.writes == []
+    assert report.cleanup == []
+    assert (stub.axis.state, stub.axis.fault) == (7, 2)
