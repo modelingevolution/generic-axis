@@ -113,5 +113,19 @@ public sealed class ReportWriterTests
         ReportWriter.ToMarkdown(report).TrimEnd().Should().EndWith("RESULT: INTERRUPTED");
     }
 
+    /// <summary>GA-U-93 (python review #22 mirror): a refused run is REFUSED, never PASS.</summary>
+    [Fact]
+    public void GA_U_93_ARefusedRunIsRefusedNotPass()
+    {
+        var all = Report().Checks.Select(c => c with { Result = CheckResultKind.Skipped, Message = "refused to start: …" });
+        var report = Report() with { Refused = true, Checks = [.. all] };
+
+        report.ExitCode.Should().Be(3);
+        report.SummaryResult.Should().Be("REFUSED");
+        using var doc = JsonDocument.Parse(ReportWriter.ToJson(report));
+        doc.RootElement.GetProperty("summary").GetProperty("result").GetString().Should().Be("REFUSED");
+        ReportWriter.ToMarkdown(report).TrimEnd().Should().EndWith("RESULT: REFUSED");
+    }
+
     private static IEnumerable<string> Names(JsonElement e) => e.EnumerateObject().Select(p => p.Name);
 }

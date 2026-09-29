@@ -143,8 +143,8 @@ public sealed record ConformanceReport
     public int SkippedCount => Checks.Count(c => c.Result == CheckResultKind.Skipped);
     public bool Passed => FailCount == 0;
 
-    /// <summary><c>INTERRUPTED</c>, else <c>FAIL</c> if any check failed, else <c>PASS</c>.</summary>
-    public string SummaryResult => Interrupted ? "INTERRUPTED" : Passed ? "PASS" : "FAIL";
+    /// <summary><c>REFUSED</c> (exit 3), else <c>INTERRUPTED</c>, else <c>FAIL</c> if any check failed, else <c>PASS</c>.</summary>
+    public string SummaryResult => Refused ? "REFUSED" : Interrupted ? "INTERRUPTED" : Passed ? "PASS" : "FAIL";
 
     /// <summary>0 = no FAIL · 1 = at least one FAIL · 3 = refused to start · 4 = interrupted.</summary>
     public int ExitCode => Refused ? ConformanceExitCodes.Refused

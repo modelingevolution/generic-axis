@@ -182,6 +182,8 @@ public sealed class CheckerAgainstSimulatorTests
 
         report.ExitCode.Should().Be(3);
         report.Refused.Should().BeTrue();
+        report.SummaryResult.Should().Be("REFUSED", "a refused run is never reported as PASS (review #22)");
+        ReportWriter.ToMarkdown(report).TrimEnd().Should().EndWith("RESULT: REFUSED");
         report.Checks.Should().HaveCount(16).And.OnlyContain(c => c.Result == CheckResultKind.Skipped);
         took.Should().BeCloseTo(TimeSpan.FromSeconds(1), TimeSpan.FromMilliseconds(700));
         var after = await sim.SettledAsync();
@@ -252,6 +254,8 @@ public sealed class CheckerAgainstSimulatorTests
         await beating;
 
         report.ExitCode.Should().Be(3);
+        report.SummaryResult.Should().Be("REFUSED");
+        ReportWriter.ToMarkdown(report).TrimEnd().Should().EndWith("RESULT: REFUSED");
         report.Checks.Should().OnlyContain(c => c.Result == CheckResultKind.Skipped && c.Message.StartsWith("refused to start: another commander is beating"));
         report.Checks[0].Message.Should().Contain("LeaseOwner (C+9 = 9) = 0");
         (await sim.SettledAsync()).CommandSeq.Should().Be(0, "a refused run writes nothing");
