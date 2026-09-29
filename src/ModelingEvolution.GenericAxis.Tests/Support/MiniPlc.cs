@@ -124,6 +124,13 @@ internal sealed class MiniPlc : IAsyncDisposable
     /// <summary>Drops every connection and refuses new ones while down; registers untouched.</summary>
     public void SetCommunicationDown(bool down) => _provider.SetDown(down);
 
+    /// <summary>
+    /// A PLC that accepts TCP and never answers (review #34): setting it drops the established connections, and every
+    /// connection accepted while silent is parked, never served; clearing it drops the parked ones. Mirrors the
+    /// test app's <c>SimFaults.Silent</c>.
+    /// </summary>
+    public void SetSilent(bool silent) => _provider.SetSilent(silent);
+
     /// <summary>Closes the next <paramref name="count"/> accepted connections straight after accepting them.</summary>
     public void DropNextConnections(int count) => _provider.DropNext(count);
 
@@ -492,7 +499,9 @@ internal sealed class MiniPlc : IAsyncDisposable
     {
         private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
         private readonly ConcurrentBag<TcpClient> _accepted = [];
+        private readonly ConcurrentBag<TcpClient> _parked = [];
         private volatile bool _down;
+        private volatile bool _silent;
         private int _dropNext;
         private int _acceptedCount;
 
@@ -518,6 +527,16 @@ internal sealed class MiniPlc : IAsyncDisposable
             }
         }
 
+        public void SetSilent(bool silent)
+        {
+            _silent = silent;
+            var drop = silent ? _accepted : _parked;
+            while (drop.TryTake(out var client))
+            {
+                try { client.Client.Close(0); } catch { /* already closed */ }
+            }
+        }
+
         public async Task<TcpClient> AcceptTcpClientAsync()
         {
             while (true)
@@ -530,6 +549,12 @@ internal sealed class MiniPlc : IAsyncDisposable
                     continue;
                 }
 
+                if (_silent)
+                {
+                    _parked.Add(client); // open, never read, never answered
+                    continue;
+                }
+
                 _accepted.Add(client);
                 return client;
             }
@@ -539,6 +564,7 @@ internal sealed class MiniPlc : IAsyncDisposable
         {
             _listener.Stop();
             while (_accepted.TryTake(out var client)) client.Dispose();
+            while (_parked.TryTake(out var client)) client.Dispose();
         }
     }
 }

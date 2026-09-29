@@ -190,7 +190,7 @@ internal sealed class ModbusChannel : IModbusChannel
                 }
 
                 failed:
-                var reason = Innermost(failure).Message;
+                var reason = Innermost(failure).Message.TrimEnd('.');
                 Reset();
                 if (attempt == 0)
                 {

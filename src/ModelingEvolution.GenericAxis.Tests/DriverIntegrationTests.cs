@@ -332,6 +332,48 @@ public class DriverIntegrationTests(ITestOutputHelper output)
         rig.Plc.Truth.Homed.Should().BeTrue();
     }
 
+    [Fact(DisplayName = "GA-I-25 A silent PLC surfaces as CommunicationLost and a STOP to it returns")]
+    public async Task SilentPlc_Cruising_CommunicationLostStopReturnsRecoveryByReset()
+    {
+        await using var rig = new LiveRig();
+        var track = await rig.ConnectedTrack(power: true);
+        var move = await Cruise(rig, track, 9000, 500);
+
+        var sw = Stopwatch.StartNew();
+        rig.Plc.SetSilent(true);
+        var ex = await move.Invoking(m => m.WaitAsync(T)).Should().ThrowAsync<MotionException>();
+        var thrownS = sw.Elapsed.TotalSeconds;
+        await rig.Plc.WaitFor(t => t.Velocity == 0, T, "the watchdog halts the axis");
+        var haltS = sw.Elapsed.TotalSeconds;
+
+        // Review #34: the STOP lane must not block forever behind a silent read. The Stop is still attempted and
+        // fails as CommunicationLost within one in-flight frame plus its own two bounded attempts.
+        var stopSw = Stopwatch.StartNew();
+        var stop = await track.Carriage.Invoking(c => c.StopAsync().WaitAsync(T)).Should().ThrowAsync<MotionException>();
+        var stopS = stopSw.Elapsed.TotalSeconds;
+
+        output.WriteLine($"GA-I-25 CommunicationLost after {thrownS * 1000:F0} ms, halted after {haltS * 1000:F0} ms, "
+                         + $"STOP returned after {stopS * 1000:F0} ms: {stop.Which.Message}");
+        ex.Which.Error.Should().Be(MotionError.CommunicationLost);
+        thrownS.Should().BeLessThanOrEqualTo(1.8, "≤ 1.6 s for the failing call plus one tick interval");
+        track.Carriage.Status.Error.Should().Be(MotionError.CommunicationLost);
+        haltS.Should().BeLessThanOrEqualTo(1.05);
+        rig.Plc.Truth.FaultCode.Should().Be(4);
+        stop.Which.Error.Should().Be(MotionError.CommunicationLost);
+        stop.Which.Message.Should().Contain("timed out");
+        stopS.Should().BeLessThanOrEqualTo(3.5, "an in-flight frame (≤ 1.3 s) plus the Stop's own two attempts (≤ 1.3 s), plus scheduling slack; never unbounded");
+
+        rig.Plc.SetSilent(false);
+        var ticks = track.Heartbeat.TickCount;
+        await DriverRig.Until(() => track.Heartbeat.TickCount > ticks + 1, "ticks succeed again");
+        rig.Logs.GetSnapshot().Should().Contain(r => r.Level == LogLevel.Error
+                                                     && r.Message.StartsWith("carriage: WatchdogTripped: "));
+        await track.Carriage.ResetAsync().WaitAsync(T);
+        await track.Carriage.PowerAsync(true).WaitAsync(T);
+        track.Carriage.State.Should().Be(AxisState.Standstill);
+        rig.Plc.Truth.Homed.Should().BeTrue();
+    }
+
     [Fact(DisplayName = "GA-I-15 A missing ack is NotAcknowledged, not a link failure")]
     public async Task Home_SuppressAck_CommunicationLostWithin700msBeatContinues()
     {
