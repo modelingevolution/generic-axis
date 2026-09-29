@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from generic_axis_check import __main__ as cli
+from generic_axis_check import report as report_module
 from generic_axis_check.__main__ import UsageError, main, parse
 from generic_axis_check.context import Options
 from generic_axis_check.runner import Report
@@ -97,7 +98,7 @@ def test_a_ctrl_c_while_the_report_is_written_keeps_the_report_and_its_exit_code
         os.kill(os.getpid(), signal.SIGINT)  # the operator presses Ctrl-C as the report is being written
         return real_to_markdown(report)
 
-    real_to_markdown = cli.to_markdown
+    real_to_markdown = report_module.to_markdown
     monkeypatch.setattr(cli, "run", fake_run)
     monkeypatch.setattr(cli, "to_markdown", to_markdown_under_ctrl_c)
     handler = signal.getsignal(signal.SIGINT)
