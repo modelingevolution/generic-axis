@@ -5,7 +5,8 @@
     GENERIC_AXIS_SIM_CMD="cmd … {port}"    or --sim: start this simulator on a free port instead of a target
 
 The checklist runs once per session through the same runner as ``python -m generic_axis_check`` (pre-flight, order,
-restore, cleanup); each CHK id is then one test. ``report.md`` and ``report.json`` are written as the CLI writes them.
+restore, cleanup); each CHK id is then one test. ``report.md`` and ``report.json`` are written as the CLI writes them,
+into a new directory per run unless ``--generic-axis-report PATH`` names one (protocol.md "Isolation").
 """
 
 from __future__ import annotations
@@ -30,8 +31,18 @@ NOT_CONFIGURED = (
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption("--sim", default=None, help="simulator command with {port}; overrides GENERIC_AXIS_SIM_CMD")
     parser.addoption(
-        "--generic-axis-report", default="report.md", help="Markdown report path; JSON is written " "next to it"
+        "--generic-axis-report",
+        default=None,
+        help="Markdown report path (JSON next to it); default: a new directory per run, printed at the end",
     )
+
+
+def report_path(option: str | None, factory: pytest.TempPathFactory) -> Path:
+    """protocol.md "Isolation": two runs never share a report path. Without ``--generic-axis-report`` every run
+    writes into its own new directory (review #17)."""
+    if option:
+        return Path(option)
+    return factory.mktemp("generic-axis-report", numbered=True) / "report.md"
 
 
 def parse_target(text: str) -> tuple[str, int, int]:
@@ -46,7 +57,7 @@ def allow_motion() -> bool:
 
 
 @pytest.fixture(scope="session")
-def conformance(request: pytest.FixtureRequest) -> Report:
+def conformance(request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory) -> Report:
     target = os.environ.get("GENERIC_AXIS_TARGET")
     sim_cmd = request.config.getoption("--sim") or os.environ.get("GENERIC_AXIS_SIM_CMD")
     simulator: Simulator | None = None
@@ -63,7 +74,8 @@ def conformance(request: pytest.FixtureRequest) -> Report:
     finally:
         if simulator is not None:
             simulator.stop()
-    markdown = Path(request.config.getoption("--generic-axis-report"))
+    markdown = report_path(request.config.getoption("--generic-axis-report"), tmp_path_factory)
     markdown.write_text(to_markdown(report), encoding="utf-8")
     markdown.with_suffix(".json").write_text(to_json_text(report), encoding="utf-8")
+    print(f"\ngeneric-axis report: {markdown} (+ {markdown.with_suffix('.json').name})")
     return report
