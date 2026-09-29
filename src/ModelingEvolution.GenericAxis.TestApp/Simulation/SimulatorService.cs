@@ -17,10 +17,15 @@ public sealed class SimulatorService(SimulatorHost host, ILogger<SimulatorServic
     public TimeSpan MaxScanGapSinceFirstClient =>
         Volatile.Read(ref _clientSeen) == 0 ? TimeSpan.Zero : _loop?.MaxScanGap ?? _gapAtStop;
 
-    /// <summary>The line <c>--headless</c> prints on exit (eng-python's pytest reads it; keep the text exact).</summary>
-    public string CadenceLine =>
-        $"simulator: max scan gap {(long)MaxScanGapSinceFirstClient.TotalMilliseconds} ms since the first client connected "
-        + $"(scan interval {(long)host.Options.ScanInterval.TotalMilliseconds} ms)";
+    /// <summary>
+    /// The line <c>--headless</c> prints on exit (eng-python's pytest reads it; keep the text exact). With no client ever
+    /// connected nothing was measured, and the line says so in a form their regex deliberately does not match (review #51:
+    /// "0 ms" would read as a healthy measurement of an event that never happened).
+    /// </summary>
+    public string CadenceLine => Volatile.Read(ref _clientSeen) == 0
+        ? "simulator: max scan gap not measured (no client connected)"
+        : $"simulator: max scan gap {(long)MaxScanGapSinceFirstClient.TotalMilliseconds} ms since the first client connected "
+          + $"(scan interval {(long)host.Options.ScanInterval.TotalMilliseconds} ms)";
 
     public Task StartAsync(CancellationToken cancellationToken)
     {

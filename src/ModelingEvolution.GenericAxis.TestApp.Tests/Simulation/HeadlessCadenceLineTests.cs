@@ -12,7 +12,7 @@ namespace ModelingEvolution.GenericAxis.TestApp.Tests.Simulation;
 public sealed partial class HeadlessCadenceLineTests
 {
     [GeneratedRegex(@"^simulator: max scan gap (\d+) ms since the first client connected \(scan interval (\d+) ms\)$", RegexOptions.Multiline)]
-    private static partial Regex CadenceLine();
+    internal static partial Regex CadenceLine();
 
     [Fact(Timeout = 120_000)]
     public async Task GA_I_66_SigtermPrintsTheCadenceLineOnce()
@@ -53,6 +53,58 @@ public sealed partial class HeadlessCadenceLineTests
         lines[0].Groups[2].Value.Should().Be("10", "the configured scan interval");
         Directory.Delete(workDir, recursive: true);
     }
+
+    /// <summary>GA-I-66: stopped with no client ever connected, the process says "not measured", never "0 ms".</summary>
+    [Fact(Timeout = 120_000)]
+    public async Task GA_I_66_SigtermWithNoClientSaysNotMeasured()
+    {
+        var port = FreePort();
+        var dll = Path.Combine(AppContext.BaseDirectory, "ModelingEvolution.GenericAxis.TestApp.dll");
+        var workDir = Directory.CreateTempSubdirectory("ga-i-66b-").FullName;
+        var psi = new ProcessStartInfo("dotnet")
+        {
+            ArgumentList = { dll, "--headless", "--port", port.ToString(System.Globalization.CultureInfo.InvariantCulture) },
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            WorkingDirectory = workDir,
+        };
+        psi.Environment["DOTNET_hostBuilder__reloadConfigOnChange"] = "false";
+        using var process = Process.Start(psi)!;
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        try
+        {
+            await WhenListeningAsync(port, process); // observed without connecting: a connection would be a client
+            using (var kill = Process.Start("kill", ["-TERM", process.Id.ToString(System.Globalization.CultureInfo.InvariantCulture)])!) kill.WaitForExit();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await process.WaitForExitAsync(timeout.Token);
+        }
+        finally
+        {
+            if (!process.HasExited) process.Kill(entireProcessTree: true);
+        }
+
+        var output = await stdout;
+        process.ExitCode.Should().Be(0, await stderr);
+        output.Split('\n').Select(l => l.TrimEnd('\r')).Should().ContainSingle(l => l == "simulator: max scan gap not measured (no client connected)", output);
+        CadenceLine().IsMatch(output).Should().BeFalse("no line the Python rule could read as a measurement");
+        Directory.Delete(workDir, recursive: true);
+    }
+
+    /// <summary>Waits (bounded) until the port is listening, observed from the OS listener table without connecting a client.</summary>
+    private static async Task WhenListeningAsync(int port, Process process)
+    {
+        var sw = Stopwatch.StartNew();
+        while (!IPGlobalPropertiesListens(port))
+        {
+            if (process.HasExited) throw new InvalidOperationException("setup: the headless simulator exited");
+            if (sw.Elapsed > TimeSpan.FromSeconds(30)) throw new TimeoutException("setup: the headless simulator never listened");
+            await Task.Delay(50);
+        }
+    }
+
+    private static bool IPGlobalPropertiesListens(int port) =>
+        System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners().Any(e => e.Port == port);
 
     private static int FreePort()
     {
@@ -99,7 +151,8 @@ public sealed class SimulatorServiceCadenceTests
         await Task.Delay(200);
 
         service.MaxScanGapSinceFirstClient.Should().Be(TimeSpan.Zero, "no client has connected yet");
-        service.CadenceLine.Should().Be("simulator: max scan gap 0 ms since the first client connected (scan interval 10 ms)");
+        service.CadenceLine.Should().Be("simulator: max scan gap not measured (no client connected)", "nothing was measured: not a 0 ms measurement");
+        HeadlessCadenceLineTests.CadenceLine().IsMatch(service.CadenceLine).Should().BeFalse("the Python regex must not read it as a measurement");
 
         using var client = new FluentModbus.ModbusTcpClient();
         client.Connect(new IPEndPoint(IPAddress.Loopback, host.Port), FluentModbus.ModbusEndianness.BigEndian);
