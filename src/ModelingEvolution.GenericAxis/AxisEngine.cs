@@ -681,11 +681,14 @@ internal sealed class AxisEngine : IDisposable
 
     private async Task StopCoreAsync(CancellationToken ct)
     {
-        lock (_sync)
+        bool attached;
+        lock (_sync) attached = _attached;
+        if (!attached)
         {
-            if (!_attached)
-                throw Error(MotionError.CommunicationLost,
-                    "Stop not sent: the device is not attached (ConnectAsync has not completed); nothing of ours is moving");
+            // Review #12 / FR-5: the station STOP fans out to every device; one that is not attached has nothing of
+            // ours moving, so it answers the STOP by saying so — never by throwing into the fan-out.
+            _logger?.LogInformation("{Axis}: Stop not sent: not attached, nothing of ours is moving", Name);
+            return;
         }
 
         var (_, ackTick) = await SendCommandAsync("Stop", CommandBits.Stop, null, null, ChannelPriority.Stop, ct,
