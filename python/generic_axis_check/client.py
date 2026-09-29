@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from collections.abc import Awaitable, Callable
 
@@ -46,6 +47,25 @@ def _failure(what: str, exc: BaseException) -> BaseException:
     if task is not None and task.cancelling():
         return asyncio.CancelledError()
     return PlcError(f"{what}: {exc}")
+
+
+async def _open(client: AsyncModbusTcpClient, timeout: float) -> None:
+    """``AsyncModbusTcpClient.connect()`` without its swallowing: pymodbus catches the connect exception, logs it and
+    returns False, so the message would lose "Connection refused" (protocol.md § Errors and debugging, rule 1; review
+    #2). This is its body (pymodbus 3.15.0, pinned) with the exception left to the caller."""
+    ctx = client.ctx
+    ctx.reset_delay()
+    ctx.is_closing = False
+    ctx.transport, _protocol = await asyncio.wait_for(ctx.call_create(), timeout=timeout)
+
+
+def _reason(exc: BaseException) -> str:
+    """The exception as rule 1 wants it: the OS's words for an errno ("Connection refused"), else its text."""
+    if isinstance(exc, TimeoutError):
+        return "no answer (connect timed out)"
+    if isinstance(exc, OSError) and exc.errno is not None:
+        return f"{os.strerror(exc.errno)} ({exc})"
+    return str(exc) or type(exc).__name__
 
 
 class PlcClient:
@@ -92,17 +112,18 @@ class PlcClient:
             timeout = connect_timeout(time.monotonic() - started)
             client = AsyncModbusTcpClient(self.host, port=self.port, timeout=timeout, retries=0, reconnect_delay=0)
             try:
-                if await client.connect():
-                    # pymodbus's TransactionManager (``client.ctx``) waits for an answer on ITS OWN copy of the
-                    # parameters (``timeout_connect``); ``client.comm_params`` is not read after construction (#19).
-                    client.ctx.comm_params.timeout_connect = REQUEST_TIMEOUT_S
-                    self._client = client
-                    self._generation += 1
-                    return
-            except (OSError, ModbusException) as exc:
+                await _open(client, timeout)
+            except (OSError, TimeoutError, ModbusException) as exc:
                 last = exc
-            client.close()
-        reason = f": {last}" if last is not None else ""
+                client.close()
+                continue
+            # pymodbus's TransactionManager (``client.ctx``) waits for an answer on ITS OWN copy of the parameters
+            # (``timeout_connect``); ``client.comm_params`` is not read after construction (review #19).
+            client.ctx.comm_params.timeout_connect = REQUEST_TIMEOUT_S
+            self._client = client
+            self._generation += 1
+            return
+        reason = f": {_reason(last)}" if last is not None else ""
         raise PlcError(
             f"connect to {self.host}:{self.port} failed ({attempts} attempt{'s' if attempts > 1 else ''} in "
             f"{time.monotonic() - started:.1f} s){reason}"

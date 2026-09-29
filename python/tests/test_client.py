@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import time
 
 import pytest
@@ -84,3 +85,15 @@ def test_connect_timeout_is_2_s_and_both_attempts_fit_chk01s_3_s_budget() -> Non
     assert connect_timeout(0.1) == 2.0
     assert connect_timeout(3.5) == 0.0
     assert REQUEST_TIMEOUT_S == 0.5
+
+
+async def test_connect_failure_message_carries_the_exception_text() -> None:
+    # GA-U-74.py (review #2 b): rule 1, a transport error names the exception ("Connection refused").
+    async with StubPlc() as plc:
+        port = plc.port
+    with pytest.raises(PlcError) as failure:
+        await PlcClient("127.0.0.1", port, 1).connect()
+    assert re.fullmatch(
+        rf"connect to 127\.0\.0\.1:{port} failed \(2 attempts in \d+\.\d s\): Connection refused \(.+\)",
+        str(failure.value),
+    ), str(failure.value)
