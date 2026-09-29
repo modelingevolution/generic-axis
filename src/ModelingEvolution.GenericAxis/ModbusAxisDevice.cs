@@ -155,6 +155,8 @@ public abstract class ModbusAxisDevice : IMotionDevice, IAsyncDisposable
 
             if (ex is MotionException { Error: MotionError.CommunicationLost or MotionError.LeaseHeld })
                 _logger?.LogWarning("{Axis}: attach to {Address} failed. {Message}", o.Name, Address, ex.Message);
+            else if (ex is MotionException { Error: MotionError.ProtocolMismatch } && !ReferenceEquals(ex, _refusalLogged))
+                _logger?.LogError("{Axis}: attach to {Address} refused. {Message}", o.Name, Address, ex.Message);
             throw;
         }
 
@@ -207,8 +209,12 @@ public abstract class ModbusAxisDevice : IMotionDevice, IAsyncDisposable
 
         if (refusal is null) return;
         _logger?.LogError("{Message}", refusal.Message);
+        _refusalLogged = refusal;
         throw refusal;
     }
+
+    /// <summary>The attach refusal <see cref="CheckMap"/> already logged, so the attach path does not log it twice.</summary>
+    private MotionException? _refusalLogged;
 
     private static readonly System.Globalization.CultureInfo Inv = System.Globalization.CultureInfo.InvariantCulture;
 

@@ -399,7 +399,12 @@ internal sealed class AxisEngine : IDisposable
         RaiseStatus(status);
     }
 
-    /// <summary>A heartbeat tick that failed after the channel's retry: latch <c>ErrorStop / CommunicationLost</c>.</summary>
+    /// <summary>
+    /// A heartbeat tick that failed: latch <c>ErrorStop</c> with the tick's own error — <c>CommunicationLost</c>
+    /// after the channel's retry, <c>ProtocolMismatch</c> when the PLC's answer could not be read as the protocol
+    /// (review #11). The class is never rewritten. ProtocolMismatch supersedes CommunicationLost, as in
+    /// <see cref="OnTick"/>.
+    /// </summary>
     public void OnTickFailed(MotionException error)
     {
         AxisStatus status;
@@ -409,17 +414,18 @@ internal sealed class AxisEngine : IDisposable
         {
             if (!_attached) return;
             oldState = StateOf();
-            latched = _overlay is null;
+            latched = _overlay is null
+                      || (error.Error == MotionError.ProtocolMismatch && _overlay.Error == MotionError.CommunicationLost);
             if (latched)
-                _overlay = new Overlay(MotionError.CommunicationLost, error.Message);
+                _overlay = new Overlay(error.Error, error.Message);
             _tickOkSinceOverlay = false;
             status = StatusOf();
             SignalLocked();
         }
 
         if (latched)
-            _logger?.LogError("{Axis}: state {Old} → ErrorStop (overlay CommunicationLost). {Message}",
-                Name, oldState, error.Message);
+            _logger?.LogError("{Axis}: state {Old} → ErrorStop (overlay {Overlay}). {Message}",
+                Name, oldState, error.Error, error.Message);
         RaiseStatus(status);
     }
 

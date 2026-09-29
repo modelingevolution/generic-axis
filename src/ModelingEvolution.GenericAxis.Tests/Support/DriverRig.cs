@@ -81,7 +81,7 @@ internal sealed class DriverRig : IAsyncDisposable
             var opsBefore = Plc.OpCount;
             Time.Advance(Options.HeartbeatInterval);
             // A tick is done when TickCount moved (success) or when a failing op was recorded and the loop logged it.
-            await Until(() => Device.Heartbeat.TickCount > before || (Plc.FailWhen is not null && Plc.OpCount > opsBefore));
+            await Until(() => Device.Heartbeat.TickCount > before || (Plc.Injecting && Plc.OpCount > opsBefore));
             await Settle();
         }
     }

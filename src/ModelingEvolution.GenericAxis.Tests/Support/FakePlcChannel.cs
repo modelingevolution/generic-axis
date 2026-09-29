@@ -46,6 +46,15 @@ internal sealed class FakePlcChannel : IModbusChannel
     /// <summary>When it returns true for an operation, that operation throws CommunicationLost.</summary>
     public Func<ChannelOp, bool>? FailWhen { get; set; }
 
+    /// <summary>When it returns an exception for an operation, that operation throws it as is (a non-transport defect).</summary>
+    public Func<ChannelOp, Exception?>? ThrowWhen { get; set; }
+
+    /// <summary>When it returns registers for a read, the read answers them instead of the bank (a malformed answer).</summary>
+    public Func<ChannelOp, ushort[]?>? AnswerWith { get; set; }
+
+    /// <summary>Whether a hook that makes an operation fail or answer wrongly is installed.</summary>
+    public bool Injecting => FailWhen is not null || ThrowWhen is not null || AnswerWith is not null;
+
     public IReadOnlyList<ChannelOp> Ops
     {
         get { lock (_sync) return [.. _ops]; }
@@ -151,7 +160,9 @@ internal sealed class FakePlcChannel : IModbusChannel
             if (FailWhen?.Invoke(op) == true)
                 return Task.FromException<ushort[]>(new MotionException(MotionError.CommunicationLost,
                     $"fake-plc: {what} failed (injected)"));
+            if (ThrowWhen?.Invoke(op) is { } thrown) return Task.FromException<ushort[]>(thrown);
             OnRead?.Invoke(this, op);
+            if (AnswerWith?.Invoke(op) is { } answer) return Task.FromResult(answer);
             return Task.FromResult(_regs.AsSpan(address, count).ToArray());
         }
     }
@@ -171,6 +182,7 @@ internal sealed class FakePlcChannel : IModbusChannel
             if (FailWhen?.Invoke(op) == true)
                 return Task.FromException(new MotionException(MotionError.CommunicationLost,
                     $"fake-plc: {what} failed (injected)"));
+            if (ThrowWhen?.Invoke(op) is { } thrown) return Task.FromException(thrown);
             values.CopyTo(_regs.AsSpan(address));
             if (address == Map.Command && values.Length == 2)
                 OnCommand?.Invoke(this, values[0], values[1]);

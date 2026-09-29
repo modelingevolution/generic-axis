@@ -182,6 +182,14 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
                     _logger?.LogWarning(ex, "{Axis}: heartbeat tick failed. {Message}", _axis, ex.Message);
                     Raise(TickFailed, ex);
                 }
+                catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+                {
+                    // Review #11: the loop never dies silently. A defect that is neither a transport failure nor the
+                    // PLC's answer (those arrive as MotionException) is logged under its own CLR type; no error class
+                    // is claimed and no overlay is latched — a CommunicationLost here would be a lie.
+                    _logger?.LogError(ex, "{Axis}: heartbeat tick threw {Type}: {Message}; the beat continues",
+                        _axis, ex.GetType().FullName, ex.Message);
+                }
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -222,9 +230,24 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
     {
         var watchdog = await _channel.ReadHoldingAsync(_unit, _map.LeaseOwner, RegisterMap.WatchdogBlockLength,
             "read lease and watchdog", lane, ct);
+        CheckLength(watchdog, _map.LeaseOwner, RegisterMap.WatchdogBlockLength, "lease and watchdog block");
         var status = await _channel.ReadHoldingAsync(_unit, _map.Status, RegisterMap.StatusLength,
             "read status block", lane, ct);
+        CheckLength(status, _map.Status, RegisterMap.StatusLength, "status block");
         return new PlcSnapshot(StatusBlock.Parse(status), watchdog[0], watchdog[1], watchdog[2], _time.GetTimestamp());
+    }
+
+    /// <summary>
+    /// A read answered with the wrong number of registers is the PLC answering outside the protocol
+    /// (<c>ProtocolMismatch</c>, review #11), never an <see cref="ArgumentException"/> from the parser.
+    /// </summary>
+    private void CheckLength(ushort[] words, ushort address, int expected, string block)
+    {
+        if (words.Length == expected) return;
+        throw AxisErrors.Create(_axis, MotionError.ProtocolMismatch,
+            $"the PLC answered a read of the {block} with {words.Length} registers",
+            new RegisterRead(block, _map.DescribeRange(address, expected),
+                $"{words.Length} registers", expected.ToString(System.Globalization.CultureInfo.InvariantCulture)));
     }
 
     private void Raise<T>(EventHandler<T>? handler, T value)
