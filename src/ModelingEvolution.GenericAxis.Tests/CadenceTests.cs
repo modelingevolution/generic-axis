@@ -34,7 +34,7 @@ public class CadenceTests
         open.Set();
     }
 
-    [Fact(DisplayName = "GA-U-126 WhenScan times an event by the fixture's scan, not by when the test looked")]
+    [Fact(DisplayName = "GA-U-128 WhenScan times an event by the fixture's scan, not by when the test looked")]
     public async Task WhenScan_LateObserver_ReturnsTheSatisfyingScansTimestamp()
     {
         await using var plc = new MiniPlc();

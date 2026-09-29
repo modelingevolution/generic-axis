@@ -160,7 +160,7 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
         // The timer is created here, synchronously, so the first tick is due one interval after Start on the
         // injected clock — not one interval after a thread-pool hop.
         var timer = new PeriodicTimer(Interval, _time);
-        // On the thread pool, never on the caller's SynchronizationContext (GA-U-127): the beat is the commander's
+        // On the thread pool, never on the caller's SynchronizationContext (GA-U-129): the beat is the commander's
         // proof of life to the watchdog and must not queue behind a UI dispatcher or a test scheduler. Started from
         // a context, the loop's awaits resumed on it — on a 2-CPU runner an 850 ms beat gap, a false NotAcknowledged
         // and a real watchdog trip.

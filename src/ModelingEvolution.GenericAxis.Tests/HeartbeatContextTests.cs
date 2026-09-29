@@ -46,7 +46,7 @@ public class HeartbeatContextTests
         }
     }
 
-    [Fact(DisplayName = "GA-U-127 The heartbeat keeps beating while the context that connected the device is busy")]
+    [Fact(DisplayName = "GA-U-129 The heartbeat keeps beating while the context that connected the device is busy")]
     public async Task Heartbeat_CallerContextHeld_KeepsBeating()
     {
         await using var rig = new DriverRig();
