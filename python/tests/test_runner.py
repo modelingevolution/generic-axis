@@ -418,3 +418,37 @@ async def test_chk06_fails_an_axis_found_in_error_stop_and_writes_nothing(stub: 
     assert stub.writes == []
     assert report.cleanup == []
     assert (stub.axis.state, stub.axis.fault) == (7, 2)
+
+
+async def test_last_read_is_a_fresh_read_not_the_checks_last_values(stub: StubPlc) -> None:
+    # GA-U-80.py (review #21 mutant 2): a register that changed after the check's last read shows its new value.
+    async def read_then_fail(ctx: CheckContext) -> Outcome:
+        await ctx.client.read(MAP.command, 12)
+        await ctx.client.read(MAP.status, 15)
+        stub.regs[MAP.watchdog_trips] = 42  # PLC-owned; changes after the check read it
+        return Outcome(FAIL, "planted", {}, None)
+
+    check = dataclasses.replace(CHECKS[0], run=read_then_fail)
+    report = await run(options(stub), checks=(check,))
+    last = report.checks[0].last_read
+    assert last is not None
+    assert last.command[11] == 42
+
+
+async def test_run_refuses_a_commander_beating_with_lease_owner_0(stub: StubPlc) -> None:
+    # GA-U-81.py (review #21 mutant 3, #16): "whatever LeaseOwner holds (0, …)" — a beat with LeaseOwner 0 refuses.
+    commander = PlcClient("127.0.0.1", stub.port, 1)
+    await commander.connect()
+    beat = Beater(commander, MAP)
+    await beat.start()
+    try:
+        before = len(stub.writes)
+        report = await run(options(stub, motion=True))
+        ours = [w for w in stub.writes[before:] if w[0] != MAP.heartbeat]
+    finally:
+        await beat.stop()
+        commander.close()
+    assert report.exit_code == 3
+    assert report.result == "REFUSED"
+    assert "LeaseOwner (C+9) 0;" in report.checks[0].message
+    assert ours == []

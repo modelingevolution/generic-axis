@@ -97,3 +97,37 @@ async def test_connect_failure_message_carries_the_exception_text() -> None:
         rf"connect to 127\.0\.0\.1:{port} failed \(2 attempts in \d+\.\d s\): Connection refused \(.+\)",
         str(failure.value),
     ), str(failure.value)
+
+
+async def test_a_lost_answer_is_retried_once_at_warning_and_counted(
+    stub: StubPlc, caplog: pytest.LogCaptureFixture
+) -> None:
+    # GA-U-79.py (review #21 mutant 1): "The one retry … logs it at Warning, and counts it in that check's retries".
+    client = PlcClient("127.0.0.1", stub.port, 1)
+    await client.connect()
+    try:
+        stub.drop_next = 1
+        with caplog.at_level(logging.WARNING, logger="generic_axis_check.client"):
+            assert await client.read(114, 1) == [1]
+        assert client.retries == 1
+        warnings = [r.getMessage() for r in caplog.records if r.name == "generic_axis_check.client"]
+        assert len(warnings) == 1
+        assert warnings[0].startswith("read S+14 (114) on 127.0.0.1:")
+        assert warnings[0].endswith("; reconnecting and retrying once")
+    finally:
+        client.close()
+
+
+async def test_a_command_write_is_never_re_sent(stub: StubPlc) -> None:
+    # GA-U-79.py (review #21 mutant 1): "A command is never re-sent": one attempt, then Transport, no retry counted.
+    client = PlcClient("127.0.0.1", stub.port, 1)
+    await client.connect()
+    try:
+        stub.drop_next = 1
+        before = stub.requests
+        with pytest.raises(PlcError, match=r"write C\+0…C\+1"):
+            await client.write(0, [1, 7], retry=False)
+        assert stub.requests - before == 1
+        assert client.retries == 0
+    finally:
+        client.close()
