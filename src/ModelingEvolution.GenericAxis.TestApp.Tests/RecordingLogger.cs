@@ -18,9 +18,16 @@ internal sealed class RecordingLogger : ILogger
 
     public bool IsEnabled(LogLevel logLevel) => true;
 
+    /// <summary>Called synchronously with every message, on the logging thread (a test hook).</summary>
+    public Action<string>? OnMessage { get; set; }
+
     public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
-        Func<TState, Exception?, string> formatter) =>
-        _entries.Enqueue((logLevel, formatter(state, exception)));
+        Func<TState, Exception?, string> formatter)
+    {
+        var message = formatter(state, exception);
+        _entries.Enqueue((logLevel, message));
+        OnMessage?.Invoke(message);
+    }
 }
 
 /// <summary>A logger provider whose every category logs into one <see cref="RecordingLogger"/>.</summary>

@@ -193,6 +193,7 @@ public sealed class SimulatorHost : IDisposable
         if (!_started) return;
         if (_plc.Faults.CommunicationDown) _provider.Close();
         else _provider.Open();
+        _provider.Silent = _plc.Faults.Silent;
     }
 
     private void Refresh() => _snapshot = _plc.Snapshot(_provider.IsOpen);

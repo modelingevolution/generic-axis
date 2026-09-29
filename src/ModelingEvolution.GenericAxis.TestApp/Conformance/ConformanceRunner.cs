@@ -49,11 +49,13 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
         try
         {
             string? refusal = null;
+            MotionException? unreadable = null;
             var interruptedInPreflight = false;
             try
             {
                 var preflight = await PreflightAsync(ctx, ct);
                 refusal = preflight.Refusal;
+                unreadable = preflight.Unreadable;
                 preflightNote = preflight.Note ?? preflight.Refusal;
                 if (preflight.Note is { } note) _log.LogWarning("Pre-flight: {Note}", note);
             }
@@ -68,6 +70,16 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
             }
 
             if (interruptedInPreflight) { }
+            else if (unreadable is not null)
+            {
+                // No lease, no beat, no write: CHK-01 FAILs with the read's message, every later check needs it.
+                var chk01 = _catalog[0];
+                var outcome = CheckOutcome.Fail(Failure.FromMotion(unreadable));
+                outcome = outcome with { Observed = Canonical(chk01, outcome, ctx.Retries) };
+                results.Add(new CheckResult(chk01.Id, chk01.Title, chk01.Section, CheckResultKind.Fail, 0, outcome.Message, outcome.Observed,
+                    outcome.Deciding?.Class, ctx.LastValues()));
+                foreach (var def in _catalog.Skip(1)) results.Add(Skipped(def, $"needs {chk01.Id}, which FAILED"));
+            }
             else if (refusal is { } reason)
             {
                 refused = true;
@@ -321,13 +333,17 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
         }
         catch (MotionException ex)
         {
-            _log.LogWarning("Pre-flight could not read the PLC ({Message}); CHK-01 will report it", CheckerText.Describe(ex));
-            return Preflight.Free;
+            // Python #4 mirror (lead ruling): a pre-flight that could not prove the axis free must not proceed.
+            _log.LogWarning("Pre-flight could not read the PLC ({Message}); CHK-01 FAILs and nothing is written", CheckerText.Describe(ex));
+            return new Preflight(null, null, ex);
         }
     }
 
-    /// <summary>The pre-flight verdict: a refusal (exit 3), or a note for the report when the run proceeds.</summary>
-    private sealed record Preflight(string? Refusal, string? Note)
+    /// <summary>
+    /// The pre-flight verdict: a refusal (exit 3), a note for the report when the run proceeds, or the read that failed
+    /// (the axis was never proved free: CHK-01 FAILs, nothing more runs).
+    /// </summary>
+    private sealed record Preflight(string? Refusal, string? Note, MotionException? Unreadable = null)
     {
         public static Preflight Free { get; } = new(null, null);
     }

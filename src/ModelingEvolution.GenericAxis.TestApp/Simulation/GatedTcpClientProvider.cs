@@ -15,6 +15,8 @@ public sealed class GatedTcpClientProvider(IPEndPoint endpoint, ILogger logger) 
 {
     private readonly Lock _sync = new();
     private readonly List<TcpClient> _accepted = [];
+    private readonly List<TcpClient> _parked = [];
+    private volatile bool _silent;
     private TcpListener? _listener;
     private int _port = endpoint.Port;
     private volatile bool _open;
@@ -25,6 +27,37 @@ public sealed class GatedTcpClientProvider(IPEndPoint endpoint, ILogger logger) 
 
     /// <summary>The bound port (the requested one, or the one the OS picked for port 0).</summary>
     public int Port => _port;
+
+    /// <summary>
+    /// A silent PLC (<see cref="SimFaults.Silent"/>): connections are accepted and parked, never handed to the Modbus
+    /// server, so no request is answered. Turning it on drops the established connections; turning it off drops the
+    /// parked ones, so clients reconnect to a PLC that answers again.
+    /// </summary>
+    public bool Silent
+    {
+        get => _silent;
+        set
+        {
+            List<TcpClient> drop;
+            lock (_sync)
+            {
+                if (_silent == value) return;
+                _silent = value;
+                drop = value ? [.. _accepted] : [.. _parked];
+                (value ? _accepted : _parked).Clear();
+            }
+
+            foreach (var client in drop) Reset(client);
+            logger.LogWarning("Modbus listener on port {Port} {State} — {Dropped} connection(s) dropped", _port,
+                value ? "silent (accepts, never answers)" : "answering again", drop.Count);
+        }
+    }
+
+    private void Reset(TcpClient client)
+    {
+        try { client.Client.LingerState = new LingerOption(true, 0); client.Close(); }
+        catch (Exception ex) { logger.LogDebug(ex, "Closing a client on port {Port} threw; ignoring", _port); }
+    }
 
     /// <summary>Binds the port and starts accepting.</summary>
     public void Open()
@@ -67,6 +100,9 @@ public sealed class GatedTcpClientProvider(IPEndPoint endpoint, ILogger logger) 
             }
 
             _accepted.Clear();
+            foreach (var parked in _parked) Reset(parked);
+            dropped += _parked.Count;
+            _parked.Clear();
         }
 
         logger.LogWarning("Modbus listener on port {Port} closed — {Dropped} connection(s) dropped", _port, dropped);
@@ -106,6 +142,13 @@ public sealed class GatedTcpClientProvider(IPEndPoint endpoint, ILogger logger) 
                 if (!_open)
                 {
                     client.Close();
+                    continue;
+                }
+
+                if (_silent)
+                {
+                    _parked.Add(client); // TCP accepted, never served
+                    logger.LogInformation("Modbus client {Remote} connected on port {Port} and parked (Silent)", client.Client.RemoteEndPoint, _port);
                     continue;
                 }
 

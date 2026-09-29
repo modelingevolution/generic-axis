@@ -576,5 +576,40 @@ public sealed class CheckerAgainstSimulatorTests
         (await sim.SettledAsync()).LeaseOwner.Should().Be(0, "the first run released its lease in cleanup");
     }
 
+    /// <summary>
+    /// GA-I-59 (Python #4 mirror, lead ruling): a PLC that accepts TCP but answers nothing. The pre-flight read fails, so
+    /// the axis was never proved free: CHK-01 FAILs Transport with that read's message, every later check needs CHK-01,
+    /// and nothing is written — no lease, no beat. The PLC starts answering the moment pre-flight gives up, so a runner
+    /// that went on anyway (the old "CHK-01 will report it") would take the lease and write.
+    /// </summary>
+    [Fact]
+    public async Task GA_I_59_AFailedPreflightReadStopsTheRunAndWritesNothing()
+    {
+        using var sim = new LiveSimulator(new SimulatedAxisOptions { Faults = new SimFaults { Silent = true } });
+        var log = new RecordingLoggerProvider();
+        var gaveUp = false;
+        log.Logger.OnMessage = m =>
+        {
+            if (gaveUp || !m.StartsWith("Pre-flight could not read the PLC", StringComparison.Ordinal)) return;
+            gaveUp = true;
+            sim.Host.Faults = SimFaults.None;
+        };
+        using var factory = LoggerFactory.Create(b => b.AddProvider(log).SetMinimumLevel(LogLevel.Information));
+
+        var report = await new ConformanceRunner(factory).RunAsync(
+            new CheckerOptions { Host = "127.0.0.1", Port = sim.Port }, CancellationToken.None);
+
+        gaveUp.Should().BeTrue("the pre-flight read met a silent PLC");
+        report.ExitCode.Should().Be(1);
+        var chk01 = Get(report, "CHK-01");
+        chk01.Result.Should().Be(CheckResultKind.Fail);
+        chk01.ErrorClass.Should().Be(ErrorClass.Transport);
+        chk01.Message.Should().StartWith("Transport/CommunicationLost: read C+8…C+10 (pre-flight: Heartbeat, LeaseOwner, WatchdogFault)");
+        report.Checks.Skip(1).Should().OnlyContain(c => c.Result == CheckResultKind.Skipped && c.Message == "needs CHK-01, which FAILED");
+        report.Cleanup.Should().BeEmpty();
+        var end = await sim.SettledAsync();
+        end.CommandBlock.Should().OnlyContain(w => w == 0, "no lease, no beat, no write");
+    }
+
     private volatile bool _chk14Running;
 }

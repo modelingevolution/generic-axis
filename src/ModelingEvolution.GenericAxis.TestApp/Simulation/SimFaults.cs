@@ -42,6 +42,12 @@ public sealed record SimFaults
     /// <summary>The PLC reads and writes its 32-bit values high word first — a protocol violation to be caught.</summary>
     public bool SwappedWordOrder { get; init; }
 
+    /// <summary>
+    /// The PLC's Modbus task hangs: TCP connections are accepted but no request is ever answered. Setting it drops the
+    /// established connections, so every client meets the silence on its next request; registers are untouched.
+    /// </summary>
+    public bool Silent { get; init; }
+
     /// <summary>Names of the faults in force, for logs and the UI.</summary>
     public IEnumerable<string> Active()
     {
@@ -56,6 +62,7 @@ public sealed record SimFaults
         if (SuppressAck) yield return nameof(SuppressAck);
         if (WatchdogDisabled) yield return nameof(WatchdogDisabled);
         if (SwappedWordOrder) yield return nameof(SwappedWordOrder);
+        if (Silent) yield return nameof(Silent);
     }
 
     /// <inheritdoc/>

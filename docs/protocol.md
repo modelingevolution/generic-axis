@@ -236,7 +236,9 @@ the operator (Ctrl-C / SIGINT) before the list finished.
   - Neither within 1.6 s: refused (exit 3, `REFUSED`), naming `LeaseOwner` and `WatchdogFault`: "a live commander,
     or a PLC without a working watchdog; release LeaseOwner by hand only if no commander runs".
 
-  With `LeaseOwner = 0` the watch stays 1 s.
+  With `LeaseOwner = 0` the watch stays 1 s. A pre-flight read that fails (after the one retry) never proved the axis
+  free: CHK-01 FAILs `Transport/CommunicationLost` with that read's message, every later check is SKIPPED ("needs
+  CHK-01, which FAILED"), and nothing is written.
 - **Isolation.** Each tool run uses its own working directory for logs and reports. A run against a simulator uses a
   simulator on its own port. Two concurrent runs never share a PLC, a simulator or a report path.
 - **Order.** Checks run in id order. A check whose prerequisite FAILED or was SKIPPED is SKIPPED, and its message names
