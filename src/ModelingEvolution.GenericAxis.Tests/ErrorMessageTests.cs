@@ -114,6 +114,7 @@ public class ChannelRetryTests
         words.Should().HaveCount(15);
         words[14].Should().Be(1, "anchor: the second attempt read the real block (MapVersion)");
         plc.AcceptedConnections.Should().Be(2, "exactly two attempts");
+        channel.Retries.Should().Be(1, "review #25: the one retry is counted for the checker's `retries`");
         var warnings = logs.GetSnapshot().Where(r => r.Level == LogLevel.Warning).ToArray();
         warnings.Should().ContainSingle().Which.Exception.Should().NotBeNull("the retry is logged with the exception");
         warnings[0].Message.Should().Contain("read status block (read S+0…S+14 (100…114))")
@@ -138,6 +139,7 @@ public class ChannelRetryTests
         ex.Message.Should().NotEndWith("(reconnected once): .", "the exception's own message is quoted");
         plc.AcceptedConnections.Should().Be(2);
         logs.GetSnapshot().Count(r => r.Level == LogLevel.Warning).Should().Be(1);
+        channel.Retries.Should().Be(1, "review #25: the second failure is not a second retry");
     }
 
     [Fact(DisplayName = "GA-U-68 a refused connection is CommunicationLost naming the endpoint")]
