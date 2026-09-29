@@ -284,3 +284,21 @@ async def test_run_interrupted_during_preflight_on_an_idle_axis_writes_nothing(s
     assert report.exit_code == 4
     assert stub.writes == []
     assert report.cleanup == []
+
+
+async def test_run_whose_preflight_read_fails_fails_chk01_skips_the_rest_and_writes_nothing(stub: StubPlc) -> None:
+    # GA-U-71.py (review #4): the connect succeeds, the first C+8…C+9 read goes unanswered twice (the one retry
+    # included). Pre-flight did not prove the axis free, so the run stops: CHK-01 FAIL Transport, nothing written.
+    stub.drop_next = 2
+    report = await run(options(stub), checks=upto("CHK-05"))
+    chk01 = report.checks[0]
+    assert chk01.result == FAIL
+    assert chk01.error_class == "Transport"
+    assert chk01.message.startswith(
+        "Transport/CommunicationLost: pre-flight did not complete, nothing was written: read C+8…C+9"
+    )
+    assert chk01.observed["retries"] == 1
+    assert all(c.result == SKIPPED and c.message == "needs CHK-01, which FAILED" for c in report.checks[1:])
+    assert report.exit_code == 1
+    assert stub.writes == []
+    assert report.cleanup == []

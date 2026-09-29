@@ -276,10 +276,7 @@ def percent_of(value: int, percent: int) -> int:
 
 
 async def chk01(ctx: CheckContext) -> Outcome:
-    if not ctx.client.connected:
-        started = time.monotonic()
-        await ctx.client.connect()
-        ctx.connect_ms = ms(time.monotonic() - started)
+    """The run connected before pre-flight (a failed connect FAILs CHK-01 there); this times one status read."""
     started = time.monotonic()
     await ctx.status()
     read_ms = ms(time.monotonic() - started)

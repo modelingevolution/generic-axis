@@ -245,6 +245,7 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
     client = PlcClient(options.host, options.port, options.unit, registers)
     ctx = CheckContext(client, registers, options, Beater(client, registers))
     started_at = datetime.now(UTC)
+    run_started = time.monotonic()
     results: dict[str, CheckResult] = {}
     refused = interrupted = False
     proven_free = False
@@ -254,6 +255,7 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
     unknown: set[str] = set()
 
     running = "pre-flight"
+    preflight_failure: Outcome | None = None
     try:
         try:
             connect_started = time.monotonic()
@@ -262,14 +264,38 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
             live = await preflight(client, registers)
             proven_free = live is None
         except PlcError as exc:
-            live = None  # CHK-01 reports the transport failure
-            say(f"pre-flight: {exc}")
+            # Review #4: pre-flight did not prove the axis free, so nothing may be written. CHK-01 FAILs with the
+            # Transport error and every other check is SKIPPED; the run never proceeds as if the axis were free.
+            live = None
+            what = f"pre-flight did not complete, nothing was written: {exc}"
+            preflight_failure = Outcome(
+                FAIL,
+                format_message(ErrorClass.TRANSPORT, COMMUNICATION_LOST, what, registers),
+                {},
+                ErrorClass.TRANSPORT,
+            )
+            abort = "needs CHK-01, which FAILED"
+            say(f"CHK-01: {preflight_failure.message}")
         if live is not None:
             refused = True
             abort = live
             say(abort)
 
         for check in checks:
+            if preflight_failure is not None and check.id == "CHK-01":
+                observed = normalize_observed(check.id, {"connectMs": ctx.connect_ms}, client.retries, unknown)
+                results[check.id] = CheckResult(
+                    check.id,
+                    check.title,
+                    check.section,
+                    FAIL,
+                    ms(time.monotonic() - run_started),
+                    preflight_failure.message,
+                    observed,
+                    ErrorClass.TRANSPORT,
+                    await capture(ctx),
+                )
+                continue
             if abort is not None:
                 results[check.id] = _skip(check, abort)
                 continue

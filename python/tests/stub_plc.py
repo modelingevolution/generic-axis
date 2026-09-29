@@ -19,6 +19,7 @@ import os
 import struct
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field, fields
 from types import TracebackType
 
@@ -96,6 +97,12 @@ class StubPlc:
         self._scan: asyncio.Task[None] | None = None
         self.port = self.o.port
         self.writes: list[tuple[int, list[int]]] = []
+        self.requests = 0
+        """Requests received, answered or not."""
+        self.drop_next = 0
+        """Leave this many of the next requests unanswered (a lost answer: the client times out)."""
+        self.drop_if: Callable[[bytes], bool] | None = None
+        """Leave every request whose PDU matches unanswered (for example, every write of ``Heartbeat``)."""
         self._publish()
 
     # ----------------------------------------------------------------------------------------- lifecycle
@@ -123,6 +130,12 @@ class StubPlc:
                 pdu = await reader.readexactly(length - 1)
                 if unit != self.o.unit:
                     continue  # a unit nobody serves stays silent, as behind a gateway
+                self.requests += 1
+                if self.drop_next > 0:
+                    self.drop_next -= 1
+                    continue
+                if self.drop_if is not None and self.drop_if(pdu):
+                    continue
                 reply = self._handle(pdu)
                 writer.write(struct.pack(">HHHB", tid, 0, len(reply) + 1, unit) + reply)
                 await writer.drain()
