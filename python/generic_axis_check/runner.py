@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from .beat import BEAT_PERIOD_S, Beater
+from .beat import BEAT_PERIOD_S, Beater, LeaseLost
 from .checks import CHECKS, FAIL, OBSERVED, PASS, RETRIES_KEY, SKIPPED, Check, Outcome
 from .client import PlcClient, PlcError
 from .context import ACK_TIMEOUT_S, AckTimeout, CheckContext, LastRead, Options
@@ -177,6 +177,12 @@ async def cleanup(ctx: CheckContext) -> None:
     """
     journal = ctx.cleanup_log
     registers = ctx.registers
+    if ctx.beater.lease_lost is not None:
+        # Lead ruling #33: the axis has another owner. Stop our own beat; write nothing else to it.
+        await ctx.beater.stop()
+        journal.append("C+8 (Heartbeat): stopped beating")
+        log.warning("cleanup: %s Nothing else is written to an axis the checker no longer owns.", ctx.beater.lease_lost)
+        return
 
     async def step(label: str, action: Callable[[], object]) -> None:
         try:
@@ -250,6 +256,7 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
     registers = RegisterMap(options.command_base, options.status_base)
     client = PlcClient(options.host, options.port, options.unit, registers)
     ctx = CheckContext(client, registers, options, Beater(client, registers))
+    ctx.beater.expected_owner = lambda: options.owner_id if ctx.holds_lease else None
     started_at = datetime.now(UTC)
     run_started = time.monotonic()
     results: dict[str, CheckResult] = {}
@@ -331,7 +338,15 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
                     # § Error class of a FAIL, "lastRead": the read the check took at detection, before any write
                     # of its own undid the evidence (an edge clear, CHK-11's recovery); else a fresh read now.
                     last_read = ctx.evidence or await ctx.capture()
-                if outcome.defect:
+                lost = ctx.beater.lease_lost
+                if lost is not None:
+                    # A check may have caught the guard's exception itself: the lost lease still fails it. No
+                    # restore; every later check is SKIPPED with the reason; cleanup only stops the beat.
+                    lost_outcome = lease_lost_outcome(lost, ctx.registers)
+                    outcome = Outcome(FAIL, lost_outcome.message, outcome.observed, ErrorClass.PROTOCOL)
+                    last_read = last_read or await ctx.capture()
+                    abort = f"{check.id}: {lost_outcome.message.split(': ', 1)[1]}"
+                elif outcome.defect:
                     abort = f"not run: checker defect during {check.id}"
                 elif check.id >= FIRST_LEASED_CHECK and outcome.restore:
                     why = await _restore(ctx)
@@ -409,6 +424,13 @@ def normalize_observed(
     return {**{key: observed.get(key) for key in keys}, RETRIES_KEY: retries}
 
 
+def lease_lost_outcome(lost: LeaseLost, registers: RegisterMap) -> Outcome:
+    """protocol.md § Rules for every run, "Lease and beat between checks" (lead ruling #33)."""
+    read = Read("LeaseOwner", lost.owner, lost.expected)
+    message = format_message(ErrorClass.PROTOCOL, PROTOCOL_MISMATCH, "the lease did not hold", registers, (read,))
+    return Outcome(FAIL, message, {}, ErrorClass.PROTOCOL, PROTOCOL_MISMATCH, restore=False)
+
+
 def defect_outcome(exc: Exception, where: str) -> Outcome:
     """A defect of the checker, not a PLC finding: it carries no error class, because none of the four is what was
     seen (§ Errors and debugging: never claim a cause not observed). The traceback is in the log."""
@@ -416,8 +438,10 @@ def defect_outcome(exc: Exception, where: str) -> Outcome:
     return Outcome(FAIL, message, {}, None, defect=True)
 
 
-def exception_outcome(exc: PlcError | AckTimeout | LeaseHeld, registers: RegisterMap) -> Outcome:
+def exception_outcome(exc: PlcError | AckTimeout | LeaseHeld | LeaseLost, registers: RegisterMap) -> Outcome:
     """One cause, one class (protocol.md § Errors and debugging, rule 2)."""
+    if isinstance(exc, LeaseLost):
+        return lease_lost_outcome(exc, registers)
     if isinstance(exc, AckTimeout):
         message = format_message(ErrorClass.PROTOCOL, NOT_ACKNOWLEDGED, exc.what, registers, (), exc.detail)
         return Outcome(FAIL, message, {}, ErrorClass.PROTOCOL)  # the seq, ack and state are in the message
@@ -442,7 +466,7 @@ async def _run_one(check: Check, ctx: CheckContext) -> Outcome:
             # link, and the FAIL says so (rule 2).
             ctx.beater.raise_if_failed()
         return outcome
-    except (PlcError, AckTimeout, LeaseHeld) as exc:
+    except (PlcError, AckTimeout, LeaseHeld, LeaseLost) as exc:
         return exception_outcome(exc, ctx.registers)
     except Exception as exc:  # review #14: a checker defect ends in a report and exit 1, never a bare traceback
         log.exception("%s: checker defect", check.id)

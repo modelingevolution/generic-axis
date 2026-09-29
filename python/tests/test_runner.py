@@ -547,3 +547,33 @@ def test_an_unknown_observed_key_is_logged_at_error_never_dropped_silently(caplo
     assert [r.getMessage() for r in caplog.records] == [
         "CHK-02: observed key(s) outside § Observed values, not reported: bogus"
     ]
+
+
+@pytest.mark.timeout(60)
+async def test_a_lease_taken_by_another_owner_mid_run_fails_the_check_and_stops_all_writes(stub: StubPlc) -> None:
+    # GA-U-118.py (lead ruling #33, protocol.md "Lease and beat between checks"): LeaseOwner = 7 appears while CHK-08
+    # beats. CHK-08 FAILs Protocol/ProtocolMismatch, CHK-09…16 are SKIPPED with that reason, no restore, and after the
+    # beat saw it nothing more is written to the axis; exit 1.
+    started = asyncio.Event()
+
+    def progress(line: str) -> None:
+        if line.startswith("CHK-08 "):
+            started.set()
+
+    task = asyncio.create_task(run(options(stub, motion=True), progress))
+    await started.wait()
+    await asyncio.sleep(0.5)  # inside CHK-08's 2 s beat
+    stub.regs[MAP.lease_owner] = 7
+    changed_at = len(stub.writes)
+    report = await task
+    reason = "the lease did not hold. Read LeaseOwner (C+9 = 9) = 7, expected 65535."
+    chk08 = next(c for c in report.checks if c.id == "CHK-08")
+    assert (chk08.result, chk08.error_class) == (FAIL, "Protocol")
+    assert chk08.message == f"Protocol/ProtocolMismatch: {reason}"
+    assert all(c.result == SKIPPED and c.message == f"CHK-08: {reason}" for c in report.checks[8:])
+    assert report.exit_code == 1
+    after = stub.writes[changed_at:]
+    assert all(address == MAP.heartbeat for address, _ in after), after
+    assert len(after) <= 1  # at most the beat already in flight when LeaseOwner changed
+    assert report.cleanup == ["C+8 (Heartbeat): stopped beating"]
+    assert stub.regs[MAP.lease_owner] == 7

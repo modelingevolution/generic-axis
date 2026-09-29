@@ -203,8 +203,8 @@ class CheckContext:
     async def release_lease(self) -> None:
         """Clean release (protocol.md § FR-11): stop beating, then ``LeaseOwner = 0``."""
         await self.beater.stop()
-        await self.client.write(self.registers.lease_owner, [0])
         self.holds_lease = False
+        await self.client.write(self.registers.lease_owner, [0])
 
     async def clear_watchdog_fault(self) -> None:
         await self.client.write(self.registers.watchdog_fault, [0])

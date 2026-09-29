@@ -491,8 +491,8 @@ async def chk10(ctx: CheckContext) -> Outcome:
     await ctx.clear_watchdog_fault()
     _, trips_before = await ctx.watchdog()
     await beat_for(ctx, ARMED_BEAT_S)
+    ctx.holds_lease = False  # before the write: the beat checks LeaseOwner while it holds the lease
     await ctx.client.write(ctx.registers.lease_owner, [0])
-    ctx.holds_lease = False
     await ctx.beater.stop()
     await asyncio.sleep(RELEASE_WAIT_S)
     fault, trips = await ctx.watchdog()
