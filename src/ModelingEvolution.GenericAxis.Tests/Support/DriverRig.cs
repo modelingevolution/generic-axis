@@ -19,7 +19,7 @@ internal sealed class DriverRig : IAsyncDisposable
     public static readonly TimeSpan RealTimeout = TimeSpan.FromSeconds(10);
 
     public DriverRig(Func<GenericAxisOptions, GenericAxisOptions>? configure = null, AxisKind kind = AxisKind.Linear,
-        RegisterMap? map = null)
+        RegisterMap? map = null, ILoggerProvider? extraLogger = null)
     {
         Plc = new FakePlcChannel(map);
         Plc.MapVersion = RegisterMap.Version;
@@ -37,7 +37,10 @@ internal sealed class DriverRig : IAsyncDisposable
         Options = configure?.Invoke(options) ?? options;
 
         LoggerFactory = Microsoft.Extensions.Logging.LoggerFactory.Create(b =>
-            b.SetMinimumLevel(LogLevel.Trace).AddProvider(new FakeLoggerProvider(Logs)));
+        {
+            b.SetMinimumLevel(LogLevel.Trace).AddProvider(new FakeLoggerProvider(Logs));
+            if (extraLogger is not null) b.AddProvider(extraLogger);
+        });
 
         Device = kind == AxisKind.Linear
             ? new ModbusLinearTrack(DeviceId.New("GenericLinearTrack"), Options, Owner, LoggerFactory, Time, (_, _) => Plc)

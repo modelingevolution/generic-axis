@@ -115,6 +115,10 @@ internal sealed class AxisEngine : IDisposable
         get { lock (_sync) return _seq; }
     }
 
+    /// <summary>Whether the calling thread holds the engine lock — tests assert no log line and no event is raised
+    /// under it (review #9).</summary>
+    internal bool LockHeldByCurrentThread => _sync.IsHeldByCurrentThread;
+
     /// <summary>The name of the verb in flight, if any.</summary>
     public string? RunningVerb
     {
@@ -265,6 +269,7 @@ internal sealed class AxisEngine : IDisposable
             Name, _map.Describe(_map.Command), word, _map.Describe(_map.CommandSeq), s.CommandAck, state);
 
         AxisStatus status;
+        Action? limitLog;
         lock (_sync)
         {
             _seq = s.CommandAck;
@@ -275,11 +280,12 @@ internal sealed class AxisEngine : IDisposable
             _detaching = false;
             _attached = true;
             _tickNo++;
-            UpdateLimits(s, attach: true);
+            limitLog = UpdateLimits(s, attach: true);
             status = StatusOf();
             SignalLocked();
         }
 
+        limitLog?.Invoke();
         RaiseStatus(status);
     }
 
@@ -329,6 +335,7 @@ internal sealed class AxisEngine : IDisposable
         bool leaseLost, overlayRecovered;
         MotionError? recoveredFrom;
         string? mismatch = null;
+        Action? limitLog;
         var violation = BlockViolation(_map, snapshot.Status, out var mapVersion);
         lock (_sync)
         {
@@ -366,7 +373,7 @@ internal sealed class AxisEngine : IDisposable
                 overlayRecovered = false;
             }
 
-            UpdateLimits(snapshot.Status, attach: false);
+            limitLog = UpdateLimits(snapshot.Status, attach: false);
             newState = StateOf();
             status = StatusOf();
             SignalLocked();
@@ -377,6 +384,7 @@ internal sealed class AxisEngine : IDisposable
                 "LEASE LOST: another commander took the axis; commanding stopped, the axis shows ErrorStop / LeaseHeld "
                 + "until reconnect", AxisErrors.Read(_map, "LeaseOwner", _map.LeaseOwner, snapshot.LeaseOwner,
                     _ownerId.ToString(Inv))));
+        limitLog?.Invoke();
         if (mismatch is not null)
             _logger?.LogError("{Axis}: state {Old} → ErrorStop (overlay ProtocolMismatch). {Message}", Name, oldState,
                 mismatch);
@@ -434,35 +442,38 @@ internal sealed class AxisEngine : IDisposable
             raw.FaultCode, (ushort)raw.Flags);
     }
 
-    private void UpdateLimits(StatusBlock s, bool attach)
+    /// <summary>Recomputes the limits (under the lock) and returns what to log, to be run after the lock is released
+    /// (review #9: no logging under <c>_sync</c>).</summary>
+    private Action? UpdateLimits(StatusBlock s, bool attach)
     {
         var next = ComputeLimits(s, _options);
         var changed = next != _limits;
         _limits = next;
-        if (!changed && !attach) return;
+        if (!changed && !attach) return null;
 
-        switch (next.Units.Source)
+        var units = next.Units;
+        switch (units.Source)
         {
             case LimitSource.Plc:
-                var mismatch = MismatchText(next.Units, _options);
-                if (mismatch is not null && mismatch != _limitWarning)
-                    _logger?.LogWarning("{Axis}: the PLC publishes limits that differ from the configured ones — {Mismatch}. "
-                        + "The PLC's values are used", Name, mismatch);
+                var mismatch = MismatchText(units, _options);
+                var warn = mismatch is not null && mismatch != _limitWarning;
                 _limitWarning = mismatch;
-                break;
+                return warn
+                    ? () => _logger?.LogWarning("{Axis}: the PLC publishes limits that differ from the configured ones — "
+                        + "{Mismatch}. The PLC's values are used", Name, mismatch)
+                    : null;
             case LimitSource.Configuration:
-                _logger?.LogInformation(
+                return () => _logger?.LogInformation(
                     "{Axis}: the PLC publishes no limits (S+8…S+13 all 0); using the configured values TravelMin {Min} "
                     + "{Unit}, TravelMax {Max} {Unit}, MaxVelocity {MaxV} {Speed}",
-                    Name, Fmt(next.Units.TravelMin), _unitSymbol, Fmt(next.Units.TravelMax), _unitSymbol,
-                    Fmt(next.Units.MaxVelocity), _speedSymbol);
-                break;
+                    Name, Fmt(units.TravelMin), _unitSymbol, Fmt(units.TravelMax), _unitSymbol,
+                    Fmt(units.MaxVelocity), _speedSymbol);
             default:
                 // An invalid publication is the ProtocolMismatch overlay, logged at Error by OnTick (review #7).
-                if (!s.LimitsPublished)
-                    _logger?.LogWarning("{Axis}: no limit source — the PLC publishes none and none are configured. The "
-                        + "axis reports status and homes; every move is refused", Name);
-                break;
+                return s.LimitsPublished
+                    ? null
+                    : () => _logger?.LogWarning("{Axis}: no limit source — the PLC publishes none and none are "
+                        + "configured. The axis reports status and homes; every move is refused", Name);
         }
     }
 
@@ -686,8 +697,10 @@ internal sealed class AxisEngine : IDisposable
     /// <c>WatchdogFault</c> if set, and from ErrorStop write Enable 0 then the Reset edge; done when the PLC leaves
     /// ErrorStop (ADR-9: it lands in Disabled). Never clears LeaseHeld.
     /// </summary>
-    public Task ResetAsync(CancellationToken ct) =>
-        RunVerbAsync("ResetAsync", (_, _) =>
+    public Task ResetAsync(CancellationToken ct)
+    {
+        MotionError? cleared = null;
+        return RunVerbAsync("ResetAsync", (_, _) =>
             {
                 switch (_overlay)
                 {
@@ -702,15 +715,22 @@ internal sealed class AxisEngine : IDisposable
                         throw new MotionException(MotionError.ProtocolMismatch,
                             $"{overlay.Message} ResetAsync refused: no tick has read a sane status block since; "
                             + $"last read {LastBlockText()}.", Name);
-                    case { Error: MotionError.CommunicationLost or MotionError.ProtocolMismatch } cleared:
+                    case { Error: MotionError.CommunicationLost or MotionError.ProtocolMismatch } overlay:
                         _overlay = null;
-                        _logger?.LogInformation("{Axis}: {Overlay} overlay cleared by ResetAsync", Name, cleared.Error);
+                        cleared = overlay.Error;
                         SignalLocked();
                         break;
                 }
             },
             async token =>
             {
+                // Review #9: the overlay change is logged and published after the lock was released.
+                if (cleared is { } error)
+                {
+                    _logger?.LogInformation("{Axis}: {Overlay} overlay cleared by ResetAsync", Name, error);
+                    RaiseStatus(Status);
+                }
+
                 PlcSnapshot snapshot;
                 lock (_sync) snapshot = _snapshot!.Value;
 
@@ -734,6 +754,7 @@ internal sealed class AxisEngine : IDisposable
                         StateRead("not 7 (ErrorStop)"), FaultRead()),
                     token);
             }, ct, requireConnection: false);
+    }
 
     /// <summary>The registers the protocol checks on every tick, as last read (for a refused Reset).</summary>
     private string LastBlockText()
