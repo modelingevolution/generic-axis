@@ -24,7 +24,6 @@ from .context import (
 from .errors import (
     DRIVE_FAULT,
     HOME_LATCH_FAILED,
-    LEASE_HELD,
     MOTION_FAILED,
     PROTOCOL_MISMATCH,
     ErrorClass,
@@ -112,12 +111,12 @@ def travel_timeout_s(distance: int, velocity: int) -> float:
 class Outcome:
     result: str
     message: str
-    observed: dict[str, int] = field(default_factory=dict)
+    observed: dict[str, int | None] = field(default_factory=dict)
     error_class: ErrorClass | None = None
     """Set on a FAIL (protocol.md § Report schema, ``errorClass``)."""
 
 
-def passed(message: str, **observed: int) -> Outcome:
+def passed(message: str, **observed: int | None) -> Outcome:
     return Outcome(PASS, message, dict(observed))
 
 
@@ -127,24 +126,24 @@ def fail(
     motion_error: str,
     what: str,
     *reads: Read,
-    **observed: int,
+    **observed: int | None,
 ) -> Outcome:
     """A FAIL whose message has the protocol's shape (§ Errors and debugging, rule 1)."""
     message = format_message(error_class, motion_error, what, ctx.registers, reads)
     return Outcome(FAIL, message, dict(observed), error_class)
 
 
-def mismatch(ctx: CheckContext, what: str, *reads: Read, **observed: int) -> Outcome:
+def mismatch(ctx: CheckContext, what: str, *reads: Read, **observed: int | None) -> Outcome:
     """Protocol/ProtocolMismatch: the PLC answered, but not per protocol.md."""
     return fail(ctx, ErrorClass.PROTOCOL, PROTOCOL_MISMATCH, what, *reads, **observed)
 
 
-def motion_failed(ctx: CheckContext, what: str, *reads: Read, **observed: int) -> Outcome:
+def motion_failed(ctx: CheckContext, what: str, *reads: Read, **observed: int | None) -> Outcome:
     """Machine/MotionFailed: an accepted command the machine did not carry out within the budget."""
     return fail(ctx, ErrorClass.MACHINE, MOTION_FAILED, what, *reads, **observed)
 
 
-def faulted(ctx: CheckContext, what: str, status: StatusBlock, **observed: int) -> Outcome:
+def faulted(ctx: CheckContext, what: str, status: StatusBlock, **observed: int | None) -> Outcome:
     """The PLC reports ErrorStop: the class and MotionError follow ``FaultCode`` (a 0 code is a mismatch)."""
     error_class, motion_error = machine_error(status)
     reads = (Read("State", status.state), Read("FaultCode", status.fault_code))
@@ -152,6 +151,27 @@ def faulted(ctx: CheckContext, what: str, status: StatusBlock, **observed: int) 
 
 
 Run = Callable[[CheckContext], Awaitable[Outcome]]
+
+OBSERVED: dict[str, tuple[str, ...]] = {
+    # protocol.md § Observed values: exactly these keys, in this order; the runner appends ``retries``.
+    "CHK-01": ("connectMs", "readMs"),
+    "CHK-02": ("mapVersion",),
+    "CHK-03": ("travelMin", "travelMax", "maxVelocity"),
+    "CHK-04": ("reads", "slowestMs", "invalidStates"),
+    "CHK-05": ("firstReadBack", "secondReadBack", "secondReadBackAfter1s"),
+    "CHK-06": ("enableAckMs", "enableStateMs", "disableAckMs", "disableStateMs"),
+    "CHK-07": ("ackMs", "state", "faultCode"),
+    "CHK-08": ("tripAfterMs", "watchdogTrips", "faultCode", "state"),
+    "CHK-09": ("setupTripAfterMs", "tripsWhileLatched", "tripsWhileBeating", "secondTripAfterMs", "watchdogTrips"),
+    "CHK-10": ("tripsAfterRelease", "watchdogFault"),
+    "CHK-11": ("ownIdReadBack", "refusedAfterMs", "leaseOwnerAfterRefusal", "takenAfterMs"),
+    "CHK-12": ("ackMs", "homedAfterMs", "faultCode"),
+    "CHK-13": ("target", "ackMs", "arrivedAfterMs", "position", "positionError"),
+    "CHK-14": ("commandedVelocity", "velocityAtStop", "ackMs", "haltMs"),
+    "CHK-15": ("commandedVelocity", "ackMs", "maxVelocitySeen", "stopAckMs", "haltMs"),
+    "CHK-16": ("commandedVelocity", "tripAfterMs", "haltAfterTripMs", "homedAfterTrip"),
+}
+RETRIES_KEY = "retries"
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,7 +219,7 @@ async def watch_trip(ctx: CheckContext, last_beat: float, trips_before: int, *, 
         await asyncio.sleep(POLL_PERIOD_S)
 
 
-def judge_trip(ctx: CheckContext, watch: TripWatch, label: str, **observed: int) -> Outcome | None:
+def judge_trip(ctx: CheckContext, watch: TripWatch, label: str, **observed: int | None) -> Outcome | None:
     """A Protocol mismatch for a trip outside the 1.0–1.5 s window (FR-11), or None when it is inside."""
     reads = (
         Read("State", watch.status.state),
@@ -244,7 +264,7 @@ async def ensure_enabled(ctx: CheckContext) -> Outcome | None:
     if not poll.met:
         what = f"no Standstill {STATE_TIMEOUT_S:g} s after Enable 1"
         read = Read("State", poll.status.state, int(AxisState.STANDSTILL))
-        return fail(ctx, ErrorClass.MACHINE, DRIVE_FAULT, what, read, state=poll.status.state)
+        return fail(ctx, ErrorClass.MACHINE, DRIVE_FAULT, what, read)
     return None
 
 
@@ -257,12 +277,16 @@ def percent_of(value: int, percent: int) -> int:
 
 async def chk01(ctx: CheckContext) -> Outcome:
     if not ctx.client.connected:
+        started = time.monotonic()
         await ctx.client.connect()
+        ctx.connect_ms = ms(time.monotonic() - started)
     started = time.monotonic()
     await ctx.status()
+    read_ms = ms(time.monotonic() - started)
     return passed(
         f"connected to {ctx.client.host}:{ctx.client.port}, unit {ctx.client.unit} answers",
-        roundTripMs=ms(time.monotonic() - started),
+        connectMs=ctx.connect_ms,
+        readMs=read_ms,
     )
 
 
@@ -302,7 +326,7 @@ async def chk04(ctx: CheckContext) -> Outcome:
             bad_states.append(status.state)
         next_at += CADENCE_PERIOD_S
         await asyncio.sleep(max(0.0, next_at - time.monotonic()))
-    observed = {"reads": CADENCE_READS, "slowestRoundTripMs": slowest, "invalidStates": len(bad_states)}
+    observed = {"reads": CADENCE_READS, "slowestMs": slowest, "invalidStates": len(bad_states)}
     if bad_states:
         what = f"State outside {{0,1,2,3,4,6,7}} in {len(bad_states)} of {CADENCE_READS} reads"
         return mismatch(ctx, what, Read("State", bad_states[0]), **observed)
@@ -314,18 +338,18 @@ async def chk04(ctx: CheckContext) -> Outcome:
 
 async def chk05(ctx: CheckContext) -> Outcome:
     address = ctx.registers.target_position
-    observed: dict[str, int] = {}
+    observed: dict[str, int | None] = {}
     for index, (value, words) in enumerate(WORD_ORDER_VALUES, start=1):
         assert to_words(value) == words  # the table's words are the codec's words, by construction
         await ctx.client.write(address, list(words))
         back = await ctx.client.read(address, 2)
-        observed[f"readBack{index}Low"], observed[f"readBack{index}High"] = back
+        observed[("firstReadBack", "secondReadBack")[index - 1]] = from_words(*back)
         if tuple(back) != words:
             what = f"wrote {value} as {list(map(hex, words))} to C+2…C+3, read back {list(map(hex, back))}"
             return mismatch(ctx, what, Read("TargetPosition", from_words(*back), value), **observed)
     await asyncio.sleep(OWNERSHIP_WAIT_S)
     back = await ctx.client.read(address, 2)
-    observed["afterWaitLow"], observed["afterWaitHigh"] = back
+    observed["secondReadBackAfter1s"] = from_words(*back)
     last_words = WORD_ORDER_VALUES[-1][1]
     if tuple(back) != last_words:
         what = f"the PLC changed a driver-owned register within {OWNERSHIP_WAIT_S:g} s"
@@ -344,7 +368,7 @@ async def chk06(ctx: CheckContext) -> Outcome:
     if status.state not in (AxisState.DISABLED, AxisState.STANDSTILL):
         status = await ctx.recover()
     if status.state not in (AxisState.DISABLED, AxisState.STANDSTILL):
-        return faulted(ctx, "precondition: the axis did not leave ErrorStop or motion", status, state=status.state)
+        return faulted(ctx, "precondition: the axis did not leave ErrorStop or motion", status)
 
     on = await ctx.command(Command.ENABLE)
     on_state = await wait_for(
@@ -408,7 +432,6 @@ async def chk08(ctx: CheckContext) -> Outcome:
         "watchdogTrips": watch.trips,
         "faultCode": watch.status.fault_code,
         "state": watch.status.state,
-        "watchdogFault": watch.watchdog_fault,
     }
     problem = judge_trip(ctx, watch, "stalled beat", **observed)
     if problem:
@@ -422,7 +445,7 @@ async def chk09(ctx: CheckContext) -> Outcome:
     _, trips0 = await ctx.watchdog()
     await beat_for(ctx, ARMED_BEAT_S)
     first = await watch_trip(ctx, await ctx.beater.stop() or time.monotonic(), trips0)
-    observed = {"firstTripMs": first.after_ms}
+    observed = {"setupTripAfterMs": first.after_ms}
     problem = judge_trip(ctx, first, "setup", **observed)
     if problem:
         return problem
@@ -450,7 +473,7 @@ async def chk09(ctx: CheckContext) -> Outcome:
         reads = (Read("WatchdogFault", fault, 0), Read("WatchdogTrips", trips_beating, trips1))
         return mismatch(ctx, "tripped while beating after the clear", *reads, **observed)
     second = await watch_trip(ctx, await ctx.beater.stop() or time.monotonic(), trips1)
-    observed |= {"secondTripMs": second.after_ms, "watchdogTrips": second.trips}
+    observed |= {"secondTripAfterMs": second.after_ms, "watchdogTrips": second.trips}
     problem = judge_trip(ctx, second, "after clear", **observed)
     if problem:
         return problem
@@ -468,7 +491,7 @@ async def chk10(ctx: CheckContext) -> Outcome:
     await ctx.beater.stop()
     await asyncio.sleep(RELEASE_WAIT_S)
     fault, trips = await ctx.watchdog()
-    observed = {"watchdogFault": fault, "tripsDelta": (trips - trips_before) & 0xFFFF}
+    observed = {"watchdogFault": fault, "tripsAfterRelease": (trips - trips_before) & 0xFFFF}
     if fault or trips != trips_before:
         reads = (Read("WatchdogFault", fault, 0), Read("WatchdogTrips", trips, trips_before))
         return mismatch(ctx, "tripped after a clean release (LeaseOwner = 0)", *reads, **observed)
@@ -479,13 +502,13 @@ async def chk11(ctx: CheckContext) -> Outcome:
     registers, own = ctx.registers, ctx.options.owner_id
     if ctx.holds_lease:
         await ctx.release_lease()
-    observed: dict[str, int] = {}
+    observed: dict[str, int | None] = {}
 
     # (a) unowned → taken, read back, released.
     await ctx.client.write(registers.lease_owner, [0])
     await acquire(ctx.client, registers, own, LEASE_TIMEOUT_S)
     (read_back,) = await ctx.client.read(registers.lease_owner, 1)
-    observed["aReadBack"] = read_back
+    observed["ownIdReadBack"] = read_back
     await ctx.client.write(registers.lease_owner, [0])
     if read_back != own:
         return mismatch(ctx, "(a) the lease did not read back", Read("LeaseOwner", read_back, own), **observed)
@@ -499,16 +522,16 @@ async def chk11(ctx: CheckContext) -> Outcome:
         try:
             await acquire(ctx.client, registers, own, LEASE_TIMEOUT_S)
         except LeaseHeld as held:
-            observed["bRefusedAfterMs"] = ms(time.monotonic() - started)
-            observed["bRefusedOwner"] = held.owner
+            observed["refusedAfterMs"] = ms(time.monotonic() - started)
+            refused_owner = held.owner
         else:
             ctx.holds_lease = True
             what = f"(b) the lease client saw no beat from owner {FOREIGN_OWNER_ID} and took the lease"
             return mismatch(ctx, what, **observed)
         (owner_b,) = await ctx.client.read(registers.lease_owner, 1)
-        observed["bLeaseOwner"] = owner_b
-        if observed["bRefusedOwner"] != FOREIGN_OWNER_ID or owner_b != FOREIGN_OWNER_ID:
-            what = f"(b) the refusal named owner {observed['bRefusedOwner']}"
+        observed["leaseOwnerAfterRefusal"] = owner_b
+        if refused_owner != FOREIGN_OWNER_ID or owner_b != FOREIGN_OWNER_ID:
+            what = f"(b) the refusal named owner {refused_owner}"
             return mismatch(ctx, what, Read("LeaseOwner", owner_b, FOREIGN_OWNER_ID), **observed)
 
         # (c) the incumbent dies while the client watches → taken within 2 s of its last beat.
@@ -520,9 +543,10 @@ async def chk11(ctx: CheckContext) -> Outcome:
             taken = await take
         except LeaseHeld as held:
             what = f"(c) not taken {LEASE_TIMEOUT_S:g} s after the incumbent stopped beating"
-            return fail(ctx, ErrorClass.COMMANDER, LEASE_HELD, what, Read("LeaseOwner", held.owner, own), **observed)
+            what += ": Heartbeat kept changing after the incumbent stopped writing it, or LeaseOwner did not hold"
+            return mismatch(ctx, what, Read("LeaseOwner", held.owner, own), **observed)
         ctx.holds_lease = True
-        observed["cTakenAfterMs"] = ms(taken.taken_at - last_beat)
+        observed["takenAfterMs"] = ms(taken.taken_at - last_beat)
     finally:
         await incumbent.stop()
         # "Any trip caused by (c) is cleaned up": the incumbent's stall arms and trips the PLC watchdog.
@@ -533,12 +557,14 @@ async def chk11(ctx: CheckContext) -> Outcome:
         if not ctx.session_lease and ctx.holds_lease:
             await ctx.release_lease()
 
-    if observed["cTakenAfterMs"] > LEASE_TAKEOVER_MS:
-        what = f"(c) taken {observed['cTakenAfterMs']} ms after the incumbent's last beat, > {LEASE_TAKEOVER_MS} ms"
-        return fail(ctx, ErrorClass.COMMANDER, LEASE_HELD, what, **observed)
+    taken_ms = observed["takenAfterMs"]
+    assert taken_ms is not None  # set by (c), which returns early when the lease was not taken
+    if taken_ms > LEASE_TAKEOVER_MS:
+        what = f"(c) taken {taken_ms} ms after the incumbent's last beat, > {LEASE_TAKEOVER_MS} ms"
+        return mismatch(ctx, what, **observed)
     return passed(
         f"(a) {read_back}; (b) refused, LeaseHeld {FOREIGN_OWNER_ID}; (c) taken after "
-        f"{observed['cTakenAfterMs']} ms",
+        f"{observed['takenAfterMs']} ms",
         **observed,
     )
 
@@ -548,6 +574,11 @@ async def chk12(ctx: CheckContext) -> Outcome:
     if not_ready:
         return not_ready
     ack = await ctx.command(Command.ENABLE | Command.HOME)
+    shown = ack.poll.status
+    if shown.state != AxisState.HOMING and not (shown.state == AxisState.STANDSTILL and shown.homed):
+        # "Ack in the scan that enters the state": Homing, or already done in that scan (Standstill with Homed).
+        what = "the Home ack did not show its state (ack in the scan that enters it)"
+        return mismatch(ctx, what, Read("State", shown.state, int(AxisState.HOMING)), ackMs=ack.poll.elapsed_ms)
     done = await wait_for(
         ctx.client,
         ctx.registers,
@@ -558,10 +589,8 @@ async def chk12(ctx: CheckContext) -> Outcome:
     s = done.status
     observed = {
         "ackMs": ack.poll.elapsed_ms,
-        "homeMs": done.elapsed_ms,
+        "homedAfterMs": done.elapsed_ms,
         "faultCode": s.fault_code,
-        "state": s.state,
-        "homed": int(s.homed),
     }
     if not done.met:
         what = f"not homed {HOME_TIMEOUT_S:g} s after Home"
@@ -581,12 +610,7 @@ async def chk13(ctx: CheckContext) -> Outcome:
     velocity = percent_of(start.max_velocity, DISCRETE_SPEED_PERCENT)
     await ctx.write_parameters(target, velocity, 0)
     ack = await ctx.command(Command.ENABLE | Command.MOVE_ABSOLUTE)
-    observed = {
-        "targetRaw": target,
-        "velocityRaw": velocity,
-        "ackMs": ack.poll.elapsed_ms,
-        "ackState": ack.poll.status.state,
-    }
+    observed = {"target": target, "ackMs": ack.poll.elapsed_ms}
     if ack.poll.status.state != AxisState.DISCRETE_MOTION:
         what = "the MoveAbsolute ack did not show its state (ack in the scan that enters it)"
         return mismatch(ctx, what, Read("State", ack.poll.status.state, int(AxisState.DISCRETE_MOTION)), **observed)
@@ -599,7 +623,7 @@ async def chk13(ctx: CheckContext) -> Outcome:
     )
     s = done.status
     error = abs(s.actual_position - target)
-    observed |= {"actualRaw": s.actual_position, "errorRaw": error, "durationMs": done.elapsed_ms}
+    observed |= {"arrivedAfterMs": done.elapsed_ms, "position": s.actual_position, "positionError": error}
     if not done.met or s.state != AxisState.STANDSTILL:
         if s.state == AxisState.ERROR_STOP:
             return faulted(ctx, "MoveAbsolute ended in ErrorStop", s, **observed)
@@ -617,11 +641,11 @@ async def chk13(ctx: CheckContext) -> Outcome:
 
 
 async def stop_and_measure(
-    ctx: CheckContext, observed: dict[str, int], *, require_zero_velocity: bool
+    ctx: CheckContext, observed: dict[str, int | None], *, require_zero_velocity: bool, ack_key: str
 ) -> Outcome | None:
     """Write Stop (priority edge) and wait ≤ 200 ms for Standstill (CHK-14, CHK-15)."""
     ack = await ctx.command(ctx.enabled | Command.STOP)
-    observed["stopAckMs"] = ack.poll.elapsed_ms
+    observed[ack_key] = ack.poll.elapsed_ms
 
     def halted(s: StatusBlock) -> bool:
         return s.state == AxisState.STANDSTILL and (s.actual_velocity == 0 or not require_zero_velocity)
@@ -650,20 +674,24 @@ async def chk14(ctx: CheckContext) -> Outcome:
     target = start.travel_min + (start.travel_max - start.travel_min) // 2
     velocity = percent_of(start.max_velocity, DISCRETE_SPEED_PERCENT)
     await ctx.write_parameters(target, velocity, 0)
-    await ctx.command(Command.ENABLE | Command.MOVE_ABSOLUTE)
+    move = await ctx.command(Command.ENABLE | Command.MOVE_ABSOLUTE)
+    if move.poll.status.state != AxisState.DISCRETE_MOTION:
+        what = "the MoveAbsolute ack did not show its state (ack in the scan that enters it)"
+        read = Read("State", move.poll.status.state, int(AxisState.DISCRETE_MOTION))
+        return mismatch(ctx, what, read, commandedVelocity=velocity)
     cruise = await wait_for(
         ctx.client,
         ctx.registers,
         lambda s: s.state != AxisState.DISCRETE_MOTION or abs(s.actual_velocity) >= CRUISE_FRACTION * velocity,
         CRUISE_WAIT_S,
     )
-    observed = {"targetRaw": target, "velocityRaw": velocity, "velocityAtStopRaw": cruise.status.actual_velocity}
+    observed: dict[str, int | None] = {"commandedVelocity": velocity, "velocityAtStop": cruise.status.actual_velocity}
     if cruise.status.state != AxisState.DISCRETE_MOTION:
         if cruise.status.state == AxisState.ERROR_STOP:
             return faulted(ctx, "the move ended in ErrorStop before Stop", cruise.status, **observed)
         read = Read("State", cruise.status.state, int(AxisState.DISCRETE_MOTION))
         return motion_failed(ctx, "the move ended before Stop", read, **observed)
-    problem = await stop_and_measure(ctx, observed, require_zero_velocity=True)
+    problem = await stop_and_measure(ctx, observed, require_zero_velocity=True, ack_key="ackMs")
     if problem:
         return problem
     return passed(f"halted {observed['haltMs']} ms after Stop", **observed)
@@ -677,7 +705,7 @@ async def chk15(ctx: CheckContext) -> Outcome:
     velocity = percent_of(start.max_velocity, JOG_SPEED_PERCENT)
     await ctx.write_parameters(start.actual_position, velocity, 0)
     ack = await ctx.command(Command.ENABLE | Command.MOVE_VELOCITY)
-    observed = {"velocityRaw": velocity, "ackMs": ack.poll.elapsed_ms, "ackState": ack.poll.status.state}
+    observed: dict[str, int | None] = {"commandedVelocity": velocity, "ackMs": ack.poll.elapsed_ms}
     if ack.poll.status.state != AxisState.CONTINUOUS_MOTION:
         what = "the MoveVelocity ack did not show its state (ack in the scan that enters it)"
         return mismatch(ctx, what, Read("State", ack.poll.status.state, int(AxisState.CONTINUOUS_MOTION)), **observed)
@@ -691,13 +719,13 @@ async def chk15(ctx: CheckContext) -> Outcome:
             left_state = s.state
             break
         await asyncio.sleep(POLL_PERIOD_S)
-    observed["peakVelocityRaw"] = peak
+    observed["maxVelocitySeen"] = peak
     if left_state is not None:
         read = Read("State", left_state, int(AxisState.CONTINUOUS_MOTION))
         return motion_failed(ctx, "left ContinuousMotion during the run", read, **observed)
     if peak <= 0:
         return motion_failed(ctx, "ActualVelocity never > 0 during the run", Read("ActualVelocity", peak), **observed)
-    problem = await stop_and_measure(ctx, observed, require_zero_velocity=False)
+    problem = await stop_and_measure(ctx, observed, require_zero_velocity=False, ack_key="stopAckMs")
     if problem:
         return problem
     return passed(f"jogged at up to {peak / UNITS:g}/s; Standstill {observed['haltMs']} ms after Stop", **observed)
@@ -717,7 +745,7 @@ async def chk16(ctx: CheckContext) -> Outcome:
         lambda s: s.state != AxisState.CONTINUOUS_MOTION or s.actual_velocity > 0,
         CRUISE_WAIT_S,
     )
-    observed = {"velocityRaw": velocity, "velocityAtKillRaw": moving.status.actual_velocity}
+    observed = {"commandedVelocity": velocity}
     if moving.status.state != AxisState.CONTINUOUS_MOTION or moving.status.actual_velocity <= 0:
         reads = (
             Read("State", moving.status.state, int(AxisState.CONTINUOUS_MOTION)),
@@ -727,12 +755,12 @@ async def chk16(ctx: CheckContext) -> Outcome:
     last_beat = await ctx.beater.stop()
     assert last_beat is not None
     watch = await watch_trip(ctx, last_beat, 0, need_latch=False)
-    observed |= {"tripAfterMs": watch.after_ms, "faultCode": watch.status.fault_code, "state": watch.status.state}
+    observed |= {"tripAfterMs": watch.after_ms}
     problem = judge_trip(ctx, watch, "kill", **observed)
     if problem:
         return problem
     halt = await wait_for(ctx.client, ctx.registers, lambda s: s.actual_velocity == 0, STOP_HALT_S, since=watch.stamp)
-    observed |= {"haltAfterTripMs": halt.elapsed_ms, "homed": int(halt.status.homed)}
+    observed |= {"haltAfterTripMs": halt.elapsed_ms, "homedAfterTrip": int(halt.status.homed)}
     if not halt.met:
         what = f"still moving {ms(STOP_HALT_S)} ms after the trip"
         return motion_failed(ctx, what, Read("ActualVelocity", halt.status.actual_velocity, 0), **observed)

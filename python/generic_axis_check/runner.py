@@ -12,13 +12,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from .beat import BEAT_PERIOD_S, Beater
-from .checks import CHECKS, FAIL, PASS, SKIPPED, Check, Outcome
+from .checks import CHECKS, FAIL, OBSERVED, PASS, RETRIES_KEY, SKIPPED, Check, Outcome
 from .client import PlcClient, PlcError
 from .context import AckTimeout, CheckContext, Options
 from .errors import (
-    CANCELLED,
     COMMUNICATION_LOST,
-    LEASE_HELD,
     NOT_ACKNOWLEDGED,
     PROTOCOL_MISMATCH,
     ErrorClass,
@@ -39,6 +37,8 @@ from .registers import (
     RegisterMap,
     next_nonzero,
 )
+
+INTERRUPTED = "INTERRUPTED"
 
 PREFLIGHT_WATCH_S = 1.0
 """protocol.md "Pre-flight": read ``LeaseOwner`` and watch ``Heartbeat`` for 1 s."""
@@ -65,7 +65,7 @@ class CheckResult:
     result: str
     duration_ms: int
     message: str
-    observed: dict[str, int] = field(default_factory=dict)
+    observed: dict[str, int | None] = field(default_factory=dict)
     error_class: ErrorClass | None = None
     last_read: LastRead | None = None
 
@@ -79,6 +79,8 @@ class Report:
     cleanup: list[str]
     refused: bool = False
     interrupted: bool = False
+    unknown_observed: set[str] = field(default_factory=set)
+    """``check id.key`` a check reported that § Observed values does not list (dropped; a defect tests catch)."""
 
     @property
     def failed(self) -> int:
@@ -86,14 +88,19 @@ class Report:
 
     @property
     def result(self) -> str:
-        """protocol.md § Report schema: ``FAIL`` if any check failed, otherwise ``PASS``."""
+        """protocol.md § Report schema: ``INTERRUPTED`` if the operator interrupted the run, otherwise ``FAIL`` if
+        any check failed, otherwise ``PASS``."""
+        if self.interrupted:
+            return INTERRUPTED
         return FAIL if self.failed else PASS
 
     @property
     def exit_code(self) -> int:
-        """protocol.md: 0 = no FAIL · 1 = at least one FAIL · 3 = refused to start (2 is argparse's usage error)."""
+        """protocol.md: 0 no FAIL · 1 at least one FAIL · 3 refused to start · 4 interrupted (2 is argparse's)."""
         if self.refused:
             return 3
+        if self.interrupted:
+            return 4
         return 1 if self.failed else 0
 
 
@@ -114,20 +121,24 @@ def prerequisite_problem(check: Check, results: dict[str, CheckResult]) -> str |
     return None
 
 
-async def preflight(client: PlcClient, registers: RegisterMap, owner_id: int) -> int | None:
-    """Return the owner id of a live foreign commander, or None. Writes nothing (ADR-33)."""
+async def preflight(client: PlcClient, registers: RegisterMap) -> str | None:
+    """protocol.md "Pre-flight": watch ``Heartbeat`` for 1 s before the tool's own first beat. Any change, whatever
+    ``LeaseOwner`` holds, is a live commander: returns what was seen, or None. Writes nothing (ADR-33)."""
     beat, owner = await client.read(registers.heartbeat, 2)
-    if owner in (0, owner_id):
-        return None
+    beats = [beat]
     deadline = time.monotonic() + PREFLIGHT_WATCH_S
     while time.monotonic() < deadline:
         await asyncio.sleep(BEAT_PERIOD_S)
-        now_beat, now_owner = await client.read(registers.heartbeat, 2)
-        if now_owner != owner:
-            return now_owner if now_owner not in (0, owner_id) else None
-        if now_beat != beat:
-            return owner
-    return None
+        now_beat, owner = await client.read(registers.heartbeat, 2)
+        if now_beat != beats[-1]:
+            beats.append(now_beat)
+    if len(beats) == 1:
+        return None
+    seen = " → ".join(str(b) for b in beats)
+    return (
+        f"pre-flight: another commander is live: Heartbeat (C+8) changed {seen} within {PREFLIGHT_WATCH_S:g} s, "
+        f"LeaseOwner (C+9) {owner}; stop it first"
+    )
 
 
 async def restore(ctx: CheckContext) -> Outcome | None:
@@ -237,17 +248,21 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
     results: dict[str, CheckResult] = {}
     refused = interrupted = False
     abort: str | None = None
+    unknown: set[str] = set()
 
+    running = "pre-flight"
     try:
         try:
+            connect_started = time.monotonic()
             await client.connect()
-            foreign = await preflight(client, registers, options.owner_id)
+            ctx.connect_ms = ms(time.monotonic() - connect_started)
+            live = await preflight(client, registers)
         except PlcError as exc:
-            foreign = None  # CHK-01 reports the transport failure
+            live = None  # CHK-01 reports the transport failure
             say(f"pre-flight: {exc}")
-        if foreign is not None:
+        if live is not None:
             refused = True
-            abort = f"pre-flight: LeaseOwner {foreign} is beating: another commander is attached; stop it first"
+            abort = live
             say(abort)
 
         for check in checks:
@@ -262,7 +277,9 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
                 results[check.id] = _skip(check, problem)
                 continue
             say(f"{check.id} {check.title} ...")
+            running = check.id
             began = time.monotonic()
+            retries_before = client.retries
             last_read: LastRead | None = None
             try:
                 outcome = await _run_one(check, ctx)
@@ -278,16 +295,16 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
                             outcome.message += f" Restore failed: {why.message}"
                         abort = f"restore after {check.id} failed"
             except asyncio.CancelledError:
+                # § Error class of a FAIL, "Interruption is not a FAIL": this check and every later one SKIPPED.
                 task = asyncio.current_task()
                 if task is not None:
                     task.uncancel()
                 interrupted = True
-                abort = "interrupted"
-                message = format_message(
-                    ErrorClass.COMMANDER, CANCELLED, "interrupted (Ctrl-C) during this check", registers
-                )
-                outcome = Outcome(FAIL, message, {}, ErrorClass.COMMANDER)
-                last_read = ctx_last_read(ctx)
+                abort = f"interrupted by the operator during {check.id}"
+                results[check.id] = _skip(check, abort)
+                say(abort)
+                continue
+            observed = normalize_observed(check.id, outcome.observed, client.retries - retries_before, unknown)
             result = CheckResult(
                 check.id,
                 check.title,
@@ -295,7 +312,7 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
                 outcome.result,
                 ms(time.monotonic() - began),
                 outcome.message,
-                outcome.observed,
+                observed,
                 outcome.error_class,
                 last_read,
             )
@@ -310,7 +327,7 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
             task.uncancel()
         interrupted = True
         for check in checks:
-            results.setdefault(check.id, _skip(check, "interrupted"))
+            results.setdefault(check.id, _skip(check, f"interrupted by the operator during {running}"))
     finally:
         if client.connected and not refused:
             await cleanup(ctx)
@@ -326,19 +343,31 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
         ctx.cleanup_log,
         refused=refused,
         interrupted=interrupted,
+        unknown_observed=unknown,
     )
+
+
+def normalize_observed(
+    check_id: str, observed: dict[str, int | None], retries: int, unknown: set[str]
+) -> dict[str, int | None]:
+    """§ Observed values: exactly the listed keys in order, ``null`` where never observed, then ``retries``."""
+    keys = OBSERVED[check_id]
+    unknown.update(f"{check_id}.{key}" for key in observed if key not in keys)
+    return {**{key: observed.get(key) for key in keys}, RETRIES_KEY: retries}
 
 
 def exception_outcome(exc: PlcError | AckTimeout | LeaseHeld, registers: RegisterMap) -> Outcome:
     """One cause, one class (protocol.md § Errors and debugging, rule 2)."""
     if isinstance(exc, AckTimeout):
         message = format_message(ErrorClass.PROTOCOL, NOT_ACKNOWLEDGED, exc.what, registers, (), exc.detail)
-        observed = {"commandSeq": exc.seq, "commandAck": exc.status.command_ack, "state": exc.status.state}
-        return Outcome(FAIL, message, observed, ErrorClass.PROTOCOL)
+        return Outcome(FAIL, message, {}, ErrorClass.PROTOCOL)  # the seq, ack and state are in the message
     if isinstance(exc, LeaseHeld):
+        # No Commander class in a checker FAIL: pre-flight proved nobody else beats, so a lease that stays held
+        # means Heartbeat kept changing or LeaseOwner did not hold what was written (§ Error class of a FAIL).
         read = Read("LeaseOwner", exc.owner)
-        message = format_message(ErrorClass.COMMANDER, LEASE_HELD, str(exc), registers, (read,))
-        return Outcome(FAIL, message, {"leaseOwner": exc.owner}, ErrorClass.COMMANDER)
+        what = f"{exc}: Heartbeat kept changing or LeaseOwner did not hold what was written"
+        message = format_message(ErrorClass.PROTOCOL, PROTOCOL_MISMATCH, what, registers, (read,))
+        return Outcome(FAIL, message, {}, ErrorClass.PROTOCOL)
     message = format_message(ErrorClass.TRANSPORT, COMMUNICATION_LOST, str(exc), registers)
     return Outcome(FAIL, message, {}, ErrorClass.TRANSPORT)
 

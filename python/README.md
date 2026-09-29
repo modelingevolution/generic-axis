@@ -49,9 +49,9 @@ read.` The report attaches the dump of the last read of both blocks to each FAIL
 `--status-base N` (block bases, default 0 and 100), `--owner-id N` (default 65535), `--tolerance X` (CHK-13, axis
 units, default 0.1).
 
-Exit codes: 0 no FAIL · 1 at least one FAIL (or interrupted) · 2 usage error · 3 refused to start, because another
-commander (for example rw2) holds the axis and is beating. Stop it first. Ctrl-C stops the run, stops the axis,
-drops Enable and releases the lease.
+Exit codes: 0 no FAIL · 1 at least one FAIL · 2 usage error · 3 refused to start, because another commander (rw2, a
+station, or a second tool) is beating. Stop it first · 4 interrupted. Ctrl-C stops the run, stops the axis, drops
+Enable and releases the lease; the running check and the rest are reported SKIPPED.
 
 ## The same checklist as pytest tests
 

@@ -91,6 +91,8 @@ class CheckContext:
     session_lease: bool = False
     """CHK-06 established the lease; every later check restores it."""
     caused_trip: bool = False
+    connect_ms: int | None = None
+    """How long the run's TCP connect took (CHK-01 ``connectMs``)."""
 
     # --- the command handshake (protocol.md § Command semantics, "Handshake") ---
 
@@ -114,7 +116,7 @@ class CheckContext:
         """
         seq = await self._next_seq()
         word = int(bits)
-        await self.client.write(self.registers.command, [word, seq])
+        await self.client.write(self.registers.command, [word, seq], retry=False)  # a command is never re-sent
         written_at = time.monotonic()
         self.command_word = word
         poll = await wait_for(

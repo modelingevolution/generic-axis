@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Awaitable, Callable
 
 from pymodbus.client import AsyncModbusTcpClient
 from pymodbus.exceptions import ModbusException
+from pymodbus.pdu import ModbusPDU
 
 from .registers import STATUS_LENGTH, RegisterMap, StatusBlock, describe_range
 
@@ -50,6 +52,10 @@ class PlcClient:
         self._client: AsyncModbusTcpClient | None = None
         self.last_read: dict[int, int] = {}
         """The last value read from each register: the fallback ``lastRead`` evidence when a fresh read fails."""
+        self.retries = 0
+        """Reconnect-and-retries performed so far; each check reports its own delta (§ Observed values)."""
+        self._generation = 0
+        self._reconnect_lock = asyncio.Lock()
 
     def _where(self, operation: str, address: int, count: int) -> str:
         return (
@@ -75,6 +81,7 @@ class PlcClient:
                 if await client.connect():
                     client.comm_params.timeout_connect = REQUEST_TIMEOUT_S
                     self._client = client
+                    self._generation += 1
                     return
             except (OSError, ModbusException) as exc:
                 last = exc
@@ -95,34 +102,64 @@ class PlcClient:
             raise PlcError(f"not connected to {self.host}:{self.port}")
         return self._client
 
+    async def _reconnect(self, generation: int) -> None:
+        """Replace the connection once per failure, even when the beat and a check fail together."""
+        async with self._reconnect_lock:
+            if generation != self._generation:
+                return  # another caller already reconnected after the same failure
+            self.close()
+            await self.connect()
+
+    async def _transact(
+        self,
+        where: str,
+        request: Callable[[AsyncModbusTcpClient], Awaitable[ModbusPDU]],
+        *,
+        retry: bool,
+    ) -> ModbusPDU:
+        """One request with the protocol's one reconnect-and-retry (§ Errors and debugging, rule 3; § Error class of
+        a FAIL, "The one retry"), logged at Warning and counted in ``retries``. ``retry=False`` for a command write:
+        "A command is never re-sent"."""
+        for attempt in range(2):
+            generation = self._generation
+            client = self._require()
+            try:
+                response = await request(client)
+                if response.isError():
+                    raise PlcError(f"{where} failed: Modbus exception {response}")
+                return response
+            except (OSError, ModbusException, PlcError) as exc:
+                failure = exc if isinstance(exc, PlcError) else _failure(f"{where} failed", exc)
+                if isinstance(failure, asyncio.CancelledError) or attempt == 1 or not retry:
+                    raise failure from exc
+                log.warning("%s; reconnecting and retrying once", failure)
+                self.retries += 1
+                try:
+                    await self._reconnect(generation)
+                except PlcError as again:
+                    raise PlcError(f"{failure}; reconnect failed: {again}") from exc
+        raise AssertionError("unreachable")
+
     async def read(self, address: int, count: int) -> list[int]:
-        client = self._require()
-        try:
-            response = await client.read_holding_registers(address, count=count, device_id=self.unit)
-        except (OSError, ModbusException) as exc:
-            raise _failure(self._where("read", address, count) + " failed", exc) from exc
-        if response.isError():
-            raise PlcError(f"{self._where('read', address, count)} failed: Modbus exception {response}")
+        where = self._where("read", address, count)
+        response = await self._transact(
+            where, lambda c: c.read_holding_registers(address, count=count, device_id=self.unit), retry=True
+        )
         registers = list(response.registers)
         if len(registers) != count:
-            raise PlcError(f"{self._where('read', address, count)} failed: answered {len(registers)} registers")
+            raise PlcError(f"{where} failed: answered {len(registers)} registers")
         for offset, value in enumerate(registers):
             self.last_read[address + offset] = value
         return registers
 
-    async def write(self, address: int, values: list[int]) -> None:
-        client = self._require()
-        try:
-            if len(values) == 1:
-                response = await client.write_register(address, values[0], device_id=self.unit)
-            else:
-                response = await client.write_registers(address, values, device_id=self.unit)
-        except (OSError, ModbusException) as exc:
-            raise _failure(f"{self._where('write', address, len(values))} = {values} failed", exc) from exc
-        if response.isError():
-            raise PlcError(
-                f"{self._where('write', address, len(values))} = {values} failed: Modbus exception {response}"
+    async def write(self, address: int, values: list[int], *, retry: bool = True) -> None:
+        where = f"{self._where('write', address, len(values))} = {values}"
+        if len(values) == 1:
+            await self._transact(
+                where, lambda c: c.write_register(address, values[0], device_id=self.unit), retry=retry
             )
+        else:
+            await self._transact(where, lambda c: c.write_registers(address, values, device_id=self.unit), retry=retry)
         log.debug("wrote %d = %s", address, values)
 
     async def read_status(self, registers: RegisterMap) -> StatusBlock:

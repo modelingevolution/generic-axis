@@ -32,8 +32,6 @@ WATCHDOG_TRIPPED = "WatchdogTripped"
 HOME_LATCH_FAILED = "HomeLatchFailed"
 SAFETY_STOP = "SafetyStop"
 LEASE_HELD = "LeaseHeld"
-CANCELLED = "Cancelled"
-"""Not an SDK MotionError: the operator interrupted the run (Ctrl-C). Raised with design-generic-axis."""
 
 VENDOR_FAULT_BASE = 100
 """protocol.md § Status block: ``FaultCode`` 100+ is vendor-specific."""

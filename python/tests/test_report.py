@@ -109,3 +109,11 @@ def test_exit_code_is_3_when_refused() -> None:
     report = sample()
     report.refused = True
     assert report.exit_code == 3
+
+
+def test_interrupted_run_reports_interrupted_and_exits_4() -> None:
+    report = sample()
+    report.interrupted = True
+    assert to_json(report)["summary"]["result"] == "INTERRUPTED"
+    assert to_markdown(report).rstrip("\n").splitlines()[-1] == "RESULT: INTERRUPTED"
+    assert report.exit_code == 4

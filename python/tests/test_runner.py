@@ -10,7 +10,7 @@ import re
 import pytest
 
 from generic_axis_check.beat import Beater
-from generic_axis_check.checks import CHECKS, FAIL, PASS, SKIPPED, Check, Outcome
+from generic_axis_check.checks import CHECKS, FAIL, OBSERVED, PASS, SKIPPED, Check, Outcome
 from generic_axis_check.client import PlcClient
 from generic_axis_check.context import CheckContext, Options
 from generic_axis_check.registers import RegisterMap
@@ -23,6 +23,12 @@ MAP = RegisterMap()
 
 def by_id(report: Report) -> dict[str, tuple[str, str]]:
     return {c.id: (c.result, c.message) for c in report.checks}
+
+
+def num(observed: dict[str, int | None], key: str) -> int:
+    value = observed[key]
+    assert value is not None, key
+    return value
 
 
 def upto(check_id: str) -> tuple[Check, ...]:
@@ -86,7 +92,13 @@ async def test_run_refuses_a_live_foreign_commander_with_exit_3_and_writes_nothi
         commander.close()
     assert report.refused
     assert report.exit_code == 3
-    assert all(c.result == SKIPPED and "LeaseOwner 1 is beating" in c.message for c in report.checks)
+    message = report.checks[0].message
+    assert re.fullmatch(
+        r"pre-flight: another commander is live: Heartbeat \(C\+8\) changed \d+( → \d+)+ within 1 s, "
+        r"LeaseOwner \(C\+9\) 1; stop it first",
+        message,
+    )
+    assert all(c.result == SKIPPED and c.message == message for c in report.checks)
     assert foreign == []
     assert stub.regs[MAP.lease_owner] == 1
     assert report.cleanup == []
@@ -111,7 +123,14 @@ async def test_run_catches_a_plc_that_never_acknowledges() -> None:
         r"State 0 read\.",
         results["CHK-06"][1],
     )
-    assert report.checks[5].observed == {"commandSeq": 1, "commandAck": 0, "state": 0}
+    assert report.checks[5].observed == {
+        "enableAckMs": None,
+        "enableStateMs": None,
+        "disableAckMs": None,
+        "disableStateMs": None,
+        "retries": 0,
+    }
+    assert report.unknown_observed == set()
     assert results["CHK-07"] == (SKIPPED, "needs CHK-06, which FAILED")
     assert results["CHK-08"] == (SKIPPED, "needs CHK-06, which FAILED")
 
@@ -137,7 +156,7 @@ async def test_run_catches_swapped_word_order_in_chk03() -> None:
     assert chk03.result == FAIL
     assert chk03.message.startswith("Protocol/ProtocolMismatch: limits not sane: TravelMin is not < TravelMax")
     assert "Read TravelMin (S+8 = 108) = 0, TravelMax (S+10 = 110) = " in chk03.message
-    assert chk03.observed["travelMax"] < 0
+    assert num(chk03.observed, "travelMax") < 0
 
 
 async def test_run_catches_unpublished_limits_in_chk03() -> None:
@@ -157,9 +176,13 @@ async def test_run_full_checklist_with_motion_passes_and_leaves_the_axis_clean(s
     report = await run(options(stub, motion=True))
     assert [(c.id, c.result, c.message) for c in report.checks if c.result != PASS] == []
     assert report.exit_code == 0
+    assert report.unknown_observed == set()
+    for c in report.checks:
+        assert list(c.observed) == [*OBSERVED[c.id], "retries"]
+        assert all(v is not None for v in c.observed.values()), (c.id, c.observed)
     observed = {c.id: c.observed for c in report.checks}
-    assert 1000 <= observed["CHK-08"]["tripAfterMs"] <= 1500
-    assert observed["CHK-14"]["haltMs"] <= 200
+    assert 1000 <= num(observed["CHK-08"], "tripAfterMs") <= 1500
+    assert num(observed["CHK-14"], "haltMs") <= 200
     await asyncio.sleep(0.05)
     assert stub.axis.state == 0
     assert stub.regs[MAP.lease_owner] == 0
@@ -174,13 +197,41 @@ async def test_run_interrupted_mid_move_stops_the_axis_and_journals_the_cleanup(
     task.cancel()
     report = await task
     assert report.interrupted
-    assert report.exit_code == 1
-    assert by_id(report)["CHK-13"][1] == "Commander/Cancelled: interrupted (Ctrl-C) during this check."
-    assert report.checks[12].error_class == "Commander"
-    assert by_id(report)["CHK-16"] == (SKIPPED, "interrupted")
+    assert report.exit_code == 4
+    assert report.result == "INTERRUPTED"
+    assert by_id(report)["CHK-13"] == (SKIPPED, "interrupted by the operator during CHK-13")
+    assert report.checks[12].observed == {}
+    assert by_id(report)["CHK-16"] == (SKIPPED, "interrupted by the operator during CHK-13")
     await asyncio.sleep(0.2)
     assert stub.axis.state in (0, 1)
     assert stub.axis.v == 0
     assert stub.regs[MAP.lease_owner] == 0
     assert any("Stop" in entry for entry in report.cleanup)
     assert "C+9 = 0 (release lease)" in report.cleanup
+
+
+async def test_run_refuses_a_second_tool_beating_under_the_checkers_own_id(stub: StubPlc) -> None:
+    # protocol.md "Pre-flight": any beat change refuses, even with LeaseOwner = the tool's own id.
+    other = PlcClient("127.0.0.1", stub.port, 1)
+    await other.connect()
+    await other.write(MAP.lease_owner, [65535])
+    beat = Beater(other, MAP)
+    await beat.start()
+    try:
+        report = await run(options(stub, motion=True))
+    finally:
+        await beat.stop()
+        other.close()
+    assert report.exit_code == 3
+    assert "LeaseOwner (C+9) 65535" in report.checks[0].message
+
+
+async def test_every_failure_path_reports_only_listed_observed_keys() -> None:
+    for fault in ("suppress_ack", "watchdog_disabled", "swapped_word_order", "publish_limits"):
+        async with StubPlc() as plc:
+            setattr(plc.o, fault, fault != "publish_limits")
+            report = await run(options(plc), checks=upto("CHK-10"))
+        assert report.unknown_observed == set(), fault
+        for c in report.checks:
+            expected = [] if c.result == SKIPPED else [*OBSERVED[c.id], "retries"]
+            assert list(c.observed) == expected, (fault, c.id)
