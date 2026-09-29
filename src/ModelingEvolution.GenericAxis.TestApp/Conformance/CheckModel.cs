@@ -146,6 +146,12 @@ public sealed record ConformanceReport
     public ImmutableArray<CheckResult> Checks { get; init; } = [];
     public ImmutableArray<string> Cleanup { get; init; } = [];
 
+    /// <summary>
+    /// What pre-flight found when it matters to the reader: the refusal reason, or why the run proceeded past a held
+    /// lease (its holder is dead, review #35). The Markdown states it on the line after the heading.
+    /// </summary>
+    public string? Preflight { get; init; }
+
     /// <summary>The run refused to start: a live foreign commander holds the axis (exit 3).</summary>
     public bool Refused { get; init; }
 

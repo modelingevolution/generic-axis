@@ -17,7 +17,6 @@ namespace ModelingEvolution.GenericAxis.TestApp.Simulation;
 /// </remarks>
 public sealed class AxisPlc
 {
-    private static readonly TimeSpan WatchdogWindow = TimeSpan.FromSeconds(1);
 
     private readonly SimulatedAxisOptions _o;
     private readonly PlcRegisterFile _r;
@@ -252,7 +251,7 @@ public sealed class AxisPlc
             return;
         }
 
-        if (_clock - _lastBeatAt >= WatchdogWindow)
+        if (_clock - _lastBeatAt >= _o.WatchdogTimeout)
         {
             _trips++;
             _armed = false;

@@ -36,6 +36,9 @@ public sealed record SimulatedAxisOptions
     public bool HomedAtPowerUp { get; init; } = true;
     public double UnhomedOffset { get; init; } = 1234.567;
     public TimeSpan EnableDelay { get; init; } = TimeSpan.FromMilliseconds(50);
+    /// <summary>FR-11 stall window: the watchdog trips this long after the last beat change. The protocol allows
+    /// 1.0–1.5 s; tests use the upper end for a PLC that trips late (review #35).</summary>
+    public TimeSpan WatchdogTimeout { get; init; } = TimeSpan.FromSeconds(1);
     public bool PublishLimits { get; init; } = true;
     public ushort MapVersion { get; init; } = 1;
     public TimeSpan ScanInterval { get; init; } = TimeSpan.FromMilliseconds(10);
@@ -64,6 +67,8 @@ public sealed record SimulatedAxisOptions
         if (InPositionWindow <= 0) throw new ArgumentException($"{nameof(InPositionWindow)} must be > 0", nameof(InPositionWindow));
         if (ScanInterval <= TimeSpan.Zero) throw new ArgumentException($"{nameof(ScanInterval)} must be > 0", nameof(ScanInterval));
         if (EnableDelay < TimeSpan.Zero) throw new ArgumentException($"{nameof(EnableDelay)} must be >= 0", nameof(EnableDelay));
+        if (WatchdogTimeout < TimeSpan.FromSeconds(1) || WatchdogTimeout > TimeSpan.FromSeconds(1.5))
+            throw new ArgumentException($"{nameof(WatchdogTimeout)} must be 1.0–1.5 s (FR-11), got {WatchdogTimeout.TotalSeconds} s", nameof(WatchdogTimeout));
 
         // Every value the PLC publishes must fit its int32 register at 0.001 per count: refuse, never clamp.
         var reach = 2 * LimitSwitchMargin + Math.Abs(UnhomedOffset);

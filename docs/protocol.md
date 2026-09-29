@@ -225,6 +225,18 @@ the operator (Ctrl-C / SIGINT) before the list finished.
   another commander is live. The tool then writes nothing, reports every check SKIPPED, names the observed beat values
   and `LeaseOwner` in the message, sets `summary.result` to `REFUSED` (Markdown last line `RESULT: REFUSED`), and exits
   3. A refused run never reports PASS. This also catches a second conformance tool using the same owner id.
+  A held lease is watched longer, because a commander silent for 1 s may still be alive (the watchdog trips only
+  1.0–1.5 s after its last beat). When `LeaseOwner ≠ 0`, the tool also reads `WatchdogFault` (C+10) and watches for
+  1.6 s (1.5 s plus one 100 ms read):
+  - `Heartbeat` changes: refused, as above.
+  - `WatchdogFault` reads 1 and `Heartbeat` did not change: the lease holder is dead. The tool proceeds, and the line
+    after the Markdown heading says "Pre-flight: LeaseOwner (C+9 = 9) = n held with no beat and WatchdogFault (C+10 = 10) = 1:
+    the previous commander is dead; its trip is left for its operator." The tool never clears that trip: a restore
+    that finds it FAILs `Machine/WatchdogTripped`, and cleanup leaves it and the lease as they were.
+  - Neither within 1.6 s: refused (exit 3, `REFUSED`), naming `LeaseOwner` and `WatchdogFault`: "a live commander,
+    or a PLC without a working watchdog; release LeaseOwner by hand only if no commander runs".
+
+  With `LeaseOwner = 0` the watch stays 1 s.
 - **Isolation.** Each tool run uses its own working directory for logs and reports. A run against a simulator uses a
   simulator on its own port. Two concurrent runs never share a PLC, a simulator or a report path.
 - **Order.** Checks run in id order. A check whose prerequisite FAILED or was SKIPPED is SKIPPED, and its message names

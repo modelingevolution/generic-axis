@@ -49,6 +49,12 @@ internal sealed class CheckContext : IAsyncDisposable
     /// <summary>Limits read by CHK-03 (raw register values), for the motion checks.</summary>
     public (int TravelMin, int TravelMax, int MaxVelocity)? Limits { get; set; }
 
+    /// <summary>
+    /// Pre-flight found a held lease whose holder is dead (<c>WatchdogFault = 1</c>, no beat). That trip belongs to its
+    /// operator: no restore and no cleanup clears it (review #35).
+    /// </summary>
+    public bool ForeignTrip { get; set; }
+
     /// <summary>The checker caused a watchdog trip, so cleanup clears <c>WatchdogFault</c>.</summary>
     public bool CausedTrip { get; set; }
 

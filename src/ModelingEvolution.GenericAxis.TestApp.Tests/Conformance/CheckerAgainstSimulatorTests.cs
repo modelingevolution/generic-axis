@@ -439,5 +439,105 @@ public sealed class CheckerAgainstSimulatorTests
             .Should().ContainSingle();
     }
 
+    // ---- Review #35: a held lease is watched to 1.6 s ----------------------------------------------------------------
+
+    /// <summary>A raw commander: takes the lease as owner 1 and beats every 100 ms until told to pause or stop.</summary>
+    private sealed class RawCommander : IDisposable
+    {
+        private readonly FluentModbus.ModbusTcpClient _client = new();
+        private readonly Lock _io = new();
+        private ushort _beat;
+
+        public RawCommander(int port)
+        {
+            _client.Connect(new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, port), FluentModbus.ModbusEndianness.BigEndian);
+            Write(9, 1);
+        }
+
+        public void Write(ushort address, ushort value)
+        {
+            lock (_io) _client.WriteSingleRegister(1, address, value);
+        }
+
+        public async Task BeatAsync(TimeSpan duration)
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            while (sw.Elapsed < duration)
+            {
+                _beat = (ushort)(_beat % 65535 + 1);
+                Write(8, _beat);
+                await Task.Delay(100);
+            }
+        }
+
+        public void Dispose() => _client.Dispose();
+    }
+
+    /// <summary>GA-I-55: the twin of GA-I-37 with a starved commander — its beat pauses 1.1 s, longer than the old 1 s
+    /// window, on a PLC that trips late (1.4 s). It is alive, so the tool must still refuse and write nothing.</summary>
+    [Fact]
+    public async Task GA_I_55_ACommanderSilentFor1Point1sIsStillRefused()
+    {
+        using var sim = new LiveSimulator(new SimulatedAxisOptions { WatchdogTimeout = TimeSpan.FromSeconds(1.4) });
+        using var commander = new RawCommander(sim.Port);
+        await commander.BeatAsync(TimeSpan.FromSeconds(0.5));
+        var before = await sim.SettledAsync();
+
+        var paused = Task.Run(async () => { await Task.Delay(1100); await commander.BeatAsync(TimeSpan.FromSeconds(1)); });
+        var report = await Check(sim, allowMotion: false); // starts inside the pause
+        await paused;
+
+        report.ExitCode.Should().Be(3, report.Preflight);
+        report.SummaryResult.Should().Be("REFUSED");
+        report.Preflight.Should().StartWith("refused to start: another commander is beating");
+        var after = await sim.SettledAsync();
+        after.CommandSeq.Should().Be(before.CommandSeq, "a refused run writes nothing");
+        after.CommandBlock.Skip(2).Take(6).Should().Equal(before.CommandBlock.Skip(2).Take(6));
+        after.LeaseOwner.Should().Be(1);
+        after.WatchdogTrips.Should().Be(0, "the commander was slow, not dead");
+    }
+
+    /// <summary>GA-I-55: a lease held with no beat and no trip within 1.6 s is refused, with the hand-release advice.</summary>
+    [Fact]
+    public async Task GA_I_55_AHeldLeaseThatNeitherBeatsNorTripsIsRefused()
+    {
+        using var sim = new LiveSimulator();
+        using var commander = new RawCommander(sim.Port); // LeaseOwner = 1, never beats: the watchdog never arms
+
+        var report = await Check(sim, allowMotion: false);
+
+        report.ExitCode.Should().Be(3);
+        report.Preflight.Should().Be("refused to start: LeaseOwner (C+9 = 9) = 1 is held and WatchdogFault (C+10 = 10) = 0: no beat and no trip "
+                                     + "within 1.6 s — a live commander, or a PLC without a working watchdog; release LeaseOwner by hand only if no commander runs");
+        ReportWriter.ToMarkdown(report).Split('\n')[2].Should().StartWith("Pre-flight: refused to start: LeaseOwner");
+        (await sim.SettledAsync()).CommandSeq.Should().Be(0);
+    }
+
+    /// <summary>GA-I-56: the lease holder died (beat stopped for good); the PLC trips 1.0 s later, inside the 1.6 s watch.
+    /// The tool proceeds, says so on the line after the heading, and never clears that trip or the lease.</summary>
+    [Fact]
+    public async Task GA_I_56_ADeadCommandersTripIsSeenAndLeftForItsOperator()
+    {
+        using var sim = new LiveSimulator();
+        using (var commander = new RawCommander(sim.Port)) await commander.BeatAsync(TimeSpan.FromSeconds(0.5)); // then dies
+
+        var report = await Check(sim, allowMotion: false);
+
+        report.Refused.Should().BeFalse();
+        report.Preflight.Should().Be("LeaseOwner (C+9 = 9) = 1 held with no beat and WatchdogFault (C+10 = 10) = 1: "
+                                     + "the previous commander is dead; its trip is left for its operator.");
+        ReportWriter.ToMarkdown(report).Split('\n')[2].Should().Be("Pre-flight: " + report.Preflight);
+        ShouldBe(report, CheckResultKind.Pass, Ids(1, 5));
+        var chk06 = Get(report, "CHK-06");
+        chk06.Result.Should().Be(CheckResultKind.Fail);
+        chk06.Message.Should().StartWith("Machine/WatchdogTripped: the PLC reports ErrorStop. Read FaultCode (S+6 = 106) = 4.")
+            .And.Contain("the previous commander's watchdog trip is left for its operator");
+        report.Cleanup.Should().BeEmpty("the checker took no lease, beat or command, and does not clear a foreign trip");
+        var end = await sim.SettledAsync();
+        end.WatchdogFault.Should().Be(1, "the dead commander's trip is left for its operator");
+        end.LeaseOwner.Should().Be(1);
+        end.State.Should().Be(SimAxisState.ErrorStop);
+    }
+
     private volatile bool _chk14Running;
 }

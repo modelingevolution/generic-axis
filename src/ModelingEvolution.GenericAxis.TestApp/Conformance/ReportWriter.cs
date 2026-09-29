@@ -81,8 +81,7 @@ public static class ReportWriter
             $"# PLC conformance — {ConformanceReport.ToolName} (csharp {report.ToolVersion}) against {o.Host}:{o.Port} unit {o.Unit}, ");
         sb.Append(CultureInfo.InvariantCulture,
             $"bases C={o.CommandBase} S={o.StatusBase}, motion {(o.AllowMotion ? "allowed" : "not allowed")}, {Utc(report.StartedAt)}\n\n");
-        if (report.Refused)
-            sb.Append("Refused to start: another commander is beating (rw2, a station, or a second tool). Stop it first.\n\n");
+        if (report.Preflight is { } preflight) sb.Append(CultureInfo.InvariantCulture, $"Pre-flight: {preflight}\n\n");
 
         sb.Append("| Id | Title | Result | Observed | Protocol section |\n");
         sb.Append("|---|---|---|---|---|\n");

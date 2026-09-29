@@ -41,8 +41,9 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
 
         await using var ctx = new CheckContext(options, channel, _log);
         var results = ImmutableArray.CreateBuilder<CheckResult>();
+        string? preflightNote = null;
         void Publish(string? running = null) =>
-            progress?.Invoke(report with { Checks = results.ToImmutable(), Cleanup = [.. ctx.CleanupLog], Running = running });
+            progress?.Invoke(report with { Checks = results.ToImmutable(), Cleanup = [.. ctx.CleanupLog], Running = running, Preflight = preflightNote });
 
         var refused = false;
         try
@@ -51,7 +52,10 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
             var interruptedInPreflight = false;
             try
             {
-                refusal = await PreflightAsync(ctx, ct);
+                var preflight = await PreflightAsync(ctx, ct);
+                refusal = preflight.Refusal;
+                preflightNote = preflight.Note ?? preflight.Refusal;
+                if (preflight.Note is { } note) _log.LogWarning("Pre-flight: {Note}", note);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -80,7 +84,7 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
             await CleanupAsync(ctx);
         }
 
-        var final = Complete(report with { Refused = refused, Interrupted = !refused && ct.IsCancellationRequested, Checks = results.ToImmutable() }, ctx.CleanupLog);
+        var final = Complete(report with { Refused = refused, Interrupted = !refused && ct.IsCancellationRequested, Checks = results.ToImmutable(), Preflight = preflightNote }, ctx.CleanupLog);
         _log.LogInformation("RESULT: {Result} — {Pass} pass, {Fail} fail, {Skipped} skipped (exit {Exit})",
             final.SummaryResult, final.PassCount, final.FailCount, final.SkippedCount, final.ExitCode);
         progress?.Invoke(final);
@@ -232,45 +236,74 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
     }
 
     /// <summary>
-    /// Before its own first beat, reads <c>LeaseOwner</c> and watches <c>Heartbeat</c> (C+8) for 1 s. Any change, whatever
-    /// <c>LeaseOwner</c> holds (0, a station id or the tool's own id), means another commander is live: returns the
-    /// refusal message naming the beat values and the owner. Null when nothing beats.
+    /// protocol § Rules, Pre-flight. Before its own first beat, reads <c>LeaseOwner</c> and <c>WatchdogFault</c> and watches
+    /// <c>Heartbeat</c> (C+8): 1 s, or 1.6 s while <c>LeaseOwner ≠ 0</c> (review #35: a commander silent for 1 s may still
+    /// be alive, the watchdog trips only 1.0–1.5 s after its last beat). Any beat → refused. A held lease with
+    /// <c>WatchdogFault = 1</c> and no beat → its holder is dead: proceed with a note, never clearing that trip. A held
+    /// lease with neither within 1.6 s → refused.
     /// </summary>
-    private async Task<string?> PreflightAsync(CheckContext ctx, CancellationToken ct)
+    private async Task<Preflight> PreflightAsync(CheckContext ctx, CancellationToken ct)
     {
         try
         {
             await ctx.Channel.ConnectAsync(ct);
-            var first = await ReadBeatAndOwnerAsync(ctx, ct);
+            var first = await ReadBeatOwnerFaultAsync(ctx, ct);
             var beats = new List<ushort> { first.Beat };
-            var owner = first.Owner;
-            var until = Stopwatch.StartNew();
-            while (until.Elapsed < PreflightWindow)
+            var (owner, fault) = (first.Owner, first.Fault);
+            var watched = Stopwatch.StartNew();
+            // Watch until a beat, a trip under a held lease, or the window's end; a beat is still watched to 1 s so the
+            // refusal names several values.
+            while (beats.Count > 1
+                       ? watched.Elapsed < PreflightWindow
+                       : !(owner != 0 && fault != 0) && watched.Elapsed < (owner == 0 ? PreflightWindow : HeldLeaseWindow))
             {
                 await Task.Delay(Beater.Period, ct);
-                var now = await ReadBeatAndOwnerAsync(ctx, ct);
+                var now = await ReadBeatOwnerFaultAsync(ctx, ct);
                 if (now.Beat != beats[^1]) beats.Add(now.Beat);
-                owner = now.Owner;
+                (owner, fault) = (now.Owner, now.Fault);
             }
 
-            _log.LogInformation("Pre-flight: LeaseOwner {Owner}, Heartbeat {Beats}", owner, string.Join(" → ", beats));
-            return beats.Count > 1
-                ? $"refused to start: another commander is beating — Heartbeat ({ctx.Where(ctx.Map.Heartbeat)}) read {string.Join(" → ", beats.Take(6))}"
-                  + $"{(beats.Count > 6 ? " …" : "")} within 1 s, LeaseOwner ({ctx.Where(ctx.Map.LeaseOwner)}) = {owner}; stop it first"
-                : null;
+            var ownerAt = $"LeaseOwner ({ctx.Where(ctx.Map.LeaseOwner)}) = {owner}";
+            var faultAt = $"WatchdogFault ({ctx.Where(ctx.Map.WatchdogFault)}) = {fault}";
+            _log.LogInformation("Pre-flight after {Ms} ms: {Owner}, {Fault}, Heartbeat {Beats}",
+                (long)watched.Elapsed.TotalMilliseconds, ownerAt, faultAt, string.Join(" → ", beats));
+            if (beats.Count > 1)
+                return new Preflight(
+                    $"refused to start: another commander is beating — Heartbeat ({ctx.Where(ctx.Map.Heartbeat)}) read {string.Join(" → ", beats.Take(6))}"
+                    + $"{(beats.Count > 6 ? " …" : "")} within {watched.Elapsed.TotalSeconds:0.0} s, {ownerAt}; stop it first", null);
+            if (owner == 0) return Preflight.Free;
+            if (fault != 0)
+            {
+                ctx.ForeignTrip = true;
+                return new Preflight(null,
+                    $"{ownerAt} held with no beat and {faultAt}: the previous commander is dead; its trip is left for its operator.");
+            }
+
+            return new Preflight(
+                $"refused to start: {ownerAt} is held and {faultAt}: no beat and no trip within {HeldLeaseWindow.TotalSeconds:0.0} s — "
+                + "a live commander, or a PLC without a working watchdog; release LeaseOwner by hand only if no commander runs", null);
         }
         catch (MotionException ex)
         {
             _log.LogWarning("Pre-flight could not read the PLC ({Message}); CHK-01 will report it", CheckerText.Describe(ex));
-            return null;
+            return Preflight.Free;
         }
     }
 
-    private static async Task<(ushort Beat, ushort Owner)> ReadBeatAndOwnerAsync(CheckContext ctx, CancellationToken ct)
+    /// <summary>The pre-flight verdict: a refusal (exit 3), or a note for the report when the run proceeds.</summary>
+    private sealed record Preflight(string? Refusal, string? Note)
     {
-        var words = await ctx.Channel.ReadHoldingAsync(ctx.Unit, ctx.Map.Heartbeat, 2, "read C+8…C+9 (pre-flight: Heartbeat, LeaseOwner)",
+        public static Preflight Free { get; } = new(null, null);
+    }
+
+    /// <summary>1.5 s (the latest trip, FR-11) plus one 100 ms read.</summary>
+    private static readonly TimeSpan HeldLeaseWindow = TimeSpan.FromMilliseconds(1600);
+
+    private static async Task<(ushort Beat, ushort Owner, ushort Fault)> ReadBeatOwnerFaultAsync(CheckContext ctx, CancellationToken ct)
+    {
+        var words = await ctx.Channel.ReadHoldingAsync(ctx.Unit, ctx.Map.Heartbeat, 3, "read C+8…C+10 (pre-flight: Heartbeat, LeaseOwner, WatchdogFault)",
             ChannelPriority.Move, ct);
-        return (words[0], words[1]);
+        return (words[0], words[1], words[2]);
     }
 
     /// <summary>
@@ -282,6 +315,13 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
         try
         {
             var v = await ctx.ReadViewAsync(ct);
+            if (ctx.ForeignTrip && !ctx.CausedTrip && v.WatchdogFault != 0)
+                return Failure.Fault(4, ctx.Where(ctx.Map.FaultCode)) with
+                {
+                    Text = $"the previous commander's watchdog trip is left for its operator. Read WatchdogFault ({ctx.Where(ctx.Map.WatchdogFault)}) = "
+                           + $"{v.WatchdogFault}, LeaseOwner ({ctx.Where(ctx.Map.LeaseOwner)}) = {v.LeaseOwner}; the checker does not clear it.",
+                };
+
             if (v.State is 2 or 3 or 4)
             {
                 var stop = await ctx.Commands.SendAsync(CommandBits.Enable | CommandBits.Stop, ct, ChannelPriority.Stop);
