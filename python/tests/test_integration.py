@@ -292,11 +292,17 @@ async def test_ga_i_40_dump_reads_without_touching(simulator: START) -> None:
     assert "S+14     114  MapVersion             0x0001  1" in out
 
     watch = dump_process(sim.port, "--watch")
+    assert watch.stdout is not None
+    seen = 0
+    for line in watch.stdout:  # the 2 s start at the first dump, not at the interpreter's start-up
+        if "MapVersion" in line:
+            seen = 1
+            break
     await asyncio.sleep(2.0)
     watch.send_signal(signal.SIGINT)
     out, err = watch.communicate(timeout=30)
     assert watch.returncode == 0, err
-    assert out.count("MapVersion") >= 10
+    assert seen + out.count("MapVersion") >= 10
     assert await registers(sim.port, MAP.command, COMMAND_LENGTH) == before  # LeaseOwner included (C+9)
 
     closed = dump_process(free_port())
