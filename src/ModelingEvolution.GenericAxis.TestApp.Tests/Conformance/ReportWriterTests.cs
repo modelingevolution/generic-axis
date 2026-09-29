@@ -31,7 +31,8 @@ public sealed class ReportWriterTests
         using var doc = JsonDocument.Parse(ReportWriter.ToJson(Report()));
         var root = doc.RootElement;
 
-        Names(root).Should().Equal("schema", "mapVersion", "tool", "target", "allowMotion", "startedAt", "finishedAt", "summary", "checks", "cleanup");
+        Names(root).Should().Equal("schema", "mapVersion", "tool", "target", "allowMotion", "startedAt", "finishedAt", "preflight", "summary", "checks", "cleanup");
+        root.GetProperty("preflight").ValueKind.Should().Be(JsonValueKind.Null, "null unless pre-flight had something to say");
         root.GetProperty("schema").GetString().Should().Be("generic-axis-conformance/1");
         root.GetProperty("mapVersion").GetInt32().Should().Be(1);
         Names(root.GetProperty("tool")).Should().Equal("name", "language", "version");

@@ -520,6 +520,8 @@ public sealed class CheckerAgainstSimulatorTests
         report.Preflight.Should().Be("refused to start: LeaseOwner (C+9 = 9) = 1 is held and WatchdogFault (C+10 = 10) = 0: no beat and no trip "
                                      + "within 1.6 s — a live commander, or a PLC without a working watchdog; release LeaseOwner by hand only if no commander runs");
         ReportWriter.ToMarkdown(report).Split('\n')[2].Should().StartWith("Pre-flight: refused to start: LeaseOwner");
+        using (var json = System.Text.Json.JsonDocument.Parse(ReportWriter.ToJson(report)))
+            json.RootElement.GetProperty("preflight").GetString().Should().Be(report.Preflight);
         (await sim.SettledAsync()).CommandSeq.Should().Be(0);
     }
 
@@ -537,6 +539,8 @@ public sealed class CheckerAgainstSimulatorTests
         report.Preflight.Should().Be("LeaseOwner (C+9 = 9) = 1 held with no beat and WatchdogFault (C+10 = 10) = 1: "
                                      + "the previous commander is dead; its trip is left for its operator.");
         ReportWriter.ToMarkdown(report).Split('\n')[2].Should().Be("Pre-flight: " + report.Preflight);
+        using (var json = System.Text.Json.JsonDocument.Parse(ReportWriter.ToJson(report)))
+            json.RootElement.GetProperty("preflight").GetString().Should().Be(report.Preflight, "the same text in JSON");
         ShouldBe(report, CheckResultKind.Pass, Ids(1, 5));
         var chk06 = Get(report, "CHK-06");
         chk06.Result.Should().Be(CheckResultKind.Fail);

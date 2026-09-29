@@ -60,6 +60,7 @@ public static class ReportWriter
             ["allowMotion"] = o.AllowMotion,
             ["startedAt"] = Utc(report.StartedAt),
             ["finishedAt"] = Utc(report.FinishedAt ?? report.StartedAt),
+            ["preflight"] = report.Preflight, // null unless pre-flight had something to say (the Markdown's line after the heading)
             ["summary"] = new JsonObject
             {
                 ["result"] = report.SummaryResult,

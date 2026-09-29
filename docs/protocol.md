@@ -350,6 +350,7 @@ JSON (`schema: "generic-axis-conformance/1"`). Both tools emit exactly these fie
   "allowMotion": false,
   "startedAt": "2026-09-29T10:15:02Z",
   "finishedAt": "2026-09-29T10:15:31Z",
+  "preflight": null,
   "summary": { "result": "PASS", "pass": 11, "fail": 0, "skipped": 5 },
   "checks": [
     { "id": "CHK-08", "title": "Watchdog trips on a stalled beat", "section": "FR-11",
@@ -369,6 +370,7 @@ JSON (`schema: "generic-axis-conformance/1"`). Both tools emit exactly these fie
 }
 ```
 
+- `preflight` is null unless pre-flight had something to say; the same text is the line after the Markdown heading.
 - `result` is `PASS`, `FAIL` or `SKIPPED`. `summary.result` is `REFUSED` if pre-flight refused to start (exit 3),
   otherwise `INTERRUPTED` if the operator interrupted the run, otherwise `FAIL` if any check failed, otherwise `PASS`.
 - `errorClass` is `Transport`, `Protocol`, `Machine` or `Commander` on a FAIL, and `null` otherwise.
