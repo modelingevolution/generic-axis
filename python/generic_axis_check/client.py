@@ -84,6 +84,9 @@ class PlcClient:
         """Reconnect-and-retries performed so far; each check reports its own delta (§ Observed values)."""
         self._generation = 0
         self._reconnect_lock = asyncio.Lock()
+        self.guard: Callable[[], None] | None = None
+        """Called before every request while a check runs: the runner sets the beat's ``raise_if_failed`` so every
+        wait (a poll, a trip watch, a read after a sleep) reports a dead beat as Transport (review #7)."""
 
     def _where(self, operation: str, address: int, count: int) -> str:
         return (
@@ -158,6 +161,8 @@ class PlcClient:
         """One request with the protocol's one reconnect-and-retry (§ Errors and debugging, rule 3; § Error class of
         a FAIL, "The one retry"), logged at Warning and counted in ``retries``. ``retry=False`` for a command write:
         "A command is never re-sent"."""
+        if self.guard is not None:
+            self.guard()
         for attempt in range(2):
             generation = self._generation
             client = self._require()

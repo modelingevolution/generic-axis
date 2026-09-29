@@ -12,7 +12,6 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 from .beat import BEAT_PERIOD_S, Beater
-from .client import PlcError
 from .context import (
     ACK_TIMEOUT_S,
     FOREIGN_OWNER_ID,
@@ -114,6 +113,8 @@ class Outcome:
     observed: dict[str, int | None] = field(default_factory=dict)
     error_class: ErrorClass | None = None
     """Set on a FAIL (protocol.md § Report schema, ``errorClass``)."""
+    motion_error: str | None = None
+    """The SDK ``MotionError`` name of a FAIL (the runner re-checks a ``WatchdogTripped`` against the beat, #7)."""
 
 
 def passed(message: str, **observed: int | None) -> Outcome:
@@ -130,7 +131,7 @@ def fail(
 ) -> Outcome:
     """A FAIL whose message has the protocol's shape (§ Errors and debugging, rule 1)."""
     message = format_message(error_class, motion_error, what, ctx.registers, reads)
-    return Outcome(FAIL, message, dict(observed), error_class)
+    return Outcome(FAIL, message, dict(observed), error_class, motion_error)
 
 
 def mismatch(ctx: CheckContext, what: str, *reads: Read, **observed: int | None) -> Outcome:
@@ -241,9 +242,7 @@ async def beat_for(ctx: CheckContext, seconds: float) -> None:
     await ctx.beater.start()
     started = ctx.beater.started_at or time.monotonic()
     await asyncio.sleep(max(0.0, started + seconds - time.monotonic()))
-    failure = ctx.beater.failure()
-    if failure is not None:
-        raise PlcError(f"heartbeat loop failed: {failure}")
+    ctx.beater.raise_if_failed()
 
 
 async def ensure_enabled(ctx: CheckContext) -> Outcome | None:

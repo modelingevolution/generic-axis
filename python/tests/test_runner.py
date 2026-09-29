@@ -302,3 +302,38 @@ async def test_run_whose_preflight_read_fails_fails_chk01_skips_the_rest_and_wri
     assert report.exit_code == 1
     assert stub.writes == []
     assert report.cleanup == []
+
+
+@pytest.mark.timeout(60)
+async def test_run_reports_a_dead_beat_during_homing_as_transport_not_a_watchdog_trip(stub: StubPlc) -> None:
+    # GA-U-75.py (review #7): the beat's writes go unanswered once homing starts; the beat dies after its one retry.
+    # The PLC then trips its watchdog, but the FAIL is the cause the checker saw: Transport, with the beat's exception.
+    def heartbeat_write_while_homing(pdu: bytes) -> bool:
+        return pdu[0] == 6 and int.from_bytes(pdu[1:3]) == MAP.heartbeat and stub.axis.state == 2
+
+    stub.drop_if = heartbeat_write_while_homing
+    wanted = {"CHK-01", "CHK-02", "CHK-06", "CHK-12"}
+    report = await run(options(stub, motion=True), checks=tuple(c for c in CHECKS if c.id in wanted))
+    chk12 = next(c for c in report.checks if c.id == "CHK-12")
+    assert chk12.result == FAIL
+    assert chk12.error_class == "Transport"
+    assert chk12.message.startswith(
+        "Transport/CommunicationLost: Heartbeat (C+8) write failed, the beat stopped: write C+8"
+    ), chk12.message
+    assert "WatchdogTripped" not in chk12.message
+
+
+@pytest.mark.timeout(60)
+async def test_run_reports_a_dead_beat_during_a_wait_even_when_the_plc_never_trips(stub: StubPlc) -> None:
+    # GA-U-75.py (review #7), second case: with the PLC's watchdog off nothing trips, and homing would PASS with the
+    # checker's beat dead. Every request of a running check consults the beat, so the wait FAILs Transport.
+    def heartbeat_write_while_homing(pdu: bytes) -> bool:
+        return pdu[0] == 6 and int.from_bytes(pdu[1:3]) == MAP.heartbeat and stub.axis.state == 2
+
+    stub.o.watchdog_disabled = True
+    stub.drop_if = heartbeat_write_while_homing
+    wanted = {"CHK-01", "CHK-02", "CHK-06", "CHK-12"}
+    report = await run(options(stub, motion=True), checks=tuple(c for c in CHECKS if c.id in wanted))
+    chk12 = next(c for c in report.checks if c.id == "CHK-12")
+    assert (chk12.result, chk12.error_class) == (FAIL, "Transport"), chk12.message
+    assert "Heartbeat (C+8) write failed, the beat stopped" in chk12.message

@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import time
 
 from .client import PlcClient, PlcError
 from .registers import RegisterMap, next_nonzero
+
+log = logging.getLogger(__name__)
 
 BEAT_PERIOD_S = 0.1
 """protocol.md § Conformance checks, "Beat": the checker writes ``Heartbeat`` every 100 ms."""
@@ -17,8 +20,9 @@ class Beater:
     """Writes an incrementing ``Heartbeat`` (1…65535, never 0) every 100 ms until stopped.
 
     ``last_beat`` is the ``time.monotonic()`` at which the last beat write completed: every watchdog timing is
-    measured from it. A failed beat write stops the loop, and ``stop()`` re-raises it, so a flaky link is reported as
-    such instead of as a PLC trip.
+    measured from it. A beat write that fails after the client's one retry is logged at Warning and ends the loop
+    (protocol.md § Errors and debugging, rule 3). ``stop()`` re-raises it, and ``raise_if_failed()`` lets every wait
+    report it as Transport before the PLC's watchdog trip can be mistaken for a Machine fault (rule 2; review #7).
     """
 
     def __init__(self, client: PlcClient, registers: RegisterMap, period_s: float = BEAT_PERIOD_S) -> None:
@@ -53,7 +57,11 @@ class Beater:
         while True:
             await asyncio.sleep(max(0.0, next_at - time.monotonic()))
             next_at += self._period_s
-            await self._beat()
+            try:
+                await self._beat()
+            except PlcError as exc:
+                log.warning("Heartbeat (C+8) write failed, the beat stopped: %s", exc)
+                raise
 
     async def stop(self) -> float | None:
         """Stop beating; returns ``last_beat``. Re-raises a beat write failure as ``PlcError``."""
@@ -69,6 +77,12 @@ class Beater:
         with contextlib.suppress(asyncio.CancelledError):
             await task
         return self.last_beat
+
+    def raise_if_failed(self) -> None:
+        """Raise the beat's failure as ``PlcError`` (Transport) if the loop ended by itself."""
+        failure = self.failure()
+        if failure is not None:
+            raise PlcError(f"Heartbeat (C+8) write failed, the beat stopped: {failure}") from failure
 
     def failure(self) -> BaseException | None:
         """The exception that ended the loop, if it ended by itself."""

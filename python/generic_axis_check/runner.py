@@ -19,6 +19,7 @@ from .errors import (
     COMMUNICATION_LOST,
     NOT_ACKNOWLEDGED,
     PROTOCOL_MISMATCH,
+    WATCHDOG_TRIPPED,
     ErrorClass,
     Read,
     format_message,
@@ -404,10 +405,19 @@ def exception_outcome(exc: PlcError | AckTimeout | LeaseHeld, registers: Registe
 
 
 async def _run_one(check: Check, ctx: CheckContext) -> Outcome:
+    ctx.client.guard = ctx.beater.raise_if_failed  # a dead beat is Transport, never a Machine trip (review #7)
     try:
-        return await check.run(ctx)
+        outcome = await check.run(ctx)
+        if outcome.result == FAIL and outcome.motion_error == WATCHDOG_TRIPPED:
+            # The guard ran before the read that showed the trip, but that read queued behind the beat's retry on
+            # the one pymodbus connection: the beat can have died while it waited. Then the trip's cause is the lost
+            # link, and the FAIL says so (rule 2).
+            ctx.beater.raise_if_failed()
+        return outcome
     except (PlcError, AckTimeout, LeaseHeld) as exc:
         return exception_outcome(exc, ctx.registers)
+    finally:
+        ctx.client.guard = None  # evidence, restore and cleanup must still reach the PLC
 
 
 def ctx_last_read(ctx: CheckContext) -> LastRead:
