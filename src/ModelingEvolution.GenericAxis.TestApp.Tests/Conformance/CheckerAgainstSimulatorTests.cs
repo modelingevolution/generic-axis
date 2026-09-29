@@ -646,5 +646,66 @@ public sealed class CheckerAgainstSimulatorTests
         after.WatchdogFault.Should().Be(1, "the commander's trip is its own");
     }
 
+    /// <summary>
+    /// GA-I-61 (Python review #26 mirror): a second Ctrl-C 20 ms after the first, while the axis moves, must not abort
+    /// the cleanup. The real process gets two SIGINTs and must end INTERRUPTED (exit 4) with the axis stopped, Enable 0,
+    /// the lease released and no WatchdogFault left behind.
+    /// </summary>
+    [Fact]
+    public async Task GA_I_61_ASecondCtrlCDuringCleanupDoesNotAbortIt()
+    {
+        using var sim = new LiveSimulator();
+        var dll = Path.Combine(AppContext.BaseDirectory, "ModelingEvolution.GenericAxis.TestApp.dll");
+        var workDir = Directory.CreateTempSubdirectory("ga-i-61-").FullName;
+        var psi = new System.Diagnostics.ProcessStartInfo("dotnet")
+        {
+            ArgumentList = { dll, "--check", $"127.0.0.1:{sim.Port}", "--allow-motion", "--report", Path.Combine(workDir, "r.md") },
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            WorkingDirectory = workDir,
+        };
+        using var process = System.Diagnostics.Process.Start(psi)!;
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        try
+        {
+            var moving = System.Diagnostics.Stopwatch.StartNew();
+            // CHK-12 homes for several seconds: interrupt while the axis moves under the checker's command.
+            while (sim.Snapshot.State is not (SimAxisState.Homing or SimAxisState.DiscreteMotion or SimAxisState.ContinuousMotion))
+            {
+                moving.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(90), "setup: the run reaches a motion check");
+                if (process.HasExited) throw new InvalidOperationException($"setup: the run ended before any motion: {await stderr}");
+                await Task.Delay(10);
+            }
+
+            Signal(process.Id);
+            await Task.Delay(20);
+            Signal(process.Id);
+
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await process.WaitForExitAsync(timeout.Token);
+        }
+        finally
+        {
+            if (!process.HasExited) process.Kill(entireProcessTree: true);
+        }
+
+        process.ExitCode.Should().Be(4, await stderr);
+        (await stdout).TrimEnd().Should().EndWith("RESULT: INTERRUPTED");
+        var end = await sim.SettledAsync();
+        end.Velocity.Should().Be(0, "the cleanup's Stop was not cut short");
+        end.CommandBlock[0].Should().Be(0, "the cleanup ended with Enable 0 and the edge bits cleared");
+        end.LeaseOwner.Should().Be(0, "the cleanup released the lease");
+        end.WatchdogFault.Should().Be(0);
+        end.State.Should().Be(SimAxisState.Disabled);
+        Directory.Delete(workDir, recursive: true);
+
+        static void Signal(int pid)
+        {
+            using var kill = System.Diagnostics.Process.Start("kill", ["-INT", pid.ToString(System.Globalization.CultureInfo.InvariantCulture)])!;
+            kill.WaitForExit();
+        }
+    }
+
     private volatile bool _chk14Running;
 }
