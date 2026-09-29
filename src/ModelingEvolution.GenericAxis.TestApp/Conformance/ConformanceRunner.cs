@@ -299,11 +299,10 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
             var beats = new List<ushort> { first.Beat };
             var (owner, fault) = (first.Owner, first.Fault);
             var watched = Stopwatch.StartNew();
-            // Watch until a beat, a trip under a held lease, or the window's end; a beat is still watched to 1 s so the
-            // refusal names several values.
-            while (beats.Count > 1
-                       ? watched.Elapsed < PreflightWindow
-                       : !(owner != 0 && fault != 0) && watched.Elapsed < (owner == 0 ? PreflightWindow : HeldLeaseWindow))
+            // At least the full 1 s is always watched: a beat at any time refuses, and WatchdogFault = 1 is evidence of a
+            // dead holder only together with a Heartbeat silent for that whole second (Python review #25). A held lease
+            // that neither beats nor shows a trip is watched on to 1.6 s.
+            while (watched.Elapsed < PreflightWindow || (beats.Count == 1 && owner != 0 && fault == 0 && watched.Elapsed < HeldLeaseWindow))
             {
                 await Task.Delay(Beater.Period, ct);
                 var now = await ReadBeatOwnerFaultAsync(ctx, ct);
