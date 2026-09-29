@@ -95,16 +95,17 @@ JOG_SPEED_PERCENT = 1
 
 CRUISE_FRACTION = 0.9
 CRUISE_WAIT_S = 2.0
-"""CHK-14: write Stop once ``abs(ActualVelocity)`` ≥ 90 % of the commanded speed, or after 2 s. CHK-16 reuses the
-2 s bound to wait for motion before it stops beating, so the kill lands on a moving axis."""
+"""CHK-14: write Stop once ``abs(ActualVelocity)`` ≥ 90 % of the commanded speed, or after 2 s."""
+
+MOTION_START_S = 2.0
+"""CHK-16: ``ActualVelocity > 0`` within 2 s of the ack, then stop beating (protocol.md, lead ruling on #10)."""
 
 JOG_RUN_S = 1.0
 """CHK-15: MoveVelocity for 1 s, then Stop."""
 
 
 def travel_timeout_s(distance: int, velocity: int) -> float:
-    """Arrival bound for CHK-13/14. The protocol sets none: the checker allows twice the constant-speed travel time
-    plus CHK-06's 5 s state budget, so a ramp never fails the check and a stalled axis still ends it."""
+    """CHK-13: arrives within 2 × |target − start| ÷ velocity + 5 s (protocol.md, lead ruling on #10)."""
     return 2 * abs(distance) / max(velocity, 1) + STATE_TIMEOUT_S
 
 
@@ -653,10 +654,9 @@ async def chk13(ctx: CheckContext) -> Outcome:
             Read("Flags", int(s.flags)),
             Read("ActualPosition", s.actual_position, target),
         )
-        # Review #10: the protocol sets no arrival budget, so the FAIL states the one the checker used.
+        # Review #10: the FAIL names the budget used (protocol CHK-13).
         what = (
-            f"not arrived in position within the checker's arrival budget of {budget_s:.1f} s "
-            f"(2 × travel time at the commanded speed + {STATE_TIMEOUT_S:g} s; the protocol sets none)"
+            f"not arrived in position within {budget_s:.1f} s (2 × |target − start| ÷ velocity + {STATE_TIMEOUT_S:g} s)"
         )
         return motion_failed(ctx, what, *reads, **observed)
     tolerance = round(ctx.options.tolerance * UNITS)
@@ -685,7 +685,7 @@ async def stop_and_measure(
         outcome = (
             f"halted after {late.elapsed_ms} ms"
             if late.met
-            else f"still moving after the checker's {STATE_TIMEOUT_S:g} s watch; the protocol sets no budget"
+            else f"still moving after the checker's {STATE_TIMEOUT_S:g} s watch"
         )
         what = f"still moving {ms(STOP_HALT_S)} ms after the Stop write ({outcome})"
         reads = (
@@ -768,12 +768,13 @@ async def chk16(ctx: CheckContext) -> Outcome:
     start = await ctx.status()
     velocity = percent_of(start.max_velocity, JOG_SPEED_PERCENT)
     await ctx.write_parameters(start.actual_position, velocity, 0)
-    await ctx.command(Command.ENABLE | Command.MOVE_VELOCITY)
+    jog = await ctx.command(Command.ENABLE | Command.MOVE_VELOCITY)
     moving = await wait_for(
         ctx.client,
         ctx.registers,
         lambda s: s.state != AxisState.CONTINUOUS_MOTION or s.actual_velocity > 0,
-        CRUISE_WAIT_S,
+        MOTION_START_S,
+        since=jog.written_at,
     )
     observed = {"commandedVelocity": velocity}
     if moving.status.state != AxisState.CONTINUOUS_MOTION or moving.status.actual_velocity <= 0:
@@ -781,7 +782,7 @@ async def chk16(ctx: CheckContext) -> Outcome:
             Read("State", moving.status.state, int(AxisState.CONTINUOUS_MOTION)),
             Read("ActualVelocity", moving.status.actual_velocity),
         )
-        what = f"not moving within the checker's {CRUISE_WAIT_S:g} s of MoveVelocity (the protocol sets none), before the kill"
+        what = f"ActualVelocity not > 0 within {MOTION_START_S:g} s of the MoveVelocity ack, before the kill"
         return motion_failed(ctx, what, *reads, **observed)
     last_beat = await ctx.beater.stop_beating()
     watch = await watch_trip(ctx, last_beat, 0, need_latch=False)
