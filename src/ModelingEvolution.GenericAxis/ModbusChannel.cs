@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Sockets;
 using FluentModbus;
 using Microsoft.Extensions.Logging;
 using RocketWelder.SDK.Devices.Motion;
@@ -35,15 +36,26 @@ internal sealed class ModbusChannel : IModbusChannel
 
     private readonly ILogger? _logger;
     private readonly PriorityGate _gate;
+    private readonly string _label;
+    private readonly RegisterMap? _map;
     private ModbusTcpClient _client;
     private volatile bool _disposed;
 
-    public ModbusChannel(string host, int port, ILogger? logger, PriorityGate? gate = null)
+    /// <param name="host">PLC host.</param>
+    /// <param name="port">Modbus TCP port.</param>
+    /// <param name="logger">Logger.</param>
+    /// <param name="gate">The lane gate; a new one when absent.</param>
+    /// <param name="label">Message prefix (the axis name, or a checker id); <c>host:port</c> when absent.</param>
+    /// <param name="map">Block bases, so messages name ranges as <c>S+0…S+14</c>; raw addresses when absent.</param>
+    public ModbusChannel(string host, int port, ILogger? logger, PriorityGate? gate = null, string? label = null,
+        RegisterMap? map = null)
     {
         Host = host;
         Port = port;
         _logger = logger;
         _gate = gate ?? new PriorityGate();
+        _label = label ?? $"{host}:{port}";
+        _map = map;
         _client = NewClient();
     }
 
@@ -65,7 +77,7 @@ internal sealed class ModbusChannel : IModbusChannel
 
     /// <inheritdoc/>
     public Task ConnectAsync(CancellationToken ct) =>
-        ExecuteAsync<object?>(_ => null, "connect", ChannelPriority.Move, ct);
+        ExecuteAsync<object?>(_ => null, "connect", null, ChannelPriority.Move, ct);
 
     /// <inheritdoc/>
     public async Task DisconnectAsync(CancellationToken ct = default)
@@ -92,17 +104,23 @@ internal sealed class ModbusChannel : IModbusChannel
         _client.Connect(endpoint, ModbusEndianness.BigEndian);
     }
 
+    /// <summary>
+    /// Whether an exception is a transport failure (protocol § Errors and debugging, class Transport): a socket or IO
+    /// error, a timeout, a Modbus exception from the PLC, or FluentModbus's "connection closed" signal
+    /// (<see cref="InvalidOperationException"/> from the transport layer).
+    /// </summary>
+    internal static bool IsTransport(Exception ex) => Innermost(ex) is IOException or SocketException or TimeoutException
+        or ModbusException or InvalidOperationException;
+
     /// <summary>Runs one transaction in its lane, retrying once after a reconnect.</summary>
-    /// <exception cref="MotionException"><see cref="MotionError.CommunicationLost"/> — both attempts failed, or the
-    /// channel is disposed.</exception>
-    private async Task<T> ExecuteAsync<T>(Func<ModbusTcpClient, T> operation, string what,
-        ChannelPriority priority, CancellationToken ct)
+    /// <exception cref="MotionException"><see cref="MotionError.CommunicationLost"/> — both attempts failed with a
+    /// transport failure, or the channel is disposed.</exception>
+    private async Task<T> ExecuteAsync<T>(Func<ModbusTcpClient, T> operation, string what, string? range,
+        ChannelPriority priority, CancellationToken ct, byte unit = 0)
     {
         // A disposed channel must never quietly reopen the socket: that would make a killed commander look alive
         // again for one transaction.
-        if (_disposed)
-            throw new MotionException(MotionError.CommunicationLost,
-                $"{Host}:{Port}: {what} attempted on a disposed channel");
+        if (_disposed) throw Disposed(what, range);
 
         IDisposable slot;
         try
@@ -111,37 +129,66 @@ internal sealed class ModbusChannel : IModbusChannel
         }
         catch (ObjectDisposedException)
         {
-            throw new MotionException(MotionError.CommunicationLost,
-                $"{Host}:{Port}: {what} abandoned — the channel was disposed");
+            throw Disposed(what, range);
         }
 
         using (slot)
         {
             for (var attempt = 0; ; attempt++)
             {
-                if (_disposed)
-                    throw new MotionException(MotionError.CommunicationLost,
-                        $"{Host}:{Port}: {what} abandoned — the channel was disposed");
+                if (_disposed) throw Disposed(what, range);
+                Exception failure;
                 try
                 {
+                    // Any failure to open the socket is a transport failure by definition (FluentModbus reports a
+                    // connect timeout as a plain Exception and a refusal wrapped in an AggregateException).
                     EnsureConnected();
-                    return operation(_client);
-                }
-                catch (Exception ex) when (attempt == 0)
-                {
-                    _logger?.LogDebug(ex, "{Host}:{Port}: {What} failed, reconnecting and retrying", Host, Port, what);
-                    Reset();
-                    await Task.Delay(RetryPause, ct);
                 }
                 catch (Exception ex)
                 {
-                    Reset();
-                    throw new MotionException(MotionError.CommunicationLost,
-                        $"{Host}:{Port}: {what} failed — {ex.Message}");
+                    failure = ex;
+                    goto failed;
                 }
+
+                try
+                {
+                    return operation(_client);
+                }
+                catch (Exception ex) when (IsTransport(ex))
+                {
+                    failure = ex;
+                }
+
+                failed:
+                var reason = Innermost(failure).Message;
+                Reset();
+                if (attempt == 0)
+                {
+                    _logger?.LogWarning(failure,
+                        "{Label}: {What}{Range} on {Host}:{Port} unit {Unit} failed ({Message}); reconnecting "
+                        + "and retrying once", _label, what, range is null ? "" : " " + range, Host, Port, unit, reason);
+                    await Task.Delay(RetryPause, ct);
+                    continue;
+                }
+
+                throw new MotionException(MotionError.CommunicationLost,
+                    $"{_label}: {MotionError.CommunicationLost}: {what}"
+                    + $"{(range is null ? "" : " " + range)} on {Host}:{Port} unit {unit} failed twice "
+                    + $"(reconnected once): {reason}.");
             }
         }
     }
+
+    private static Exception Innermost(Exception ex) =>
+        ex is AggregateException { InnerExceptions.Count: 1 } agg ? Innermost(agg.InnerExceptions[0]) : ex;
+
+    private MotionException Disposed(string what, string? range) =>
+        new(MotionError.CommunicationLost,
+            $"{_label}: {MotionError.CommunicationLost}: {what}"
+            + $"{(range is null ? "" : " " + range)} on {Host}:{Port} not sent: the channel was disposed.");
+
+    private string Range(string op, ushort address, int count) =>
+        $"({op} {(_map is null ? (count <= 1 ? $"{address}" : $"{address}…{address + count - 1}") : _map.DescribeRange(address, count))})";
 
     private void Reset()
     {
@@ -161,19 +208,20 @@ internal sealed class ModbusChannel : IModbusChannel
     /// <inheritdoc/>
     public Task<ushort[]> ReadHoldingAsync(byte unit, ushort address, ushort count, string what,
         ChannelPriority priority = ChannelPriority.Move, CancellationToken ct = default)
-        => ExecuteAsync(c => c.ReadHoldingRegisters<ushort>(unit, address, count).ToArray(), what, priority, ct);
+        => ExecuteAsync(c => c.ReadHoldingRegisters<ushort>(unit, address, count).ToArray(), what,
+            Range("read", address, count), priority, ct, unit);
 
     /// <inheritdoc/>
     public Task WriteRegisterAsync(byte unit, ushort address, ushort value, string what,
         ChannelPriority priority = ChannelPriority.Move, CancellationToken ct = default)
         => ExecuteAsync<object?>(c => { c.WriteSingleRegister(unit, address, value); return null; },
-            what, priority, ct);
+            what, Range("write", address, 1), priority, ct, unit);
 
     /// <inheritdoc/>
     public Task WriteRegistersAsync(byte unit, ushort address, ushort[] values, string what,
         ChannelPriority priority = ChannelPriority.Move, CancellationToken ct = default)
         => ExecuteAsync<object?>(c => { c.WriteMultipleRegisters(unit, address, values); return null; },
-            what, priority, ct);
+            what, Range("write", address, values.Length), priority, ct, unit);
 
     /// <inheritdoc/>
     public void Dispose()
