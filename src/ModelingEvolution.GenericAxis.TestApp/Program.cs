@@ -3,6 +3,7 @@ using ModelingEvolution.GenericAxis.TestApp.Components;
 using ModelingEvolution.GenericAxis.TestApp.Conformance;
 using MudBlazor.Services;
 
+ThreadPoolFloor.Ensure();
 if (args.Contains(CheckCommandLine.Flag)) return await CheckMode.RunAsync(args);
 if (args.Contains(HeadlessMode.Flag)) return await HeadlessMode.RunAsync(args);
 
