@@ -225,7 +225,8 @@ public sealed class GenericAxisConnector : BackgroundService
     /// attach without a restart.</item>
     /// <item><b>Transport</b>, and <b>Machine</b> should one ever reach attach (an axis in ErrorStop
     /// still attaches and shows its fault): Warning once per outage, then Debug, retried every 5 s. A
-    /// successful attach and <see cref="Forget"/> re-arm the warning.</item>
+    /// successful attach, a <c>LeaseHeld</c> answer (the PLC answered) and <see cref="Forget"/> end the
+    /// outage and re-arm the warning.</item>
     /// </list>
     /// </remarks>
     internal void ReportFailure(DeviceId id, Exception ex)
@@ -234,6 +235,9 @@ public sealed class GenericAxisConnector : BackgroundService
 
         if (ex is MotionException { Error: MotionError.LeaseHeld })
         {
+            // The PLC answered, so any transport outage is over: the next Transport failure is a new
+            // outage and warns again (lead ruling 2026-09-29).
+            _reported.TryRemove(id, out _);
             _notBefore.TryRemove(id, out _);
             _logger?.LogInformation(
                 "{ErrorClass}: generic axis {Device} did not attach: {ErrorMessage} (next attempt in {Seconds} s)",
