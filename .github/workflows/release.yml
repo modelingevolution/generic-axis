@@ -135,14 +135,20 @@ jobs:
             echo "present  $required"
           done
 
-          # And the converse: a host-shipped assembly left behind would shadow nothing and only confuse.
-          for forbidden in ModelingEvolution.Drawing.dll RocketWelder.SDK.Abstractions.dll; do
-            if [ -f "$DIR/$forbidden" ]; then
-              echo "::error::$forbidden should have been stripped — the host serves it."
+          # And the converse: nothing from a stripped family may be left behind. The host's copy wins
+          # at load, so a leftover shadows nothing and only confuses; a leftover also means the strip
+          # patterns and this list have drifted apart. Same families as the strip step.
+          shopt -s nullglob
+          for pattern in 'RocketWelder.SDK*' 'ModelingEvolution.Drawing*' 'ModelingEvolution.Signals*' \
+                         'MicroPlumberd*' 'MudBlazor*' '*.runtimeconfig.json'; do
+            left=( "$DIR"/$pattern )
+            if [ ${#left[@]} -gt 0 ]; then
+              echo "::error::$pattern should have been stripped — the host serves it: ${left[*]}"
               exit 1
             fi
-            echo "absent   $forbidden"
+            echo "absent   $pattern"
           done
+          shopt -u nullglob
 
           echo "--- staged closure ---"
           ls -1 "$DIR"
