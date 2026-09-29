@@ -470,3 +470,27 @@ async def test_beat_for_counts_from_the_step_not_from_the_beats_start(stub: Stub
         await ctx.beater.stop()
         client.close()
     assert elapsed >= 2.0
+
+
+@pytest.mark.timeout(60)
+async def test_ctrl_c_during_chk11c_leaves_no_lease_client_running_into_cleanup(
+    stub: StubPlc, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # GA-U-83.py (review #12): cancel while (c)'s lease client watches. It is cancelled with the check, so it cannot
+    # take the lease after cleanup released it: LeaseOwner stays 0.
+    monkeypatch.setattr("generic_axis_check.checks.WATCH_BEFORE_STALL_S", 5.0)  # widen (c)'s watch window
+    wanted = {"CHK-01", "CHK-02", "CHK-11"}
+    task = asyncio.create_task(run(options(stub), checks=tuple(c for c in CHECKS if c.id in wanted)))
+    while stub.regs[MAP.lease_owner] != 65534:  # noqa: ASYNC110 — (b) starts: the incumbent's id
+        await asyncio.sleep(0.005)
+    await asyncio.sleep(3.0 + 1.0)  # (b)'s 3 s refusal, then 1 s into (c)'s watch
+    cancelled_at = len(stub.writes)
+    task.cancel()
+    report = await task
+    leaked = [t for t in asyncio.all_tasks() if not t.done() and getattr(t.get_coro(), "__name__", "") == "acquire"]
+    assert leaked == []
+    assert report.exit_code == 4
+    assert by_id(report)["CHK-11"] == (SKIPPED, "interrupted by the operator during CHK-11")
+    await asyncio.sleep(2.0)  # longer than the lease expiry a leaked client would wait for
+    assert (MAP.lease_owner, [65535]) not in stub.writes[cancelled_at:]
+    assert stub.regs[MAP.lease_owner] != 65535

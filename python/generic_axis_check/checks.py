@@ -7,11 +7,13 @@ Every threshold below cites the table row it comes from. Positions and velocitie
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 from .beat import BEAT_PERIOD_S, Beater
+from .client import PlcError
 from .context import (
     ACK_TIMEOUT_S,
     FOREIGN_OWNER_ID,
@@ -30,7 +32,7 @@ from .errors import (
     format_message,
     machine_error,
 )
-from .lease import LeaseHeld, acquire
+from .lease import LeaseHeld, LeaseTaken, acquire
 from .poll import POLL_PERIOD_S, ms, wait_for
 from .registers import (
     MAP_VERSION,
@@ -518,6 +520,7 @@ async def chk11(ctx: CheckContext) -> Outcome:
         return mismatch(ctx, "(a) the lease did not read back", Read("LeaseOwner", read_back, own), **observed)
 
     incumbent = Beater(ctx.client, registers)
+    take: asyncio.Task[LeaseTaken] | None = None
     try:
         # (b) a live foreign incumbent → refused after the 3 s timeout, its lease untouched.
         await ctx.client.write(registers.lease_owner, [FOREIGN_OWNER_ID])
@@ -552,6 +555,12 @@ async def chk11(ctx: CheckContext) -> Outcome:
         ctx.holds_lease = True
         observed["takenAfterMs"] = ms(taken.taken_at - last_beat)
     finally:
+        if take is not None and not take.done():
+            # Review #12: a Ctrl-C during (c) must not leave the lease client running into cleanup, where it would
+            # write LeaseOwner = the checker's id after cleanup released the lease.
+            take.cancel()
+            with contextlib.suppress(asyncio.CancelledError, LeaseHeld, PlcError):
+                await take
         await incumbent.stop()
         # "Any trip caused by (c) is cleaned up": the incumbent's stall arms and trips the PLC watchdog.
         fault, _ = await ctx.watchdog()
