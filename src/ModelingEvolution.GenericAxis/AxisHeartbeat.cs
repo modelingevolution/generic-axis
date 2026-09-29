@@ -160,7 +160,12 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
         // The timer is created here, synchronously, so the first tick is due one interval after Start on the
         // injected clock — not one interval after a thread-pool hop.
         var timer = new PeriodicTimer(Interval, _time);
-        _loop = RunAsync(timer, _stop.Token);
+        // On the thread pool, never on the caller's SynchronizationContext (GA-U-127): the beat is the commander's
+        // proof of life to the watchdog and must not queue behind a UI dispatcher or a test scheduler. Started from
+        // a context, the loop's awaits resumed on it — on a 2-CPU runner an 850 ms beat gap, a false NotAcknowledged
+        // and a real watchdog trip.
+        var token = _stop.Token;
+        _loop = Task.Run(() => RunAsync(timer, token));
         _logger?.LogInformation("{Axis}: heartbeat started on {Host}:{Port} every {Interval} ms as owner {Owner}",
             _axis, _channel.Host, _channel.Port, Interval.TotalMilliseconds, OwnerId);
     }
@@ -168,7 +173,6 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
     private async Task RunAsync(PeriodicTimer timer, CancellationToken ct)
     {
         using var _ = timer;
-        await Task.Yield();
         try
         {
             while (await timer.WaitForNextTickAsync(ct))
