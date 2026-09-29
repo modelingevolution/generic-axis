@@ -8,7 +8,7 @@ namespace ModelingEvolution.GenericAxis.Tests;
 /// <summary>
 /// test-scenarios.md § Unit — review #11: the heartbeat loop never dies silently. A malformed PLC answer is
 /// ProtocolMismatch (latched, the #7 overlay); any other defect is logged at Error under its CLR type with no class
-/// and no overlay; in both cases the beat continues (GA-U-79, GA-U-80).
+/// and no overlay; in both cases the beat continues (GA-U-79, GA-U-83, GA-U-84).
 /// </summary>
 public class HeartbeatLoopTests
 {
@@ -41,7 +41,7 @@ public class HeartbeatLoopTests
         rig.Axis.Status.Error.Should().BeNull();
     }
 
-    [Fact(DisplayName = "GA-U-80 A non-protocol defect in a tick is logged at Error under its type, with no class and no overlay")]
+    [Fact(DisplayName = "GA-U-83 A non-protocol defect in a tick is logged at Error under its type, with no class and no overlay")]
     public async Task UnexpectedException_ErrorUnderClrType_NoOverlay_BeatContinues()
     {
         await using var rig = await new DriverRig().ConnectAsync();
@@ -68,7 +68,7 @@ public class HeartbeatLoopTests
         rig.Device.Heartbeat.TickCount.Should().Be(ticks + 1, "the loop survived the defect");
     }
 
-    [Fact(DisplayName = "GA-U-81 A short status read at attach refuses with ProtocolMismatch, logged once at Error, nothing written")]
+    [Fact(DisplayName = "GA-U-84 A short status read at attach refuses with ProtocolMismatch, logged once at Error, nothing written")]
     public async Task ShortStatusReadAtAttach_RefusedOnceAtError()
     {
         await using var rig = new DriverRig();

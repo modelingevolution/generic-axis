@@ -6,7 +6,7 @@ namespace ModelingEvolution.GenericAxis.Tests;
 
 /// <summary>
 /// test-scenarios.md § Unit — review #12 / FR-5: the station STOP reaches every device; on one that is not attached
-/// it writes nothing, throws nothing, and says so in one Information line (GA-U-82).
+/// it writes nothing, throws nothing, and says so in one Information line (GA-U-85).
 /// </summary>
 public class UnattachedStopTests
 {
@@ -14,7 +14,7 @@ public class UnattachedStopTests
         .Where(r => r.Message.Contains("not attached, nothing of ours is moving"))
         .Select(r => $"{r.Level}: {r.Message}").ToArray();
 
-    [Fact(DisplayName = "GA-U-82 STOP on a never-attached device: no write, no throw, one Information line")]
+    [Fact(DisplayName = "GA-U-85 STOP on a never-attached device: no write, no throw, one Information line")]
     public async Task StopAll_NeverAttached_NoWriteNoThrowOneLine()
     {
         await using var rig = new DriverRig();
@@ -26,7 +26,7 @@ public class UnattachedStopTests
         rig.Logs.GetSnapshot().Should().NotContain(r => r.Level >= LogLevel.Warning);
     }
 
-    [Fact(DisplayName = "GA-U-82 STOP after a clean disconnect: no write, no throw, one Information line")]
+    [Fact(DisplayName = "GA-U-85 STOP after a clean disconnect: no write, no throw, one Information line")]
     public async Task StopAxis_AfterDisconnect_NoWriteNoThrowOneLine()
     {
         await using var rig = await new DriverRig().ConnectAsync();
