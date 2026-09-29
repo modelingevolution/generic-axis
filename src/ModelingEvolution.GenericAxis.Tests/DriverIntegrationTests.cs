@@ -122,6 +122,31 @@ public class DriverIntegrationTests(ITestOutputHelper output)
                                                    || (e is MotionException && ((MotionException)e).Error == MotionError.MotionFailed));
     }
 
+    [Fact(DisplayName = "GA-I-26 A fixture that misses its scan cadence makes a failed budget INCONCLUSIVE, not red")]
+    public async Task Stop_FixtureScanStalled_BudgetFailureIsInconclusive()
+    {
+        await using var rig = new LiveRig();
+        var track = await rig.ConnectedTrack(power: true);
+        var move = await Cruise(rig, track, 9000, 500);
+
+        // GA-I-05's window, with the fixture's scan thread stalled 300 ms (what a starved host does to it).
+        rig.Plc.ResetMaxScanGap();
+        var start = Stopwatch.GetTimestamp();
+        var halted = rig.Plc.WhenScan(t => t.Velocity == 0, T, "halted");
+        rig.Plc.OnScan(() => Thread.Sleep(300));
+        var stop = track.Carriage.StopAsync();
+        var haltMs = Stopwatch.GetElapsedTime(start, (await halted).At).TotalMilliseconds;
+        var gap = rig.Plc.MaxScanGap;
+        await stop.WaitAsync(T);
+        await move.Invoking(m => m.WaitAsync(T)).Should().ThrowAsync<Exception>();
+
+        output.WriteLine($"GA-I-26 halt {haltMs:F0} ms, fixture max scan gap {gap.TotalMilliseconds:F0} ms");
+        haltMs.Should().BeGreaterThan(200, "the stalled fixture halted late");
+        FluentActions.Invoking(() => Cadence.Budget(gap, () => haltMs.Should().BeLessThanOrEqualTo(200)))
+            .Should().Throw<InconclusiveException>()
+            .WithMessage($"INCONCLUSIVE: fixture missed cadence: max scan gap {gap.TotalMilliseconds:F0} ms*");
+    }
+
     [TimingFact(DisplayName = "GA-I-06 The station STOP path stops the axis")]
     public async Task StopAll_Cruising_HaltsWithin200ms()
     {
