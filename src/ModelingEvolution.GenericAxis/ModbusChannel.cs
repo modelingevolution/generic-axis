@@ -25,10 +25,10 @@ namespace ModelingEvolution.GenericAxis;
 /// </summary>
 internal sealed class ModbusChannel : IModbusChannel
 {
-    /// <summary>FluentModbus <c>ConnectTimeout</c> (design: 1 000 ms).</summary>
+    /// <summary>Bound on opening the socket (design: 1 000 ms).</summary>
     public static readonly TimeSpan ConnectTimeout = TimeSpan.FromMilliseconds(1000);
 
-    /// <summary>FluentModbus <c>ReadTimeout</c> and <c>WriteTimeout</c> (design: 500 ms).</summary>
+    /// <summary>Bound on waiting for the PLC's response to one frame — the stream's read timeout (design: 500 ms).</summary>
     public static readonly TimeSpan IoTimeout = TimeSpan.FromMilliseconds(500);
 
     /// <summary>Pause between a failed transaction and its one retry (design: 300 ms).</summary>
@@ -74,12 +74,9 @@ internal sealed class ModbusChannel : IModbusChannel
     /// <inheritdoc/>
     public bool IsConnected => !_disposed && _client.IsConnected;
 
-    private static ModbusTcpClient NewClient() => new()
-    {
-        ConnectTimeout = (int)ConnectTimeout.TotalMilliseconds,
-        ReadTimeout = (int)IoTimeout.TotalMilliseconds,
-        WriteTimeout = (int)IoTimeout.TotalMilliseconds,
-    };
+    // No client-level timeouts: FluentModbus applies ConnectTimeout/ReadTimeout/WriteTimeout only on its own Connect
+    // path, which the channel does not use (EnsureConnectedAsync bounds the connect and sets the stream's timeout).
+    private static ModbusTcpClient NewClient() => new();
 
     /// <inheritdoc/>
     public Task ConnectAsync(CancellationToken ct) =>
@@ -119,8 +116,11 @@ internal sealed class ModbusChannel : IModbusChannel
         {
             await tcp.ConnectAsync(ip, Port).WaitAsync(ConnectTimeout);
             var stream = tcp.GetStream();
+            // The async read's timeout comes from this property (review #34, GA-U-86). There is no WriteTimeout: it
+            // does not apply to WriteAsync (mutation-checked inert), and none is needed — every frame waits for its
+            // response before the next write on this socket, so at most one frame (≤ 260 bytes) is ever unacknowledged
+            // and a send can never block on a full buffer. A silent peer fails the response read, and the socket is reset.
             stream.ReadTimeout = (int)IoTimeout.TotalMilliseconds;
-            stream.WriteTimeout = (int)IoTimeout.TotalMilliseconds;
             _client.Initialize(tcp, ModbusEndianness.BigEndian);
         }
         catch
