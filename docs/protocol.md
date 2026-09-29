@@ -73,7 +73,8 @@ combination (a partial publication included) makes the driver refuse to attach.
   `bit0 = 0` → drive off, State = Disabled. After a watchdog trip or any entry into ErrorStop the PLC ignores bit 0
   until a Reset, and after the Reset it energises only on a fresh 0→1 of bit 0 — an axis never re-energises by
   itself. A move with Enable low is ignored and answered by `FaultCode = 0`, `State = Disabled`; the driver rejects
-  it before writing (SDK `MotionError.Busy`).
+  it before writing (SDK `MotionError.Busy`). A `Velocity` above `MaxVelocity` or a `TargetPosition` outside
+  `TravelMin..TravelMax` is acknowledged and ignored (State unchanged); a PLC never clamps.
 - **Home** (edge): PLC runs its own homing sequence; State = Homing until done, then Standstill with `Homed`. The
   driver treats Home as callable from Disabled (it is the energise act: the driver sets Enable first). Failure →
   ErrorStop, `FaultCode = 5`.

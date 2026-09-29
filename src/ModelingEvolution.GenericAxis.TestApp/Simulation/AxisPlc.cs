@@ -370,12 +370,14 @@ public sealed class AxisPlc
         var accel = _r.ReadInt32(_c + SimRegisters.Acceleration, swapped) / SimRegisters.Scale;
 
         if (target < _o.TravelMin || target > _o.TravelMax)
-            return Ignored(command, $"target {target} {_o.Unit} outside travel {_o.TravelMin}..{_o.TravelMax}");
+            return Ignored(command,
+                $"TargetPosition (C+{SimRegisters.TargetPosition}) = {target} {_o.Unit}, outside TravelMin..TravelMax {_o.TravelMin}..{_o.TravelMax}");
         if (speed <= 0) return Ignored(command, "Velocity 0");
+        if (speed > _o.MaxVelocity) return OverMaxVelocity(command, speed);
         if (TowardActiveSwitch(target - Published)) return Ignored(command, "motion toward an active limit switch");
 
         _target = target;
-        _vcmd = Math.Min(speed, _o.MaxVelocity);
+        _vcmd = speed;
         _accel = accel > 0 ? accel : _o.DefaultAcceleration;
         _moveStart = Published;
         _followingErrorArmed = _faults.FollowingErrorAtHalfway;
@@ -394,14 +396,20 @@ public sealed class AxisPlc
         var accel = _r.ReadInt32(_c + SimRegisters.Acceleration, swapped) / SimRegisters.Scale;
 
         if (velocity == 0) return Ignored(command, "Velocity 0");
+        if (Math.Abs(velocity) > _o.MaxVelocity) return OverMaxVelocity(command, velocity);
         if (TowardActiveSwitch(velocity)) return Ignored(command, "motion toward an active limit switch");
 
-        _vcmd = Math.Clamp(velocity, -_o.MaxVelocity, _o.MaxVelocity);
+        _vcmd = velocity;
         _accel = accel > 0 ? accel : _o.DefaultAcceleration;
         _inPosition = false;
         SetState(SimAxisState.ContinuousMotion, $"MoveVelocity {_vcmd} {_o.Unit}/s, a {_accel}");
         return true;
     }
+
+    // Refuse, never clamp (ADR-3, protocol § Command semantics): a clamped speed would hide a regressed driver guard.
+    private bool OverMaxVelocity(SimCommandBits command, double velocity) =>
+        Ignored(command,
+            $"Velocity (C+{SimRegisters.Velocity}) = {velocity} {_o.Unit}/s, above MaxVelocity {_o.MaxVelocity} {_o.Unit}/s");
 
     private bool Ignored(SimCommandBits command, string reason)
     {
@@ -594,6 +602,9 @@ public sealed class AxisPlc
     private static int ToRaw(double units)
     {
         var raw = Math.Round(units * SimRegisters.Scale, MidpointRounding.AwayFromZero);
-        return (int)Math.Clamp(raw, int.MinValue, int.MaxValue);
+        // Never clamped: options that cannot be published are refused by SimulatedAxisOptions.Validate.
+        if (raw is < int.MinValue or > int.MaxValue)
+            throw new OverflowException($"{units} does not fit an int32 register at scale {SimRegisters.Scale}");
+        return (int)raw;
     }
 }

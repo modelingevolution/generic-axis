@@ -64,6 +64,20 @@ public sealed record SimulatedAxisOptions
         if (InPositionWindow <= 0) throw new ArgumentException($"{nameof(InPositionWindow)} must be > 0", nameof(InPositionWindow));
         if (ScanInterval <= TimeSpan.Zero) throw new ArgumentException($"{nameof(ScanInterval)} must be > 0", nameof(ScanInterval));
         if (EnableDelay < TimeSpan.Zero) throw new ArgumentException($"{nameof(EnableDelay)} must be >= 0", nameof(EnableDelay));
+
+        // Every value the PLC publishes must fit its int32 register at 0.001 per count: refuse, never clamp.
+        var reach = 2 * LimitSwitchMargin + Math.Abs(UnhomedOffset);
+        foreach (var (name, value) in new[]
+                 {
+                     (nameof(TravelMin), TravelMin - reach), (nameof(TravelMax), TravelMax + reach),
+                     (nameof(MaxVelocity), MaxVelocity), (nameof(HomingVelocity), HomingVelocity),
+                 })
+        {
+            if (Math.Abs(value * SimRegisters.Scale) > int.MaxValue)
+                throw new ArgumentException(
+                    $"{name} reaches {value}, which does not fit an int32 register at scale {SimRegisters.Scale}", name);
+        }
+
         return this;
     }
 }

@@ -20,8 +20,11 @@ internal sealed class PlcBench : IDisposable
         Options = options ?? new SimulatedAxisOptions();
         _server.AddUnit(Options.UnitId);
         Registers = new PlcRegisterFile(_server, Options.UnitId);
-        Plc = new AxisPlc(Options, Registers);
+        Plc = new AxisPlc(Options, Registers, Log);
     }
+
+    /// <summary>Everything the PLC logged.</summary>
+    public RecordingLogger Log { get; } = new();
 
     public SimulatedAxisOptions Options { get; }
     public PlcRegisterFile Registers { get; }

@@ -56,6 +56,42 @@ public sealed class ConnectorTests
         _connector.IsDue(_id).Should().BeTrue("a held lease is retried on the next 1 s tick");
     }
 
+    [Fact]
+    public async Task GA_U_80_A_Held_Lease_After_An_Outage_Is_Retried_In_1_s_Not_5_s_And_Never_Warns()
+    {
+        // The deny path: the PLC answers again but a live commander holds the lease. The 5 s transport
+        // back-off must not carry over, and every refusal is Information — never Warning or Error, and
+        // never suppressed to Debug, so the operator sees each time who holds the axis.
+        await Attach(new SocketException((int)SocketError.ConnectionRefused));
+        _connector.IsDue(_id).Should().BeFalse();
+        _time.Advance(GenericAxisConnector.FailureRetryInterval);
+
+        var leaseLine = (LogLevel.Information,
+            $"Commander: generic axis {_id} did not attach: {LeaseMessage} (next attempt in 1 s)");
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            await Attach(new MotionException(MotionError.LeaseHeld, LeaseMessage, "carriage"));
+            _connector.IsDue(_id).Should().BeTrue("a held lease is retried on the next 1 s tick, not after 5 s");
+            _time.Advance(GenericAxisConnector.TickInterval);
+        }
+
+        Levels.Should().Equal(LogLevel.Warning, LogLevel.Information, LogLevel.Information, LogLevel.Information);
+        _log.Entries.Skip(1).Should().AllBeEquivalentTo(leaseLine);
+        GenericAxisConnector.TickInterval.Should().Be(TimeSpan.FromSeconds(1));
+        GenericAxisConnector.FailureRetryInterval.Should().Be(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task GA_U_81_The_Suppressed_Debug_Line_Has_The_Same_Shape_As_The_Warning()
+    {
+        await Attach(new MotionException(MotionError.CommunicationLost, RefusedMessage, "carriage"));
+        _time.Advance(GenericAxisConnector.FailureRetryInterval);
+        await Attach(new MotionException(MotionError.CommunicationLost, RefusedMessage, "carriage"));
+
+        var line = $"Transport: generic axis {_id} did not attach: {RefusedMessage} (next attempt in 5 s)";
+        _log.Entries.Should().Equal((LogLevel.Warning, line), (LogLevel.Debug, line));
+    }
+
     // ── Transport ─────────────────────────────────────────────────────────────────────────────
 
     [Theory]
