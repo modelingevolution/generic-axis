@@ -203,8 +203,9 @@ async def test_ga_i_38_interrupting_a_run_cleans_up(simulator: START, tmp_path: 
     (lease,) = await registers(sim.port, MAP.lease_owner, 1)
     fault, trips = await registers(sim.port, MAP.watchdog_fault, 2)
     doc = json.loads(report.with_suffix(".json").read_text(encoding="utf-8"))
+    interrupted = sorted({c["message"] for c in doc["checks"] if c["message"].startswith("interrupted by")})
     evidence = (
-        f"State {status[0]}, FaultCode {status[6]}, WatchdogFault {fault}, WatchdogTrips {trips}; "
+        f"{interrupted}; State {status[0]}, FaultCode {status[6]}, WatchdogFault {fault}, WatchdogTrips {trips}; "
         f"cleanup {doc['cleanup']}; checker stderr tail {err.strip().splitlines()[-6:]}"
     )
     assert status[0] in (0, 1), evidence

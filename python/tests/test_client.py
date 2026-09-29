@@ -131,3 +131,31 @@ async def test_a_command_write_is_never_re_sent(stub: StubPlc) -> None:
         assert client.retries == 0
     finally:
         client.close()
+
+
+async def test_a_cancel_during_a_request_leaves_the_next_request_answered_at_once(stub: StubPlc) -> None:
+    # GA-U-132.py (review #32): a cancellation never interrupts a frame in flight. The read on the wire (its reply
+    # held 200 ms) completes before the cancellation takes effect, so its answer cannot land on the next request: that
+    # one answers at once, with no retry. Cancelling mid-frame left the late answer on the connection, and the next
+    # request waited behind it (pymodbus: "transaction_id=2 but got id=1, Skipping"); on a loaded host, past 0.5 s.
+    client = PlcClient("127.0.0.1", stub.port, 1)
+    await client.connect()
+    try:
+        stub.reply_delay_if = lambda pdu: 0.2 if pdu[0] == 3 and int.from_bytes(pdu[1:3]) == 100 else 0.0
+        in_flight = asyncio.create_task(client.read(100, 15))
+        while not stub.replying_late:  # noqa: ASYNC110 — waits for the stub to hold the reply; no event to await
+            await asyncio.sleep(0.001)
+        cancelled_at = time.monotonic()
+        in_flight.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await in_flight
+        cancel_s = time.monotonic() - cancelled_at
+        stub.reply_delay_if = None
+        started = time.monotonic()
+        assert await client.read(114, 1) == [1]
+        next_read_s = time.monotonic() - started
+    finally:
+        client.close()
+    assert next_read_s < 0.05, next_read_s
+    assert client.retries == 0
+    assert 0.15 <= cancel_s <= 0.5, cancel_s  # bounded by the frame's own answer or its 0.5 s timeout

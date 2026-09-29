@@ -251,7 +251,8 @@ the operator (Ctrl-C / SIGINT) before the list finished.
 - **Units.** All positions and velocities are raw register values ÷ 1000, in the PLC's axis unit (mm or °).
 - **Cleanup, always, even after a FAIL or Ctrl-C:** Stop edge if State is 2, 3 or 4 · clear edge bits · Enable 0 ·
   `WatchdogFault = 0` if the checker caused a trip · `LeaseOwner = 0` if it holds the checker's id. The beat continues
-  through cleanup and stops just before `LeaseOwner = 0`. Each cleanup write is logged in the report.
+  through cleanup and stops just before `LeaseOwner = 0`. A cancellation never interrupts a frame in flight: the request
+  completes or times out first, so the connection stays usable for cleanup. Each cleanup write is logged in the report.
 - **Lease and beat between checks.** From the end of pre-flight onwards the checker holds the lease under its own id
   and beats: it writes `LeaseOwner` = its id and starts its beat as soon as pre-flight passes and `MapVersion` (S+14)
   reads 1, so a second tool is refused from CHK-01 on. The exception is where a check says it stops. After a dead holder's trip (Pre-flight) it
