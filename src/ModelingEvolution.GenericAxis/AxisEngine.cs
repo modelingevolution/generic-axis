@@ -1031,15 +1031,50 @@ internal sealed class AxisEngine : IDisposable
         }
         catch (BudgetExceeded)
         {
-            var seen = LastBlock();
-            await ClearEdgeAsync(verb, level, seq, lane, CancellationToken.None, bestEffort: true).ConfigureAwait(false);
-            throw AxisErrors.Command(Name, MotionError.NotAcknowledged, $"{verb} not accepted", seq, seen.CommandAck,
-                seen.State, $"after {RegisterMap.AckTimeout.TotalMilliseconds.ToString(Inv)} ms");
+            // protocol § Command semantics › Acknowledge: at the deadline the status block is read once more before
+            // NotAcknowledged is declared. The last tick's snapshot may predate the write (a starved host, a late
+            // tick); a NotAcknowledged must state a CommandAck read after the write, never a stale one.
+            StatusBlock seen;
+            try
+            {
+                seen = await ReadStatusAtDeadlineAsync(verb, lane, ct).ConfigureAwait(false);
+            }
+            catch
+            {
+                await ClearEdgeAsync(verb, level, seq, lane, CancellationToken.None, bestEffort: true).ConfigureAwait(false);
+                throw;
+            }
+
+            if (seen.CommandAck != seq)
+            {
+                await ClearEdgeAsync(verb, level, seq, lane, CancellationToken.None, bestEffort: true).ConfigureAwait(false);
+                throw AxisErrors.Command(Name, MotionError.NotAcknowledged, $"{verb} not accepted", seq, seen.CommandAck,
+                    seen.State, $"after {RegisterMap.AckTimeout.TotalMilliseconds.ToString(Inv)} ms");
+            }
+
+            // The PLC did acknowledge; no tick had shown it yet. Later waits start from the next tick.
+            _logger?.LogInformation(
+                "{Axis}: {Verb} — CommandAck ({Register}) = {Seq} seen by the read at the {Deadline} ms ack deadline",
+                Name, verb, _map.Describe(_map.CommandAck), seq, RegisterMap.AckTimeout.TotalMilliseconds);
+            lock (_sync) ackTick = _tickNo + 1;
         }
 
         if (edge != CommandBits.None)
             await ClearEdgeAsync(verb, level, seq, lane, ct, bestEffort: false).ConfigureAwait(false);
         return (seq, ackTick);
+    }
+
+    /// <summary>One read of the status block on the command's lane, at the ack deadline.</summary>
+    private async Task<StatusBlock> ReadStatusAtDeadlineAsync(string verb, ChannelPriority lane, CancellationToken ct)
+    {
+        var words = await _channel.ReadHoldingAsync(_unit, _map.Status, RegisterMap.StatusLength,
+            $"{verb}: read status block at the ack deadline", lane, ct).ConfigureAwait(false);
+        if (words.Length != RegisterMap.StatusLength)
+            throw AxisErrors.Create(Name, MotionError.ProtocolMismatch,
+                $"the PLC answered a read of the status block with {words.Length} registers",
+                new RegisterRead("status block", _map.DescribeRange(_map.Status, RegisterMap.StatusLength),
+                    $"{words.Length} registers", RegisterMap.StatusLength.ToString(Inv)));
+        return StatusBlock.Parse(words);
     }
 
     private async Task ClearEdgeAsync(string verb, ushort level, ushort seq, ChannelPriority lane, CancellationToken ct,

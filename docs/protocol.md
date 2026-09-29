@@ -67,6 +67,7 @@ combination (a partial publication included) makes the driver refuse to attach.
   therefore also shows the command's state, never the state from before it.
 - **Acknowledge**: a command is accepted when `CommandAck == CommandSeq`. The driver waits ≤ 500 ms for the ack; no
   ack → SDK `NotAcknowledged` for the command (the heartbeat keeps running); the driver clears the edge bit it set.
+  At the deadline the driver reads the status block once more before declaring `NotAcknowledged`.
 - **Sequence at attach**: the driver reads `CommandAck` and continues from `CommandAck + 1`, so a new driver never
   issues a sequence number the PLC already acknowledged.
 - **Enable** (level): `Command.bit0 = 1` → PLC energises the drive; State leaves Disabled for Standstill.
