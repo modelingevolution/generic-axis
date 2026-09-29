@@ -54,7 +54,13 @@ jobs:
         run: |
           dotnet test src/GenericAxis.sln --no-build --configuration Release \
             --blame-hang-timeout 10m --blame-hang-dump-type mini \
-            --results-directory TestResults
+            --results-directory TestResults --logger trx
+
+      # #43: a timing test whose fixture missed its scan cadence is an xunit skip whose reason starts
+      # "INCONCLUSIVE", and dotnet test exits 0. A tag is a claim, so any INCONCLUSIVE fails the
+      # release; fix the runner or the fixture, do not re-run to green.
+      - name: Refuse INCONCLUSIVE results
+        run: python3 .github/scripts/inconclusive.py gate TestResults "$(find src -name '*.Tests.csproj' | wc -l)"
 
       - name: Upload hang dumps
         if: failure()
