@@ -59,6 +59,11 @@ internal sealed class ModbusChannel : IModbusChannel
         _client = NewClient();
     }
 
+    private long _retries;
+
+    /// <summary>Reconnect-and-retries performed so far (protocol "The one retry"; the conformance checker reports it).</summary>
+    public long Retries => Interlocked.Read(ref _retries);
+
     /// <inheritdoc/>
     public string Host { get; }
 
@@ -164,6 +169,7 @@ internal sealed class ModbusChannel : IModbusChannel
                 Reset();
                 if (attempt == 0)
                 {
+                    Interlocked.Increment(ref _retries); // counted for the conformance checker's `retries`
                     _logger?.LogWarning(failure,
                         "{Label}: {What}{Range} on {Host}:{Port} unit {Unit} failed ({Message}); reconnecting "
                         + "and retrying once", _label, what, range is null ? "" : " " + range, Host, Port, unit, reason);

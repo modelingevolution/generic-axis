@@ -27,17 +27,17 @@
 </MudGrid>
 
 @code {
-    private static RegisterRow Row(int baseAddress, int offset, string prefix, string name, IReadOnlyList<ushort> block, string decoded) =>
+    private static SimRegisterRow Row(int baseAddress, int offset, string prefix, string name, IReadOnlyList<ushort> block, string decoded) =>
         new($"{baseAddress + offset} ({prefix}+{offset})", name, $"0x{block[offset]:X4}", decoded);
 
-    private static RegisterRow Row32(int baseAddress, int offset, string prefix, string name, IReadOnlyList<ushort> block, string unit) =>
+    private static SimRegisterRow Row32(int baseAddress, int offset, string prefix, string name, IReadOnlyList<ushort> block, string unit) =>
         new($"{baseAddress + offset}–{baseAddress + offset + 1} ({prefix}+{offset})", name,
             $"0x{block[offset]:X4} 0x{block[offset + 1]:X4}",
             $"{I32(block, offset)} ({(I32(block, offset) / SimRegisters.Scale).ToString("F3", CultureInfo.InvariantCulture)} {unit})");
 
     private static int I32(IReadOnlyList<ushort> b, int offset) => unchecked((int)(((uint)b[offset + 1] << 16) | b[offset]));
 
-    private IReadOnlyList<RegisterRow> CommandRows(SimSnapshot s, int c)
+    private IReadOnlyList<SimRegisterRow> CommandRows(SimSnapshot s, int c)
     {
         var b = s.CommandBlock;
         var u = Host.Options.Unit;
@@ -55,7 +55,7 @@
         ];
     }
 
-    private IReadOnlyList<RegisterRow> StatusRows(SimSnapshot s, int st)
+    private IReadOnlyList<SimRegisterRow> StatusRows(SimSnapshot s, int st)
     {
         var b = s.StatusBlock;
         var u = Host.Options.Unit;

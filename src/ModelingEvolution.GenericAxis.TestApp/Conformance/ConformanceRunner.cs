@@ -13,6 +13,12 @@ namespace ModelingEvolution.GenericAxis.TestApp.Conformance;
 /// </summary>
 public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
 {
+    private IReadOnlyList<CheckDefinition> _catalog = CheckCatalog.All;
+
+    /// <summary>A runner over another catalog (runner-logic tests).</summary>
+    internal ConformanceRunner(ILoggerFactory loggerFactory, IReadOnlyList<CheckDefinition> catalog) : this(loggerFactory) =>
+        _catalog = catalog;
+
     private static readonly TimeSpan PreflightWindow = TimeSpan.FromSeconds(1);
     private readonly ILogger _log = loggerFactory.CreateLogger<ConformanceRunner>();
 
@@ -41,13 +47,12 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
         var refused = false;
         try
         {
-            var incumbent = await PreflightAsync(ctx, ct);
-            if (incumbent is { } owner)
+            var refusal = await PreflightAsync(ctx, ct);
+            if (refusal is { } reason)
             {
                 refused = true;
-                var reason = $"refused to start: LeaseOwner {owner} is beating — another commander is attached; stop it first";
                 _log.LogWarning("{Reason}", reason);
-                foreach (var def in CheckCatalog.All) results.Add(Skipped(def, reason));
+                foreach (var def in _catalog) results.Add(Skipped(def, reason));
             }
             else
             {
@@ -59,9 +64,9 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
             await CleanupAsync(ctx);
         }
 
-        var final = Complete(report with { Refused = refused, Checks = results.ToImmutable() }, ctx.CleanupLog);
+        var final = Complete(report with { Refused = refused, Interrupted = !refused && ct.IsCancellationRequested, Checks = results.ToImmutable() }, ctx.CleanupLog);
         _log.LogInformation("RESULT: {Result} — {Pass} pass, {Fail} fail, {Skipped} skipped (exit {Exit})",
-            final.Passed ? "PASS" : "FAIL", final.PassCount, final.FailCount, final.SkippedCount, final.ExitCode);
+            final.SummaryResult, final.PassCount, final.FailCount, final.SkippedCount, final.ExitCode);
         progress?.Invoke(final);
         return final;
     }
@@ -71,12 +76,12 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
     {
         string? blocked = null;
         var byId = new Dictionary<string, CheckResultKind>();
-        foreach (var def in CheckCatalog.All)
+        foreach (var def in _catalog)
         {
-            if (ct.IsCancellationRequested) blocked ??= "run interrupted";
-            var skip = blocked ?? SkipReason(def, options, byId);
+            var skip = blocked ?? (ct.IsCancellationRequested ? Interrupted(def.Id) : SkipReason(def, options, byId));
             if (skip is not null)
             {
+                if (ct.IsCancellationRequested) blocked ??= skip;
                 results.Add(Skipped(def, skip));
                 byId[def.Id] = CheckResultKind.Skipped;
                 publish(null);
@@ -84,26 +89,76 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
             }
 
             publish(def.Id);
+            var retriesBefore = ctx.Retries;
             var (outcome, durationMs) = await RunOneAsync(def, ctx, ct);
 
-            if (def.Restores && !ct.IsCancellationRequested)
+            if (ct.IsCancellationRequested)
+            {
+                // Interruption is not a FAIL: the running check and every later one are SKIPPED.
+                blocked = Interrupted(def.Id);
+                results.Add(Skipped(def, blocked) with { DurationMs = durationMs });
+                byId[def.Id] = CheckResultKind.Skipped;
+                publish(null);
+                continue;
+            }
+
+            LastRead? lastRead = null;
+            if (outcome.Result == CheckResultKind.Fail)
+            {
+                // A fresh read of both blocks when the failure is detected, before any restore write.
+                lastRead = await ctx.FreshLastReadAsync();
+                outcome = outcome.With(SeenIn(lastRead, def, ctx));
+            }
+
+            if (def.Restores)
             {
                 var failed = await RestoreAsync(ctx, ct);
-                if (failed is not null)
+                if (ct.IsCancellationRequested) blocked = Interrupted(def.Id);
+                else if (failed is not null)
                 {
-                    outcome = CheckOutcome.Fail(
-                        outcome.Message.Length == 0 ? $"cannot restore: {failed}" : $"{outcome.Message}; cannot restore: {failed}",
-                        [.. outcome.Observed.Select(kv => (kv.Key, kv.Value))]);
+                    lastRead ??= ctx.LastValues();
+                    outcome = outcome.With([failed with { Text = $"cannot restore the axis: {failed.Text}" }]);
                     blocked = $"{def.Id} could not restore the axis";
                 }
             }
 
-            if (ct.IsCancellationRequested) blocked ??= "run interrupted";
-            _log.LogInformation("{Id} {Result}: {Message}", def.Id, ReportWriter.Result(outcome.Result), outcome.Message);
-            results.Add(new CheckResult(def.Id, def.Title, def.Section, outcome.Result, durationMs, outcome.Message, outcome.Observed));
+            outcome = outcome with { Observed = Canonical(def, outcome, ctx.RetriesSince(retriesBefore)) };
+            _log.LogInformation("{Id} {Result}: {Message}", def.Id, ReportWriter.Result(outcome.Result),
+                outcome.Result == CheckResultKind.Fail ? $"{def.Id}: {outcome.Message}" : outcome.Message);
+            results.Add(new CheckResult(def.Id, def.Title, def.Section, outcome.Result, durationMs, outcome.Message, outcome.Observed,
+                outcome.Deciding?.Class, outcome.Result == CheckResultKind.Fail ? lastRead : null));
             byId[def.Id] = outcome.Result;
             publish(null);
         }
+    }
+
+    /// <summary>
+    /// protocol § Observed values: exactly the check's keys, in order, <c>null</c> for a value never observed, and
+    /// <c>retries</c> last. A key a check reports that the table does not list is a defect in the catalog.
+    /// </summary>
+    internal ImmutableArray<KeyValuePair<string, long?>> Canonical(CheckDefinition def, CheckOutcome outcome, long retries)
+    {
+        var seen = outcome.Observed.ToDictionary(kv => kv.Key, kv => kv.Value);
+        var unknown = seen.Keys.Except(def.ObservedKeys).ToList();
+        if (unknown.Count > 0) // a catalog defect: never abort a run on a real PLC for it, but say so loudly
+            _log.LogError("{Id} reported observed keys the protocol does not list, dropped: {Keys}", def.Id, string.Join(", ", unknown));
+        return [.. def.ObservedKeys.Select(k => KeyValuePair.Create(k, seen.GetValueOrDefault(k))), KeyValuePair.Create("retries", (long?)retries)];
+    }
+
+    private static string Interrupted(string id) => $"interrupted by the operator during {id}";
+
+    /// <summary>
+    /// What the last read itself shows (protocol § "Error class of a FAIL", rows 3 and 4): a non-protocol State, ErrorStop
+    /// without a FaultCode, or a fault the check did not expect.
+    /// </summary>
+    private static IEnumerable<Failure> SeenIn(LastRead read, CheckDefinition def, CheckContext ctx)
+    {
+        if (read.Status[0] is not { } state) yield break;
+        var fault = (ushort)(read.Status[6] ?? 0);
+        var where = ctx.Where(ctx.Map.State);
+        if (state is 5 or > 7 || (state == 7 && fault == 0)) yield return Failure.InvalidState((ushort)state, fault, where);
+        else if (state == 7 && !(fault == 4 && CheckCatalog.ExpectWatchdogFault.Contains(def.Id)))
+            yield return Failure.Fault(fault, ctx.Where(ctx.Map.FaultCode));
     }
 
     /// <summary>Completes the report after cleanup (cleanup lines and the finish time).</summary>
@@ -136,41 +191,52 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            outcome = CheckOutcome.Fail("interrupted by the operator (not a PLC defect)");
+            outcome = CheckOutcome.Skipped(Interrupted(def.Id));
+        }
+        catch (MotionException ex) when (ex.Error == MotionError.CommunicationLost)
+        {
+            outcome = CheckOutcome.Fail(Failure.Transport(ex.Message));
         }
         catch (MotionException ex)
         {
-            outcome = CheckOutcome.Fail(ex.Message);
+            outcome = CheckOutcome.Fail(Failure.Protocol($"{ex.Error}: {ex.Message}"));
         }
         catch (Exception ex)
         {
             _log.LogError(ex, "{Id} threw", def.Id);
-            outcome = CheckOutcome.Fail($"{ex.GetType().Name}: {ex.Message}");
+            outcome = CheckOutcome.Fail(Failure.Protocol($"the checker failed unexpectedly: {ex.GetType().Name}: {ex.Message}"));
         }
 
         return (outcome, (long)t.Elapsed.TotalMilliseconds);
     }
 
-    /// <summary>Reads <c>LeaseOwner</c> and watches <c>Heartbeat</c> for 1 s; returns a live foreign owner, else null.</summary>
-    private async Task<ushort?> PreflightAsync(CheckContext ctx, CancellationToken ct)
+    /// <summary>
+    /// Before its own first beat, reads <c>LeaseOwner</c> and watches <c>Heartbeat</c> (C+8) for 1 s. Any change, whatever
+    /// <c>LeaseOwner</c> holds (0, a station id or the tool's own id), means another commander is live: returns the
+    /// refusal message naming the beat values and the owner. Null when nothing beats.
+    /// </summary>
+    private async Task<string?> PreflightAsync(CheckContext ctx, CancellationToken ct)
     {
         try
         {
             await ctx.Channel.ConnectAsync(ct);
             var first = await ReadBeatAndOwnerAsync(ctx, ct);
-            var beating = false;
+            var beats = new List<ushort> { first.Beat };
             var owner = first.Owner;
             var until = Stopwatch.StartNew();
             while (until.Elapsed < PreflightWindow)
             {
                 await Task.Delay(Beater.Period, ct);
                 var now = await ReadBeatAndOwnerAsync(ctx, ct);
-                beating |= now.Beat != first.Beat;
+                if (now.Beat != beats[^1]) beats.Add(now.Beat);
                 owner = now.Owner;
             }
 
-            _log.LogInformation("Pre-flight: LeaseOwner {Owner}, Heartbeat {State}", owner, beating ? "changing" : "still");
-            return beating && owner != 0 && owner != ctx.Options.OwnerId ? owner : null;
+            _log.LogInformation("Pre-flight: LeaseOwner {Owner}, Heartbeat {Beats}", owner, string.Join(" → ", beats));
+            return beats.Count > 1
+                ? $"refused to start: another commander is beating — Heartbeat ({ctx.Where(ctx.Map.Heartbeat)}) read {string.Join(" → ", beats.Take(6))}"
+                  + $"{(beats.Count > 6 ? " …" : "")} within 1 s, LeaseOwner ({ctx.Where(ctx.Map.LeaseOwner)}) = {owner}; stop it first"
+                : null;
         }
         catch (MotionException ex)
         {
@@ -181,7 +247,7 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
 
     private static async Task<(ushort Beat, ushort Owner)> ReadBeatAndOwnerAsync(CheckContext ctx, CancellationToken ct)
     {
-        var words = await ctx.Channel.ReadHoldingAsync(ctx.Unit, ctx.Map.Heartbeat, 2, "pre-flight: heartbeat and lease owner",
+        var words = await ctx.Channel.ReadHoldingAsync(ctx.Unit, ctx.Map.Heartbeat, 2, $"read C+8…C+9 unit {ctx.Unit} (pre-flight: Heartbeat, LeaseOwner)",
             ChannelPriority.Move, ct);
         return (words[0], words[1]);
     }
@@ -190,20 +256,21 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
     /// Every check from CHK-06 on ends in State 0 or 1, no latched fault, the lease held and the beat running.
     /// Returns null when restored, else the reason.
     /// </summary>
-    private async Task<string?> RestoreAsync(CheckContext ctx, CancellationToken ct)
+    private async Task<Failure?> RestoreAsync(CheckContext ctx, CancellationToken ct)
     {
         try
         {
             var v = await ctx.ReadViewAsync(ct);
             if (v.State is 2 or 3 or 4)
             {
-                await ctx.Commands.SendAsync(CommandBits.Enable | CommandBits.Stop, ct, ChannelPriority.Stop);
+                var stop = await ctx.Commands.SendAsync(CommandBits.Enable | CommandBits.Stop, ct, ChannelPriority.Stop);
+                if (!stop.Acked) return Failure.NotAcknowledged("Stop", stop.Seq, stop.View.Status.CommandAck, stop.View.State);
             }
 
             if (v.State is 2 or 3 or 4 or 6)
             {
                 var still = await ctx.WaitForAsync(x => x.State is not (2 or 3 or 4 or 6), TimeSpan.FromSeconds(5), CheckContext.Now(), ct);
-                if (!still.Met) return $"still in State {still.View.State} 5 s after Stop";
+                if (!still.Met) return Failure.Machine("MotionFailed", $"still moving 5 s after Stop. Read State ({ctx.Where(ctx.Map.State)}) = {still.View.State}, expected 0 or 1.");
                 v = still.View;
             }
 
@@ -214,16 +281,16 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
             if (v.State == 7)
             {
                 var reset = await ctx.Commands.SendAsync(CommandBits.Reset, ct);
-                if (!reset.Acked) return $"Reset not acknowledged within 500 ms (State 7, FaultCode {v.Status.FaultCode})";
+                if (!reset.Acked) return Failure.NotAcknowledged("Reset", reset.Seq, reset.View.Status.CommandAck, reset.View.State);
                 var w = await ctx.WaitForAsync(x => x.State != 7, TimeSpan.FromSeconds(5), reset.WrittenAt, ct);
-                if (!w.Met) return $"still in ErrorStop (FaultCode {w.View.Status.FaultCode}) 5 s after Reset";
+                if (!w.Met) return Failure.Fault(w.View.Status.FaultCode, ctx.Where(ctx.Map.FaultCode)) with { Text = $"still in ErrorStop 5 s after Reset. Read FaultCode ({ctx.Where(ctx.Map.FaultCode)}) = {w.View.Status.FaultCode}." };
             }
 
             var end = await ctx.ReadViewAsync(ct);
-            if (end.State is not (0 or 1)) return $"State {end.State}, expected 0 or 1";
-            if (end.Status.FaultCode != 0) return $"FaultCode {end.Status.FaultCode} latched";
-            if (end.WatchdogFault != 0) return $"WatchdogFault {end.WatchdogFault} latched";
-            if (end.LeaseOwner != ctx.Options.OwnerId) return $"LeaseOwner {end.LeaseOwner}, not the checker's {ctx.Options.OwnerId}";
+            if (end.State is not (0 or 1)) return Failure.Machine("MotionFailed", $"Read State ({ctx.Where(ctx.Map.State)}) = {end.State}, expected 0 or 1.");
+            if (end.Status.FaultCode != 0) return Failure.Fault(end.Status.FaultCode, ctx.Where(ctx.Map.FaultCode));
+            if (end.WatchdogFault != 0) return Failure.Protocol($"WatchdogFault did not clear. Read WatchdogFault ({ctx.Where(ctx.Map.WatchdogFault)}) = {end.WatchdogFault}, expected 0.");
+            if (end.LeaseOwner != ctx.Options.OwnerId) return Failure.Protocol($"the lease write did not hold. Read LeaseOwner ({ctx.Where(ctx.Map.LeaseOwner)}) = {end.LeaseOwner}, expected {ctx.Options.OwnerId}.");
             return null;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -232,7 +299,7 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
         }
         catch (MotionException ex)
         {
-            return ex.Message;
+            return ex.Error == MotionError.CommunicationLost ? Failure.Transport(ex.Message) : Failure.Protocol($"{ex.Error}: {ex.Message}");
         }
     }
 

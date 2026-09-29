@@ -1,0 +1,190 @@
+@page "/conformance"
+@inherits LiveComponentBase
+@inject SimulatorHost Simulator
+@inject ILoggerFactory LoggerFactory
+@inject IDialogService Dialogs
+
+<PageTitle>Conformance &middot; Generic Axis</PageTitle>
+
+@{
+    var report = _report;
+    var running = _run is { IsCompleted: false };
+}
+
+<h1 class="mud-typography mud-typography-h5 mb-1">PLC conformance check</h1>
+<MudText Typo="Typo.body2" Class="mud-text-secondary mb-3">
+    <code>docs/protocol.md</code> § Conformance checks, CHK-01…CHK-16, run verbatim. The same run as
+    <code>--check &lt;host&gt;[:port]</code> on the command line.
+</MudText>
+<MudAlert Severity="Severity.Warning" Dense="true" Class="mb-4">
+    CHK-06 energises the drive, even without motion. Motion checks (CHK-12…16) home and move the axis: only with an operator at the machine and the travel clear.
+</MudAlert>
+
+<MudPaper Class="pa-4 mb-4" Elevation="1">
+    <div class="d-flex flex-wrap align-center gap-2">
+        <MudTextField T="string" @bind-Value="_host" Label="Host" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="running" Style="max-width:180px" data-testid="check-host"/>
+        <MudNumericField T="int" @bind-Value="_port" Label="Port" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="running" Style="max-width:110px" data-testid="check-port"/>
+        <MudNumericField T="int" @bind-Value="_unit" Label="Unit" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="running" Style="max-width:90px"/>
+        <MudNumericField T="int" @bind-Value="_commandBase" Label="Command base" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="running" Style="max-width:130px"/>
+        <MudNumericField T="int" @bind-Value="_statusBase" Label="Status base" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="running" Style="max-width:130px"/>
+        <MudNumericField T="int" @bind-Value="_ownerId" Label="Owner id" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="running" Style="max-width:110px"/>
+        <MudNumericField T="double" @bind-Value="_tolerance" Label="Tolerance" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="running" Style="max-width:110px"/>
+        <MudSwitch T="bool" Value="_allowMotion" ValueChanged="SetMotion" Color="Color.Error" Label="Allow motion" Disabled="running" data-testid="check-motion"/>
+    </div>
+    <div class="d-flex align-center gap-2 mt-3">
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="running" OnClick="Run" data-testid="check-run">Run</MudButton>
+        <MudButton Variant="Variant.Outlined" Color="Color.Warning" Disabled="!running" OnClick="() => _cts?.Cancel()" data-testid="check-cancel">Cancel</MudButton>
+        @if (_error is not null)
+        {
+            <MudText Color="Color.Error" Typo="Typo.body2">@_error</MudText>
+        }
+        <MudSpacer/>
+        @if (report is { FinishedAt: not null })
+        {
+            <MudText Typo="Typo.h6" Color="@(report.Refused || report.Interrupted ? Color.Warning : report.Passed ? Color.Success : Color.Error)" data-testid="check-result">
+                @(report.Refused ? "REFUSED (exit 3)" : $"RESULT: {report.SummaryResult}") &middot; @report.PassCount pass, @report.FailCount fail, @report.SkippedCount skipped
+            </MudText>
+            <MudButton Variant="Variant.Text" Href="@DataUri("text/markdown", ReportWriter.ToMarkdown(report))" download="conformance.md">.md</MudButton>
+            <MudButton Variant="Variant.Text" Href="@DataUri("application/json", ReportWriter.ToJson(report))" download="conformance.json">.json</MudButton>
+        }
+        else if (running)
+        {
+            <MudProgressCircular Size="Size.Small" Indeterminate="true"/>
+            <MudText Typo="Typo.body2">running @(report?.Running ?? "pre-flight")…</MudText>
+        }
+    </div>
+</MudPaper>
+
+<MudSimpleTable Dense="true" Hover="true" Elevation="1" data-testid="check-table">
+    <thead>
+    <tr><th>Id</th><th>Title</th><th>Result</th><th>Observed</th><th>Protocol section</th></tr>
+    </thead>
+    <tbody>
+    @foreach (var row in Rows(report))
+    {
+        <tr>
+            <td class="register-value" style="white-space:nowrap">@row.Id</td>
+            <td>@row.Title</td>
+            <td><MudChip T="string" Size="Size.Small" Color="@row.Color">@row.Result</MudChip></td>
+            <td style="font-size:13px">@row.Observed</td>
+            <td class="mud-text-secondary" style="font-size:13px">@row.Section</td>
+        </tr>
+    }
+    </tbody>
+</MudSimpleTable>
+
+@if (report is { Cleanup.IsEmpty: false })
+{
+    <MudText Typo="Typo.subtitle2" Class="mt-4">Cleanup</MudText>
+    <ul>
+        @foreach (var line in report.Cleanup)
+        {
+            <li class="register-value">@line</li>
+        }
+    </ul>
+}
+
+@code {
+    private string _host = "127.0.0.1";
+    private int _port;
+    private int _unit;
+    private int _commandBase;
+    private int _statusBase;
+    private int _ownerId = CheckerOptions.DefaultOwnerId;
+    private double _tolerance = 0.1;
+    private bool _allowMotion;
+    private string? _error;
+    private volatile ConformanceReport? _report;
+    private Task? _run;
+    private CancellationTokenSource? _cts;
+
+    private sealed record Row(string Id, string Title, string Result, Color Color, string Observed, string Section);
+
+    protected override void OnInitialized()
+    {
+        base.OnInitialized();
+        _port = Simulator.Port;
+        _unit = Simulator.Options.UnitId;
+        _commandBase = Simulator.Options.CommandBase;
+        _statusBase = Simulator.Options.StatusBase;
+    }
+
+    private async Task SetMotion(bool on)
+    {
+        if (!on)
+        {
+            _allowMotion = false;
+            return;
+        }
+
+        // Show the switch on while asking, so a Cancel is a real value change and the switch is redrawn off.
+        _allowMotion = true;
+        StateHasChanged();
+        var confirmed = await Dialogs.ShowMessageBoxAsync("Allow motion",
+            "Operator at the machine, travel clear. CHK-12…16 will home the axis, move it and run the kill test.",
+            yesText: "Operator at the machine, travel clear", cancelText: "Cancel");
+        _allowMotion = confirmed == true;
+    }
+
+    private void Run()
+    {
+        var args = new List<string>
+        {
+            $"{_host}:{_port}", "--unit", $"{_unit}", "--command-base", $"{_commandBase}", "--status-base", $"{_statusBase}",
+            "--owner-id", $"{_ownerId}", "--tolerance", _tolerance.ToString(CultureInfo.InvariantCulture),
+        };
+        if (_allowMotion) args.Add("--allow-motion");
+        var (options, error) = CheckCommandLine.Parse(args);
+        _error = error;
+        if (options is null) return;
+
+        _cts?.Dispose();
+        _cts = new CancellationTokenSource();
+        _report = null;
+        var ct = _cts.Token;
+        _run = Task.Run(async () =>
+        {
+            try
+            {
+                await new ConformanceRunner(LoggerFactory).RunAsync(options, ct, r => _report = r);
+            }
+            catch (Exception ex)
+            {
+                _error = ex.Message;
+            }
+        });
+    }
+
+    /// <summary>Every catalog row, filled from the report as results arrive.</summary>
+    private static IReadOnlyList<Row> Rows(ConformanceReport? report)
+    {
+        var results = report?.Checks.ToDictionary(c => c.Id) ?? [];
+        return
+        [
+            .. CheckCatalog.All.Select(d => results.TryGetValue(d.Id, out var c)
+                ? new Row(d.Id, d.Title, ReportWriter.Result(c.Result), c.Result switch
+                {
+                    CheckResultKind.Pass => Color.Success,
+                    CheckResultKind.Fail => Color.Error,
+                    _ => Color.Default,
+                }, Observed(c), d.Section)
+                : new Row(d.Id, d.Title, report?.Running == d.Id ? "RUNNING" : "—",
+                    report?.Running == d.Id ? Color.Info : Color.Dark, "", d.Section)),
+        ];
+    }
+
+    private static string Observed(CheckResult c)
+    {
+        var observed = string.Join(", ", c.Observed.Select(kv => $"{kv.Key}={(kv.Value?.ToString() ?? "null")}"));
+        return observed.Length == 0 ? c.Message : $"{c.Message} ({observed})";
+    }
+
+    private static string DataUri(string type, string content) =>
+        $"data:{type};charset=utf-8;base64,{Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(content))}";
+
+    public override void Dispose()
+    {
+        _cts?.Cancel(); // leaving the page stops the run; the runner's cleanup still runs
+        base.Dispose();
+    }
+}
