@@ -40,6 +40,8 @@ async def _pass(_ctx: CheckContext) -> Outcome:
 
 
 FAKE = tuple(dataclasses.replace(c, run=_pass) for c in CHECKS)
+TO_THE_FIRST_MOVE = tuple(c for c in CHECKS if c.id in {"CHK-01", "CHK-02", "CHK-03", "CHK-06", "CHK-12", "CHK-13"})
+"""The shortest run that reaches CHK-13's MoveAbsolute (State 3)."""
 
 
 def options(plc: StubPlc, *, motion: bool = False) -> Options:
@@ -337,3 +339,39 @@ async def test_run_reports_a_dead_beat_during_a_wait_even_when_the_plc_never_tri
     chk12 = next(c for c in report.checks if c.id == "CHK-12")
     assert (chk12.result, chk12.error_class) == (FAIL, "Transport"), chk12.message
     assert "Heartbeat (C+8) write failed, the beat stopped" in chk12.message
+
+
+@pytest.mark.timeout(120)
+async def test_cleanup_waits_for_the_stop_ack_before_clearing_the_edge_on_a_slow_scan(stub: StubPlc) -> None:
+    # GA-U-76.py (review #5): Ctrl-C mid-move on a PLC with a 100 ms scan. The Stop edge must stay set until the
+    # PLC acknowledged it, else the scan sees the cleared word and the Stop is never executed.
+    task = asyncio.create_task(run(options(stub, motion=True), checks=TO_THE_FIRST_MOVE))
+    while stub.axis.state != 3:  # noqa: ASYNC110 — polls the stub's scan state; there is no event to await
+        await asyncio.sleep(0.005)
+    stub.o.scan_s = 0.1
+    accepted_before = len(stub.accepted)
+    task.cancel()
+    report = await task
+    assert report.exit_code == 4
+    stop = int(Command.ENABLE | Command.STOP)
+    assert stop in stub.accepted[accepted_before:], [hex(w) for w in stub.accepted[accepted_before:]]
+    entries = report.cleanup
+    assert entries[0].endswith("(Stop)")
+    assert entries[1] == "C+0 = 0x0001 (clear edge bits)"
+    assert not any("no CommandAck" in e for e in entries)
+
+
+async def test_cleanup_journals_a_stop_that_was_not_acknowledged() -> None:
+    # GA-U-76.py (review #5): no ack within 500 ms → the journal says so, and cleanup continues.
+    async with StubPlc() as plc:
+        task = asyncio.create_task(run(options(plc, motion=True), checks=TO_THE_FIRST_MOVE))
+        while plc.axis.state != 3:  # noqa: ASYNC110 — polls the stub's scan state; there is no event to await
+            await asyncio.sleep(0.005)
+        plc.o.suppress_ack = True
+        task.cancel()
+        report = await task
+    assert re.fullmatch(
+        r"Stop: no CommandAck within 500 ms \(CommandSeq \d+ written, CommandAck \d+ read, State \d read\)",
+        report.cleanup[1],
+    ), report.cleanup
+    assert "C+9 = 0 (release lease)" in report.cleanup

@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from .beat import BEAT_PERIOD_S, Beater
 from .checks import CHECKS, FAIL, OBSERVED, PASS, RETRIES_KEY, SKIPPED, Check, Outcome
 from .client import PlcClient, PlcError
-from .context import AckTimeout, CheckContext, Options
+from .context import ACK_TIMEOUT_S, AckTimeout, CheckContext, Options
 from .errors import (
     COMMUNICATION_LOST,
     NOT_ACKNOWLEDGED,
@@ -26,7 +26,7 @@ from .errors import (
     machine_error,
 )
 from .lease import LeaseHeld
-from .poll import ms
+from .poll import ms, wait_for
 from .registers import (
     COMMAND_LENGTH,
     EDGE_BITS,
@@ -196,11 +196,20 @@ async def cleanup(ctx: CheckContext) -> None:
     async def stop_if_moving() -> None:
         status = await ctx.status()
         if status.state in MOVING_STATES:
-            ctx.seq = next_nonzero(ctx.seq if ctx.seq is not None else status.command_ack)
+            seq = ctx.seq = next_nonzero(ctx.seq if ctx.seq is not None else status.command_ack)
             word = int(ctx.enabled | Command.STOP)
-            await ctx.client.write(registers.command, [word, ctx.seq])
+            await ctx.client.write(registers.command, [word, seq], retry=False)  # a command is never re-sent
+            written_at = time.monotonic()
             ctx.command_word = word
-            journal.append(f"C+0 = 0x{word:04X}, C+1 = {ctx.seq} (Stop)")
+            journal.append(f"C+0 = 0x{word:04X}, C+1 = {seq} (Stop)")
+            # protocol.md "Command block": the edge is cleared after CommandAck echoes CommandSeq. Clearing it sooner
+            # can land before the PLC scan that sees the edge, and the Stop is never executed (review #5).
+            ack = await wait_for(ctx.client, registers, lambda s: s.command_ack == seq, ACK_TIMEOUT_S, since=written_at)
+            if not ack.met:
+                journal.append(
+                    f"Stop: no CommandAck within {ms(ACK_TIMEOUT_S)} ms (CommandSeq {seq} written, CommandAck "
+                    f"{ack.status.command_ack} read, State {ack.status.state} read)"
+                )
 
     async def clear_edges() -> None:
         (word,) = await ctx.client.read(registers.command, 1)

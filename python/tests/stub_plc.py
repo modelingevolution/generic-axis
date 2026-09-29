@@ -51,6 +51,8 @@ class StubOptions:
     watchdog_disabled: bool = False
     suppress_ack: bool = False
     swapped_word_order: bool = False
+    scan_s: float = SCAN_S
+    """The PLC scan; a real PLC scans every 10–20 ms, a slow one more (review #5)."""
 
     @staticmethod
     def from_env(env: dict[str, str], port: int) -> StubOptions:
@@ -97,6 +99,8 @@ class StubPlc:
         self._scan: asyncio.Task[None] | None = None
         self.port = self.o.port
         self.writes: list[tuple[int, list[int]]] = []
+        self.accepted: list[int] = []
+        """Every command word the scan accepted, in order."""
         self.requests = 0
         """Requests received, answered or not."""
         self.drop_next = 0
@@ -184,7 +188,7 @@ class StubPlc:
     async def _scan_loop(self) -> None:
         last = time.monotonic()
         while True:
-            await asyncio.sleep(SCAN_S)
+            await asyncio.sleep(self.o.scan_s)
             now = time.monotonic()
             self.scan(now - last, now)
             last = now
@@ -214,6 +218,7 @@ class StubPlc:
         # Accept a command write.
         word, seq = r[C], r[C + 1]
         if seq != r[S + 7] and not self.o.suppress_ack:
+            self.accepted.append(word)
             self._accept(word)
             r[S + 7] = seq
 
