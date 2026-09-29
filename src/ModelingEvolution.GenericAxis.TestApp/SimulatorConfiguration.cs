@@ -29,7 +29,8 @@ public static class SimulatorConfiguration
     {
         services.AddSingleton(options);
         services.AddSingleton(sp => new SimulatorHost(options, sp.GetRequiredService<ILoggerFactory>()));
-        services.AddHostedService<SimulatorService>();
+        services.AddSingleton<SimulatorService>();
+        services.AddHostedService(sp => sp.GetRequiredService<SimulatorService>());
         return services;
     }
 

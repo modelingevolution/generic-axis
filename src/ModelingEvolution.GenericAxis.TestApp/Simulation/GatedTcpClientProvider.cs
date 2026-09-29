@@ -22,6 +22,9 @@ public sealed class GatedTcpClientProvider(IPEndPoint endpoint, ILogger logger) 
     private volatile bool _open;
     private volatile bool _disposed;
 
+    /// <summary>Raised after every accepted TCP connection (served or parked), outside the provider's lock.</summary>
+    public event Action? ClientAccepted;
+
     /// <summary>The port is bound and connections are served.</summary>
     public bool IsOpen => _open;
 
@@ -137,6 +140,7 @@ public sealed class GatedTcpClientProvider(IPEndPoint endpoint, ILogger logger) 
                 continue; // The gate closed mid-accept; wait for it to re-open.
             }
 
+            bool parked;
             lock (_sync)
             {
                 if (!_open)
@@ -145,15 +149,23 @@ public sealed class GatedTcpClientProvider(IPEndPoint endpoint, ILogger logger) 
                     continue;
                 }
 
-                if (_silent)
+                parked = _silent;
+                if (parked)
                 {
                     _parked.Add(client); // TCP accepted, never served
-                    logger.LogInformation("Modbus client {Remote} connected on port {Port} and parked (Silent)", client.Client.RemoteEndPoint, _port);
-                    continue;
                 }
+                else
+                {
+                    _accepted.RemoveAll(c => !c.Connected);
+                    _accepted.Add(client);
+                }
+            }
 
-                _accepted.RemoveAll(c => !c.Connected);
-                _accepted.Add(client);
+            ClientAccepted?.Invoke();
+            if (parked)
+            {
+                logger.LogInformation("Modbus client {Remote} connected on port {Port} and parked (Silent)", client.Client.RemoteEndPoint, _port);
+                continue;
             }
 
             logger.LogInformation("Modbus client {Remote} connected on port {Port}", client.Client.RemoteEndPoint, _port);

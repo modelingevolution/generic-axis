@@ -60,6 +60,13 @@ public sealed class SimulatorHost : IDisposable
     /// <summary>The unit's holding registers (absolute addresses).</summary>
     public PlcRegisterFile Registers { get; }
 
+    /// <summary>Raised after every accepted Modbus TCP connection (e.g. to start measuring cadence at the first client).</summary>
+    public event Action? ClientConnected
+    {
+        add => _provider.ClientAccepted += value;
+        remove => _provider.ClientAccepted -= value;
+    }
+
     /// <summary>The bound Modbus port (the OS-picked one when configured as 0), valid after <see cref="Start"/>.</summary>
     public int Port => _provider.Port;
 

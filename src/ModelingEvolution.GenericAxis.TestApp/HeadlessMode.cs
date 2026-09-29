@@ -47,7 +47,13 @@ public static class HeadlessMode
         var logger = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("GenericAxis.TestApp");
         logger.LogInformation("Headless simulator (no UI)");
         logger.LogSimulatorOptions(options);
-        await host.RunAsync();
+        var simulator = host.Services.GetRequiredService<Simulation.SimulatorService>(); // RunAsync disposes the host
+        await host.RunAsync(); // until SIGTERM / Ctrl-C (graceful)
+
+        // One line for the Python fixtures' INCONCLUSIVE rule (their regex: ^simulator: max scan gap (\d+) ms since the
+        // first client connected): a budget failure is excused only when the simulator itself missed cadence.
+        await Console.Out.WriteLineAsync(simulator.CadenceLine);
+        await Console.Out.FlushAsync();
         return 0;
     }
 }
