@@ -414,7 +414,7 @@ async def test_chk06_fails_an_axis_found_in_error_stop_and_writes_nothing(stub: 
     # GA-U-108.py (review #9): "Precondition State 0 or 1" and "No silent recovery": the axis the checker found in
     # ErrorStop (FaultCode 2, limit switch) is reported as read, never Reset behind the operator's back.
     stub.axis.state, stub.axis.fault, stub.axis.enable_blocked = 7, 2, True
-    wanted = {"CHK-01", "CHK-02", "CHK-06", "CHK-07"}
+    wanted = {"CHK-01", "CHK-02", "CHK-06", "CHK-07", "CHK-11"}
     report = await run(options(stub), checks=tuple(c for c in CHECKS if c.id in wanted))
     chk06 = next(c for c in report.checks if c.id == "CHK-06")
     assert (chk06.result, chk06.error_class) == (FAIL, "Machine")
@@ -422,7 +422,9 @@ async def test_chk06_fails_an_axis_found_in_error_stop_and_writes_nothing(stub: 
         "Machine/LimitTripped: precondition: State 0 or 1 expected; reset the axis first. "
         "Read State (S+0 = 100) = 7, FaultCode (S+6 = 106) = 2."
     )
-    assert by_id(report)["CHK-07"] == (SKIPPED, "needs CHK-06, which FAILED")
+    # Lead ruling on #9: a precondition FAIL is a failure to restore: CHK-11 (needs only 02) is SKIPPED too.
+    assert by_id(report)["CHK-07"] == (SKIPPED, "restore after CHK-06 failed")
+    assert by_id(report)["CHK-11"] == (SKIPPED, "restore after CHK-06 failed")
     assert stub.writes == []
     assert report.cleanup == []
     assert (stub.axis.state, stub.axis.fault) == (7, 2)

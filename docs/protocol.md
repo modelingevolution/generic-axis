@@ -256,7 +256,7 @@ the operator (Ctrl-C / SIGINT) before the list finished.
   stop its own beat.
 - **Each check restores.** Every check ends with the axis in State 0 or 1, no latched fault, the lease held and the
   beat running: Reset, `WatchdogFault = 0` and re-take as needed. If it cannot restore, it FAILs with the reason, and
-  every later check is SKIPPED.
+  every later check is SKIPPED. A precondition FAIL is a failure to restore.
 - **Beat.** Whenever a check says "beat", the checker writes `Heartbeat` every 100 ms (1…65535, never 0) from its
   own loop, not through a driver.
 

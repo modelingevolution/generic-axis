@@ -413,6 +413,10 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
                     abort = f"{check.id}: {lost_outcome.message.split(': ', 1)[1]}"
                 elif outcome.defect:
                     abort = f"not run: checker error during {check.id}"
+                elif not outcome.restore:
+                    # protocol.md "Each check restores": a precondition FAIL is a failure to restore. Nothing Resets an
+                    # axis the checker did not fault, so nothing more runs (CHK-11 included; #9, lead ruling).
+                    abort = f"restore after {check.id} failed"
                 elif check.id >= FIRST_LEASED_CHECK and (foreign := await foreign_trip_problem(ctx)) is not None:
                     # A dead commander's trip is still latched: nothing may restore or clear it, so nothing more runs.
                     if outcome.result != FAIL:
