@@ -47,8 +47,24 @@ jobs:
       - name: Build
         run: dotnet build src/GenericAxis.sln --no-restore --configuration Release
 
+      # A hung test must not hold the runner for the 6 h default (#42): the blame collector dumps a
+      # test host stuck for 10 min, and the step is cut at 25 min either way.
       - name: Test
-        run: dotnet test src/GenericAxis.sln --no-build --configuration Release
+        timeout-minutes: 25
+        run: |
+          dotnet test src/GenericAxis.sln --no-build --configuration Release \
+            --blame-hang-timeout 10m --blame-hang-dump-type mini \
+            --results-directory TestResults
+
+      - name: Upload hang dumps
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-blame-release
+          path: |
+            TestResults/**/*.dmp
+            TestResults/**/Sequence_*.xml
+          if-no-files-found: ignore
 
       - name: Pack driver and plugin
         run: |
