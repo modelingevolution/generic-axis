@@ -327,19 +327,29 @@ async def cleanup(ctx: CheckContext) -> None:
             await ctx.client.write(registers.watchdog_fault, [0])
             journal.append("C+10 = 0 (clear the watchdog fault the checker caused)")
 
+    async def stop_beating() -> None:
+        try:
+            await ctx.beater.stop()
+        except PlcError as exc:  # the beat had already died (logged at Warning); the release still follows
+            journal.append(f"stop beating: failed ({exc})")
+
     async def release() -> None:
         (owner,) = await ctx.client.read(registers.lease_owner, 1)
+        # protocol.md "Cleanup": the beat continues through cleanup and stops just before LeaseOwner = 0, which
+        # disarms the watchdog without a trip (FR-11). Stopping it earlier let a slow cleanup on a starved host exceed
+        # the 1 s stall window with the lease still held (GA-I-38 red on the 2-vCPU runner).
+        await stop_beating()
+        ctx.holds_lease = False
         if owner == ctx.options.owner_id:
             await ctx.client.write(registers.lease_owner, [0])
             journal.append("C+9 = 0 (release lease)")
-        ctx.holds_lease = False
 
     await step("Stop", stop_if_moving)
     await step("clear edge bits", clear_edges)
     await step("Enable 0", enable_off)
-    await step("stop beating", ctx.beater.stop)
     await step("WatchdogFault = 0", clear_trip)
     await step("release lease", release)
+    await step("stop beating", stop_beating)  # a no-op unless the release step failed before stopping the beat
 
 
 async def run(options: Options, progress: Progress | None = None, checks: tuple[Check, ...] = CHECKS) -> Report:

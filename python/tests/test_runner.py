@@ -844,3 +844,32 @@ async def test_chk11_waits_at_most_1_6_s_for_an_incumbent_trip_that_never_comes(
     last_beat = max(t for (address, _), t in timeline[incumbent:takeover] if address == 8)
     released = next(t for (address, values), t in timeline[takeover:] if (address, values) == (9, [0]))
     assert 1.55 <= released - last_beat <= 1.9, released - last_beat
+
+
+@pytest.mark.timeout(60)
+async def test_a_slow_cleanup_does_not_trip_the_watchdog(stub: StubPlc, monkeypatch: pytest.MonkeyPatch) -> None:
+    # GA-U-131.py (GA-I-38 red on the 2-vCPU runner: State 7 after a Ctrl-C). A cleanup step takes 1.1 s on the
+    # checker's side (a starved host between requests; the link itself answers at once). The beat must continue
+    # through cleanup and stop just before LeaseOwner = 0 (protocol.md "Cleanup"), so the PLC never sees a 1 s stall
+    # with the lease held: State 0/1, WatchdogFault 0, WatchdogTrips unchanged.
+    real_watchdog = CheckContext.watchdog
+
+    async def slow_watchdog(ctx: CheckContext) -> tuple[int, int]:
+        await asyncio.sleep(1.1)
+        return await real_watchdog(ctx)
+
+    task = asyncio.create_task(run(options(stub, motion=True), checks=TO_THE_FIRST_MOVE))
+    while stub.axis.state != 3:  # noqa: ASYNC110 — polls the stub's scan state; there is no event to await
+        await asyncio.sleep(0.005)
+    trips_before = stub.regs[MAP.watchdog_trips]
+    monkeypatch.setattr(CheckContext, "watchdog", slow_watchdog)  # only cleanup reads the watchdog from here on
+    task.cancel()
+    report = await task
+    await asyncio.sleep(0.3)
+    assert report.exit_code == 4
+    assert (stub.axis.state, stub.regs[MAP.watchdog_fault], stub.regs[MAP.watchdog_trips]) in (
+        (0, 0, trips_before),
+        (1, 0, trips_before),
+    ), (stub.axis.state, stub.regs[MAP.watchdog_fault], stub.regs[MAP.watchdog_trips], report.cleanup)
+    assert report.cleanup[-1] == "C+9 = 0 (release lease)"
+    assert stub.regs[MAP.lease_owner] == 0
