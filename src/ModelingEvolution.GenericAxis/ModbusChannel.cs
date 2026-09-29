@@ -39,6 +39,7 @@ internal sealed class ModbusChannel : IModbusChannel
     private readonly string _label;
     private readonly RegisterMap? _map;
     private ModbusTcpClient _client;
+    private TcpClient? _tcp;
     private volatile bool _disposed;
 
     /// <param name="host">PLC host.</param>
@@ -82,7 +83,7 @@ internal sealed class ModbusChannel : IModbusChannel
 
     /// <inheritdoc/>
     public Task ConnectAsync(CancellationToken ct) =>
-        ExecuteAsync<object?>(_ => null, "connect", null, ChannelPriority.Move, ct);
+        ExecuteAsync<object?>(_ => Task.FromResult<object?>(null), "connect", null, ChannelPriority.Move, ct);
 
     /// <inheritdoc/>
     public async Task DisconnectAsync(CancellationToken ct = default)
@@ -98,15 +99,37 @@ internal sealed class ModbusChannel : IModbusChannel
         {
             _logger?.LogDebug(ex, "Disconnecting {Host}:{Port} threw; ignoring", Host, Port);
         }
+
+        CloseSocket();
     }
 
-    private void EnsureConnected()
+    /// <summary>
+    /// Opens the socket without blocking a thread (PR #6: FluentModbus' <c>Connect</c> waits synchronously on its own
+    /// connect task, which starves the thread pool on a small machine). The socket is ours, handed to FluentModbus by
+    /// <see cref="ModbusTcpClient.Initialize(TcpClient, ModbusEndianness)"/>; that path does not apply the client's
+    /// timeouts, so the stream gets them here — the async transaction reads its timeout from
+    /// <see cref="NetworkStream.ReadTimeout"/>.
+    /// </summary>
+    private async Task EnsureConnectedAsync()
     {
         if (_client.IsConnected) return;
-        var endpoint = IPAddress.TryParse(Host, out var ip)
-            ? new IPEndPoint(ip, Port)
-            : new IPEndPoint(Dns.GetHostAddresses(Host)[0], Port);
-        _client.Connect(endpoint, ModbusEndianness.BigEndian);
+        var ip = IPAddress.TryParse(Host, out var parsed) ? parsed : (await Dns.GetHostAddressesAsync(Host))[0];
+        var tcp = new TcpClient();
+        try
+        {
+            await tcp.ConnectAsync(ip, Port).WaitAsync(ConnectTimeout);
+            var stream = tcp.GetStream();
+            stream.ReadTimeout = (int)IoTimeout.TotalMilliseconds;
+            stream.WriteTimeout = (int)IoTimeout.TotalMilliseconds;
+            _client.Initialize(tcp, ModbusEndianness.BigEndian);
+        }
+        catch
+        {
+            tcp.Dispose();
+            throw;
+        }
+
+        _tcp = tcp;
     }
 
     /// <summary>
@@ -120,7 +143,7 @@ internal sealed class ModbusChannel : IModbusChannel
     /// <summary>Runs one transaction in its lane, retrying once after a reconnect.</summary>
     /// <exception cref="MotionException"><see cref="MotionError.CommunicationLost"/> — both attempts failed with a
     /// transport failure, or the channel is disposed.</exception>
-    private async Task<T> ExecuteAsync<T>(Func<ModbusTcpClient, T> operation, string what, string? range,
+    private async Task<T> ExecuteAsync<T>(Func<ModbusTcpClient, Task<T>> operation, string what, string? range,
         ChannelPriority priority, CancellationToken ct, byte unit = 0)
     {
         // A disposed channel must never quietly reopen the socket: that would make a killed commander look alive
@@ -147,7 +170,7 @@ internal sealed class ModbusChannel : IModbusChannel
                 {
                     // Any failure to open the socket is a transport failure by definition (FluentModbus reports a
                     // connect timeout as a plain Exception and a refusal wrapped in an AggregateException).
-                    EnsureConnected();
+                    await EnsureConnectedAsync();
                 }
                 catch (Exception ex)
                 {
@@ -157,7 +180,9 @@ internal sealed class ModbusChannel : IModbusChannel
 
                 try
                 {
-                    return operation(_client);
+                    // The frame itself is never cancelled: a lane preempts the queue, never an in-flight frame
+                    // (design § PriorityGate); the stream's read timeout bounds it.
+                    return await operation(_client);
                 }
                 catch (Exception ex) when (IsTransport(ex))
                 {
@@ -208,25 +233,34 @@ internal sealed class ModbusChannel : IModbusChannel
         }
 
         try { _client.Dispose(); } catch { /* same */ }
+        CloseSocket();
         _client = NewClient();
+    }
+
+    /// <summary>FluentModbus does not close a socket it was handed (<c>Initialize</c>); the channel owns it.</summary>
+    private void CloseSocket()
+    {
+        var tcp = _tcp;
+        _tcp = null;
+        try { tcp?.Dispose(); } catch { /* disposal must not throw */ }
     }
 
     /// <inheritdoc/>
     public Task<ushort[]> ReadHoldingAsync(byte unit, ushort address, ushort count, string what,
         ChannelPriority priority = ChannelPriority.Move, CancellationToken ct = default)
-        => ExecuteAsync(c => c.ReadHoldingRegisters<ushort>(unit, address, count).ToArray(), what,
+        => ExecuteAsync(async c => (await c.ReadHoldingRegistersAsync<ushort>(unit, address, count)).ToArray(), what,
             Range("read", address, count), priority, ct, unit);
 
     /// <inheritdoc/>
     public Task WriteRegisterAsync(byte unit, ushort address, ushort value, string what,
         ChannelPriority priority = ChannelPriority.Move, CancellationToken ct = default)
-        => ExecuteAsync<object?>(c => { c.WriteSingleRegister(unit, address, value); return null; },
+        => ExecuteAsync<object?>(async c => { await c.WriteSingleRegisterAsync(unit, address, value); return null; },
             what, Range("write", address, 1), priority, ct, unit);
 
     /// <inheritdoc/>
     public Task WriteRegistersAsync(byte unit, ushort address, ushort[] values, string what,
         ChannelPriority priority = ChannelPriority.Move, CancellationToken ct = default)
-        => ExecuteAsync<object?>(c => { c.WriteMultipleRegisters(unit, address, values); return null; },
+        => ExecuteAsync<object?>(async c => { await c.WriteMultipleRegistersAsync(unit, address, values); return null; },
             what, Range("write", address, values.Length), priority, ct, unit);
 
     /// <inheritdoc/>
@@ -243,6 +277,8 @@ internal sealed class ModbusChannel : IModbusChannel
         {
             // Disposal must not throw.
         }
+
+        CloseSocket();
 
         _gate.Dispose();
     }
