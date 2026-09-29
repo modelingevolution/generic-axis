@@ -400,7 +400,12 @@ def normalize_observed(
 ) -> dict[str, int | None]:
     """§ Observed values: exactly the listed keys in order, ``null`` where never observed, then ``retries``."""
     keys = OBSERVED[check_id]
-    unknown.update(f"{check_id}.{key}" for key in observed if key not in keys)
+    extra = [key for key in observed if key not in keys]
+    if extra:
+        # Review #23: never dropped silently. A key outside the table is a checker defect, not a PLC finding, so it
+        # is logged at Error (and kept in Report.unknown_observed for the tests) instead of failing the PLC's check.
+        log.error("%s: observed key(s) outside § Observed values, not reported: %s", check_id, ", ".join(extra))
+        unknown.update(f"{check_id}.{key}" for key in extra)
     return {**{key: observed.get(key) for key in keys}, RETRIES_KEY: retries}
 
 

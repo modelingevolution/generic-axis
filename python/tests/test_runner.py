@@ -16,7 +16,7 @@ from generic_axis_check.client import PlcClient
 from generic_axis_check.context import CheckContext, Options
 from generic_axis_check.registers import Command, RegisterMap
 from generic_axis_check.report import to_json, to_markdown
-from generic_axis_check.runner import Report, run
+from generic_axis_check.runner import Report, normalize_observed, run
 
 from .conftest import stub_options
 from .stub_plc import StubPlc
@@ -535,3 +535,15 @@ async def test_chk13_not_arrived_states_the_arrival_budget_it_used() -> None:
         "Machine/MotionFailed: not arrived in position within the checker's arrival budget of 5.4 s "
         "(2 × travel time at the commanded speed + 5 s; the protocol sets none)."
     ), chk13.message
+
+
+def test_an_unknown_observed_key_is_logged_at_error_never_dropped_silently(caplog: pytest.LogCaptureFixture) -> None:
+    # GA-U-86.py (review #23).
+    unknown: set[str] = set()
+    with caplog.at_level(logging.ERROR, logger="generic_axis_check.runner"):
+        observed = normalize_observed("CHK-02", {"mapVersion": 1, "bogus": 7}, 0, unknown)
+    assert observed == {"mapVersion": 1, "retries": 0}
+    assert unknown == {"CHK-02.bogus"}
+    assert [r.getMessage() for r in caplog.records] == [
+        "CHK-02: observed key(s) outside § Observed values, not reported: bogus"
+    ]
