@@ -81,6 +81,10 @@ LEASE_TAKEOVER_MS = 2000
 WATCH_BEFORE_STALL_S = 3 * BEAT_PERIOD_S
 """CHK-11 (c): "Stop the incumbent's beat while the client watches" — the client sees three beats change first."""
 
+INCUMBENT_TRIP_SETTLE_S = 1.6
+"""CHK-11: before restoring after (c), wait until ``WatchdogFault`` reads 1 or 1.6 s have passed since the incumbent's
+last beat (the latest FR-11 trip, 1.5 s, plus one 100 ms read)."""
+
 HOME_TIMEOUT_S = 120.0
 """CHK-12: ``State == 1`` with ``Homed`` within 120 s."""
 
@@ -571,8 +575,15 @@ async def chk11(ctx: CheckContext) -> Outcome:
             with contextlib.suppress(asyncio.CancelledError, LeaseHeld, PlcError):
                 await take
         await incumbent.stop()
-        # "Any trip caused by (c) is cleaned up": the incumbent's stall arms and trips the PLC watchdog.
+        # "Any trip caused by (c) is cleaned up": the incumbent's stall trips the PLC watchdog 1.0–1.5 s after its
+        # last beat, which can be AFTER the lease was taken. Wait for it (WatchdogFault 1) or 1.6 s from that beat,
+        # else a restore reading 0 is followed by the trip landing (review #49, C# 2c35bfb).
         fault, _ = await ctx.watchdog()
+        if incumbent.last_beat is not None:
+            settle_until = incumbent.last_beat + INCUMBENT_TRIP_SETTLE_S
+            while fault == 0 and time.monotonic() < settle_until:
+                await asyncio.sleep(POLL_PERIOD_S)
+                fault, _ = await ctx.watchdog()
         if fault:
             ctx.caused_trip = True
             await ctx.keep_evidence()  # a FAIL of (b)/(c) cites the axis before this recovery wrote to it

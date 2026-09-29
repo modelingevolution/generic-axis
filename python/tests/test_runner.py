@@ -729,3 +729,36 @@ async def test_a_cancel_during_cleanup_does_not_abort_it(stub: StubPlc) -> None:
     await asyncio.sleep(0.5)
     assert stub.regs[MAP.command] == 0
     assert stub.regs[MAP.lease_owner] == 0
+
+
+@pytest.mark.parametrize("trip_after_s", [1.25, 1.45])
+@pytest.mark.timeout(60)
+async def test_chk11_waits_for_the_incumbents_late_trip_before_restoring(trip_after_s: float) -> None:
+    # GA-U-127.py (review #49, C# 2c35bfb): the PLC trips the dead incumbent 1.25 / 1.45 s after its last beat, after
+    # (c) took the lease. Protocol: before restoring after (c), wait until WatchdogFault reads 1 or 1.6 s have passed
+    # since the incumbent's last beat, then clear it. Observable: the trip lands during CHK-11 and CHK-11 clears it
+    # (C+10 = 0); a restore beating first would hide the trip, and one landing later fails "cannot restore". A probe
+    # 0.6 s after CHK-11 then reads a clean axis.
+    async def probe(ctx: CheckContext) -> Outcome:
+        await asyncio.sleep(0.6)
+        status = await ctx.status()
+        fault, _ = await ctx.watchdog()
+        clean = status.state in (0, 1) and fault == 0
+        return Outcome(PASS if clean else FAIL, f"State {status.state}, WatchdogFault {fault}")
+
+    by = {c.id: c for c in CHECKS}
+    checks = (by["CHK-01"], by["CHK-02"], by["CHK-06"], by["CHK-11"], dataclasses.replace(by["CHK-12"], run=probe))
+    async with StubPlc(stub_options(watchdog_s=trip_after_s)) as plc:
+        marks: dict[str, int] = {}
+
+        def progress(line: str) -> None:
+            for check_id in ("CHK-11", "CHK-12"):
+                if line.startswith(f"{check_id} ") and check_id not in marks:
+                    marks[check_id] = len(plc.writes)
+
+        report = await run(options(plc, motion=True), progress, checks=checks)
+        during_chk11 = plc.writes[marks["CHK-11"] : marks["CHK-12"]]
+    results = by_id(report)
+    assert results["CHK-11"][0] == PASS, results["CHK-11"]
+    assert (MAP.watchdog_fault, [0]) in during_chk11, "the incumbent's trip did not land during CHK-11 (no wait)"
+    assert results["CHK-12"] == (PASS, "State 0, WatchdogFault 0"), results["CHK-12"]
