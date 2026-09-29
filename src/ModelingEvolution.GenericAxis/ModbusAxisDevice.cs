@@ -178,19 +178,13 @@ public abstract class ModbusAxisDevice : IMotionDevice, IAsyncDisposable
         var o = Options;
         var m = o.Map;
         MotionException? refusal = null;
-        if (s.MapVersion != RegisterMap.Version)
-        {
-            refusal = AxisErrors.Create(o.Name, MotionError.ProtocolMismatch, "attach refused; nothing was written",
-                AxisErrors.Read(m, "MapVersion", m.MapVersion, s.MapVersion, RegisterMap.Version.ToString(Inv)));
-        }
-        else if (s.LimitsPublished && !s.LimitsValid)
+        if (AxisEngine.BlockViolation(m, s, out var mapVersion) is { } violation)
         {
             refusal = AxisErrors.Create(o.Name, MotionError.ProtocolMismatch,
-                "attach refused: the limit publication is partial or not sane; nothing was written",
-                AxisErrors.Read(m, "TravelMin", m.TravelMin, s.TravelMin),
-                AxisErrors.Read(m, "TravelMax", m.TravelMax, s.TravelMax),
-                AxisErrors.Read(m, "MaxVelocity", m.MaxVelocity, s.MaxVelocity,
-                    "all three 0, or TravelMin < TravelMax and MaxVelocity > 0"));
+                mapVersion
+                    ? "attach refused; nothing was written"
+                    : "attach refused: the limit publication is partial or not sane; nothing was written",
+                violation);
         }
         else
         {
