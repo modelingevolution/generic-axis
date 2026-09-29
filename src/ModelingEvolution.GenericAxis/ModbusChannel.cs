@@ -28,7 +28,8 @@ internal sealed class ModbusChannel : IModbusChannel
     /// <summary>Bound on opening the socket (design: 1 000 ms).</summary>
     public static readonly TimeSpan ConnectTimeout = TimeSpan.FromMilliseconds(1000);
 
-    /// <summary>Bound on waiting for the PLC's response to one frame — the stream's read timeout (design: 500 ms).</summary>
+    /// <summary>Bound on one frame, request to complete response (design: 500 ms). The channel's own timer, not the
+    /// stream's read timeout (see <see cref="ExecuteAsync{T}"/>).</summary>
     public static readonly TimeSpan IoTimeout = TimeSpan.FromMilliseconds(500);
 
     /// <summary>Pause between a failed transaction and its one retry (design: 300 ms).</summary>
@@ -75,7 +76,7 @@ internal sealed class ModbusChannel : IModbusChannel
     public bool IsConnected => !_disposed && _client.IsConnected;
 
     // No client-level timeouts: FluentModbus applies ConnectTimeout/ReadTimeout/WriteTimeout only on its own Connect
-    // path, which the channel does not use (EnsureConnectedAsync bounds the connect and sets the stream's timeout).
+    // path, which the channel does not use (EnsureConnectedAsync bounds the connect; FrameAsync bounds each frame).
     private static ModbusTcpClient NewClient() => new();
 
     /// <inheritdoc/>
@@ -103,9 +104,8 @@ internal sealed class ModbusChannel : IModbusChannel
     /// <summary>
     /// Opens the socket without blocking a thread (PR #6: FluentModbus' <c>Connect</c> waits synchronously on its own
     /// connect task, which starves the thread pool on a small machine). The socket is ours, handed to FluentModbus by
-    /// <see cref="ModbusTcpClient.Initialize(TcpClient, ModbusEndianness)"/>; that path does not apply the client's
-    /// timeouts, so the stream gets them here — the async transaction reads its timeout from
-    /// <see cref="NetworkStream.ReadTimeout"/>.
+    /// <see cref="ModbusTcpClient.Initialize(TcpClient, ModbusEndianness)"/>; that path applies none of the client's
+    /// timeouts and the stream keeps an infinite read timeout — <see cref="IoTimeout"/> is the channel's own timer.
     /// </summary>
     private async Task EnsureConnectedAsync()
     {
@@ -115,12 +115,6 @@ internal sealed class ModbusChannel : IModbusChannel
         try
         {
             await tcp.ConnectAsync(ip, Port).WaitAsync(ConnectTimeout);
-            var stream = tcp.GetStream();
-            // The async read's timeout comes from this property (review #34, GA-U-86). There is no WriteTimeout: it
-            // does not apply to WriteAsync (mutation-checked inert), and none is needed — every frame waits for its
-            // response before the next write on this socket, so at most one frame (≤ 260 bytes) is ever unacknowledged
-            // and a send can never block on a full buffer. A silent peer fails the response read, and the socket is reset.
-            stream.ReadTimeout = (int)IoTimeout.TotalMilliseconds;
             _client.Initialize(tcp, ModbusEndianness.BigEndian);
         }
         catch
@@ -181,8 +175,8 @@ internal sealed class ModbusChannel : IModbusChannel
                 try
                 {
                     // The frame itself is never cancelled: a lane preempts the queue, never an in-flight frame
-                    // (design § PriorityGate); the stream's read timeout bounds it.
-                    return await operation(_client);
+                    // (design § PriorityGate); IoTimeout bounds it (FrameAsync).
+                    return await FrameAsync(operation);
                 }
                 catch (Exception ex) when (IsTransport(ex))
                 {
@@ -207,6 +201,29 @@ internal sealed class ModbusChannel : IModbusChannel
                     + $"{(range is null ? "" : " " + range)} on {Host}:{Port} unit {unit} failed twice "
                     + $"(reconnected once): {reason}.");
             }
+        }
+    }
+
+    /// <summary>
+    /// One frame bounded by <see cref="IoTimeout"/> (review #34, GA-U-86). When the timer expires the socket is closed,
+    /// and the failure is a <see cref="TimeoutException"/> because OUR timer fired, however the aborted read surfaces.
+    /// FluentModbus 5.3.2's own read timeout (from <c>NetworkStream.ReadTimeout</c>) also closes the stream, but on
+    /// Linux the aborted <c>ReadAsync</c> often returns 0 bytes, which it reports as "The TCP connection closed
+    /// unexpectedly": a silent PLC described as a PLC that hung up (3 of 10 runs on 2 CPUs). So the stream keeps an
+    /// infinite read timeout and this timer is the only one.
+    /// </summary>
+    private async Task<T> FrameAsync<T>(Func<ModbusTcpClient, Task<T>> operation)
+    {
+        using var timeout = new CancellationTokenSource(IoTimeout);
+        var socket = _tcp;
+        await using var close = timeout.Token.Register(() => socket?.Dispose());
+        try
+        {
+            return await operation(_client);
+        }
+        catch (Exception ex) when (timeout.IsCancellationRequested)
+        {
+            throw new TimeoutException($"timed out: no complete response within {IoTimeout.TotalMilliseconds:F0} ms", ex);
         }
     }
 
