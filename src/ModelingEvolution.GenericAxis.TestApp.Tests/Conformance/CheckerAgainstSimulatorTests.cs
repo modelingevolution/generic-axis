@@ -454,7 +454,7 @@ public sealed class CheckerAgainstSimulatorTests
     /// <summary>A raw commander: takes the lease as owner 1 and beats every 100 ms until told to pause or stop.</summary>
     private sealed class RawCommander : IDisposable
     {
-        private readonly FluentModbus.ModbusTcpClient _client = new();
+        private readonly FluentModbus.ModbusTcpClient _client = new() { ConnectTimeout = 2000, ReadTimeout = 2000, WriteTimeout = 2000 };
         private readonly Lock _io = new();
         private ushort _beat;
 
@@ -485,7 +485,7 @@ public sealed class CheckerAgainstSimulatorTests
 
     /// <summary>GA-I-55: the twin of GA-I-37 with a starved commander — its beat pauses 1.1 s, longer than the old 1 s
     /// window, on a PLC that trips late (1.4 s). It is alive, so the tool must still refuse and write nothing.</summary>
-    [Fact]
+    [Fact(Timeout = 180_000)]
     public async Task GA_I_55_ACommanderSilentFor1Point1sIsStillRefused()
     {
         using var sim = new LiveSimulator(new SimulatedAxisOptions { WatchdogTimeout = TimeSpan.FromSeconds(1.4) });
@@ -557,7 +557,7 @@ public sealed class CheckerAgainstSimulatorTests
     /// GA-I-57 (review #35 (b), the live repro): the lease and the beat start as soon as pre-flight passes, so a second
     /// tool started during the first's CHK-03 is refused, and the first run is unaffected.
     /// </summary>
-    [Fact]
+    [Fact(Timeout = 180_000)]
     public async Task GA_I_57_ASecondToolStartedDuringTheFirstsChk03IsRefused()
     {
         using var sim = new LiveSimulator();
@@ -620,7 +620,7 @@ public sealed class CheckerAgainstSimulatorTests
     /// evidence of death only together with a Heartbeat silent for the whole 1 s watch, so the tool must refuse and write
     /// nothing, never declare it dead at the first read.
     /// </summary>
-    [Fact]
+    [Fact(Timeout = 180_000)]
     public async Task GA_I_60_ACommanderStillBeatingAfterATripIsRefused()
     {
         using var sim = new LiveSimulator();
@@ -651,7 +651,7 @@ public sealed class CheckerAgainstSimulatorTests
     /// the cleanup. The real process gets two SIGINTs and must end INTERRUPTED (exit 4) with the axis stopped, Enable 0,
     /// the lease released and no WatchdogFault left behind.
     /// </summary>
-    [Fact]
+    [Fact(Timeout = 180_000)]
     public async Task GA_I_61_ASecondCtrlCDuringCleanupDoesNotAbortIt()
     {
         using var sim = new LiveSimulator();
@@ -712,7 +712,7 @@ public sealed class CheckerAgainstSimulatorTests
     /// (MotionStartDelay, set just before the check) makes CHK-13 overrun 2 × |target − start| ÷ velocity + 5 s, and
     /// CHK-16 overrun its 2 s to first motion; a longer budget would wait it out and PASS.
     /// </summary>
-    [Theory]
+    [Theory(Timeout = 180_000)]
     [InlineData("CHK-13", 8.0, "Machine/MotionFailed: not arrived within 5.4 s (2 × |target − start| ÷ velocity + 5 s).")]
     [InlineData("CHK-16", 3.0, "Machine/MotionFailed: the jog never moved within 2 s of the ack.")]
     public async Task GA_I_62_ACheckFailsAtItsOwnMotionBudget(string id, double delaySeconds, string message)
@@ -734,7 +734,7 @@ public sealed class CheckerAgainstSimulatorTests
     /// GA-I-63 (review #40): the lease-loss guard stops the running check at once. The intruder takes the lease right
     /// after CHK-06's Enable 1; CHK-06 then must not send its second command (Enable 0) to an axis it no longer owns.
     /// </summary>
-    [Fact]
+    [Fact(Timeout = 180_000)]
     public async Task GA_I_63_ALeaseLostMidCheckStopsThatCheckBeforeItsNextCommand()
     {
         using var sim = new LiveSimulator(new SimulatedAxisOptions { EnableDelay = TimeSpan.FromMilliseconds(300) });
@@ -742,18 +742,27 @@ public sealed class CheckerAgainstSimulatorTests
         intruder.Connect(new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, sim.Port), FluentModbus.ModbusEndianness.BigEndian);
         ushort seqAtIntrusion = 0;
         Task? intrusion = null;
+        using var runDone = new CancellationTokenSource();
 
         var report = await Check(sim, allowMotion: false, progress: r =>
         {
             if (r.Running != "CHK-06" || intrusion is not null) return;
             intrusion = Task.Run(async () =>
             {
-                while ((sim.Snapshot.CommandBlock[0] & 1) == 0) await Task.Delay(1); // CHK-06's Enable 1 is on the wire
+                // Wait for CHK-06's Enable 1 on the wire; bounded by the run, so a run that never reaches it cannot hang the test.
+                while ((sim.Snapshot.CommandBlock[0] & 1) == 0)
+                {
+                    if (runDone.IsCancellationRequested) return;
+                    await Task.Delay(1);
+                }
+
                 seqAtIntrusion = sim.Snapshot.CommandSeq;
                 intruder.WriteSingleRegister(1, 9, 1);
             });
         });
+        await runDone.CancelAsync();
         await intrusion!;
+        seqAtIntrusion.Should().NotBe(0, $"setup: CHK-06 sent Enable 1 ({Get(report, "CHK-06").Message})");
 
         var chk06 = Get(report, "CHK-06");
         chk06.Result.Should().Be(CheckResultKind.Fail);
@@ -761,6 +770,46 @@ public sealed class CheckerAgainstSimulatorTests
         var end = await sim.SettledAsync();
         end.CommandSeq.Should().Be(seqAtIntrusion, "no command after the lease was lost: Enable 0 was never sent");
         end.LeaseOwner.Should().Be(1);
+    }
+
+    /// <summary>
+    /// GA-I-64 (review #41): a commander that takes the lease between CHK-11(a)'s release and its lease client's first read
+    /// (deterministically, inside the served release write) is reported Protocol/ProtocolMismatch with the register read,
+    /// never Commander/LeaseHeld; (b) does not impersonate over it, and nothing more is written to its axis.
+    /// </summary>
+    [Fact(Timeout = 180_000)]
+    public async Task GA_I_64_ACommanderTakingTheLeaseInChk11aIsProtocolNotCommander()
+    {
+        using var sim = new LiveSimulator();
+        using var intruder = new RawCommander(sim.Port);
+        intruder.Write(9, 0); // RawCommander takes the lease at construction; give it back, it waits for CHK-11
+        var armed = false;
+        using var stop = new CancellationTokenSource();
+        Task? beating = null;
+        sim.Host.OnClientWrite = addresses =>
+        {
+            if (!armed || !addresses.Contains(SimRegisters.LeaseOwner) || sim.Host.Registers.Read(SimRegisters.LeaseOwner) != 0) return;
+            armed = false;
+            sim.Host.Registers.Write(SimRegisters.LeaseOwner, 1); // the release is answered by another commander
+        };
+
+        var report = await Check(sim, allowMotion: false, progress: r =>
+        {
+            if (r.Running != "CHK-11" || beating is not null) return;
+            beating = Task.Run(async () => { while (!stop.IsCancellationRequested) await intruder.BeatAsync(TimeSpan.FromMilliseconds(100)); });
+            armed = true;
+        });
+        await stop.CancelAsync();
+        await beating!;
+
+        var chk11 = Get(report, "CHK-11");
+        chk11.Result.Should().Be(CheckResultKind.Fail);
+        chk11.ErrorClass.Should().Be(ErrorClass.Protocol, chk11.Message);
+        chk11.Message.Should().StartWith("Protocol/ProtocolMismatch: (a) another commander took the lease after its release. Read LeaseOwner (C+9 = 9) = 1,");
+        report.Cleanup.Should().NotContain(l => l.StartsWith("C+", StringComparison.Ordinal) && !l.Contains("stopped beating"),
+            "nothing is written to the axis another commander owns");
+        var end = await sim.SettledAsync();
+        end.LeaseOwner.Should().Be(1, "neither (b)'s 65534 nor a restore overwrote the other commander's lease");
     }
 
     private volatile bool _chk14Running;

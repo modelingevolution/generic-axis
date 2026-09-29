@@ -144,6 +144,9 @@ internal sealed class CheckContext : IAsyncDisposable
     /// check is SKIPPED. After it the checker writes no command, lease or restore to that axis.</summary>
     public string? LeaseLost { get; private set; }
 
+    /// <summary>Another commander owns the axis now (seen outside a view read): the same consequences as <see cref="LeaseLost"/>.</summary>
+    public void LoseLease(string message) => LeaseLost ??= message;
+
     /// <summary>
     /// <c>lastRead</c>: a fresh read of both blocks taken when a failure is detected, before any restore write. A read
     /// that fails leaves the last values read (and <c>null</c> for registers never read).

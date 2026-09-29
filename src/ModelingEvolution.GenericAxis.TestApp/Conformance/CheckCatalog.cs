@@ -252,7 +252,23 @@ internal static class CheckCatalog
         await ctx.Beater.StopAsync();
         await ctx.ReleaseLeaseAsync(ct);
         var clientA = LeaseClient(ctx, interval);
-        await clientA.AcquireAsync(TimeSpan.FromSeconds(3), ct);
+        try
+        {
+            await clientA.AcquireAsync(TimeSpan.FromSeconds(3), ct);
+        }
+        catch (MotionException ex) when (ex.Error == MotionError.LeaseHeld)
+        {
+            // Review #41: a commander took the lease between the release and the client's read. The register does not
+            // hold what was written, so this is Protocol, not Commander; and the axis is that commander's now: (b)/(c)
+            // must not impersonate over it, and nothing more is written to it (as for a lost lease).
+            var seen = await ctx.ReadAsync(ctx.Map.Heartbeat, 2, ct);
+            var lost = $"(a) another commander took the lease after its release. Read LeaseOwner ({ownerAt}) = {seen[1]}, "
+                       + $"Heartbeat ({ctx.Where(ctx.Map.Heartbeat)}) = {seen[0]}, expected 0 before the lease client took it.";
+            ctx.LoseLease(lost);
+            return CheckOutcome.Fail(Failure.Protocol(lost),
+                ("ownIdReadBack", null), ("refusedAfterMs", null), ("leaseOwnerAfterRefusal", null), ("takenAfterMs", null));
+        }
+
         ctx.TookLease = true;
         var aOwner = (await ctx.ReadViewAsync(ct)).LeaseOwner;
         if (aOwner != ctx.Options.OwnerId) failures.Add(Failure.Protocol($"(a) the lease write did not hold. Read LeaseOwner ({ownerAt}) = {aOwner}, expected {ctx.Options.OwnerId}."));

@@ -177,6 +177,7 @@ public sealed class SimulatorHost : IDisposable
     {
         // Raised while FluentModbus serves a write, under ModbusServer.Lock (= _sync). The PLC ignores writes to the registers it owns (protocol checklist
         // item 1): put them back at once, so a read later in the same batch cannot see the client's value.
+        OnClientWrite?.Invoke(e.Registers);
         foreach (var address in e.Registers)
         {
             var plcOwned = address == _commandBase + SimRegisters.WatchdogTrips
@@ -187,6 +188,12 @@ public sealed class SimulatorHost : IDisposable
             return;
         }
     }
+
+    /// <summary>
+    /// Test hook: called with the addresses of every client write, inside the served write and under the scan lock, so a
+    /// test can act between two requests deterministically (e.g. a second commander answering a lease release).
+    /// </summary>
+    internal Action<int[]>? OnClientWrite { get; set; }
 
     private void ApplyGate()
     {
