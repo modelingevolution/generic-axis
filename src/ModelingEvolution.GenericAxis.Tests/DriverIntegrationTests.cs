@@ -13,8 +13,9 @@ namespace ModelingEvolution.GenericAxis.Tests;
 
 /// <summary>
 /// test-scenarios.md § Integration, driver side (GA-I-01 … GA-I-24): the real driver over real Modbus TCP against
-/// <see cref="MiniPlc"/>. Timings are measured on the PLC's ground truth with a <see cref="Stopwatch"/>; they assert
-/// logic and the protocol's budgets, never Pamet physics.
+/// <see cref="MiniPlc"/>. A halt is timed on the PLC's ground truth: the timestamp of the first scan that shows it
+/// (<see cref="MiniPlc.WhenScan"/>), not when the test noticed. Budgets are the protocol's, never Pamet physics; a budget
+/// failure while the fixture missed its own scan cadence is INCONCLUSIVE (<see cref="Cadence"/>).
 /// </summary>
 [Collection(LiveModbusCollection.Name)]
 [Trait("Category", "Integration")]
@@ -106,11 +107,10 @@ public class DriverIntegrationTests(ITestOutputHelper output)
         var move = await Cruise(rig, track, 9000, 500);
 
         rig.Plc.ResetMaxScanGap();
-        var sw = Stopwatch.StartNew();
-        var halted = rig.Plc.WaitFor(t => t.Velocity == 0, T, "halted");
+        var start = Stopwatch.GetTimestamp();
+        var halted = rig.Plc.WhenScan(t => t.Velocity == 0, T, "halted");
         var stop = track.Carriage.StopAsync();
-        await halted;
-        var haltMs = sw.Elapsed.TotalMilliseconds;
+        var haltMs = Stopwatch.GetElapsedTime(start, (await halted).At).TotalMilliseconds;
         var gap = rig.Plc.MaxScanGap;
         await stop.WaitAsync(T);
 
@@ -130,11 +130,10 @@ public class DriverIntegrationTests(ITestOutputHelper output)
         var move = await Cruise(rig, track, 9000, 500);
 
         rig.Plc.ResetMaxScanGap();
-        var sw = Stopwatch.StartNew();
-        var halted = rig.Plc.WaitFor(t => t.Velocity == 0, T, "halted");
+        var start = Stopwatch.GetTimestamp();
+        var halted = rig.Plc.WhenScan(t => t.Velocity == 0, T, "halted");
         var stop = ((IMotionDevice)track).StopAllAsync();
-        await halted;
-        var haltMs = sw.Elapsed.TotalMilliseconds;
+        var haltMs = Stopwatch.GetElapsedTime(start, (await halted).At).TotalMilliseconds;
         var gap = rig.Plc.MaxScanGap;
         output.WriteLine($"GA-I-06 halt after StopAllAsync: {haltMs:F0} ms, fixture max scan gap {gap.TotalMilliseconds:F0} ms");
         Cadence.Budget(gap, () => haltMs.Should().BeLessThanOrEqualTo(200));
@@ -152,10 +151,10 @@ public class DriverIntegrationTests(ITestOutputHelper output)
 
         // GA-I-07: the in-process kill — no network I/O.
         rig.Plc.ResetMaxScanGap();
-        var sw = Stopwatch.StartNew();
+        var start = Stopwatch.GetTimestamp();
+        var halted = rig.Plc.WhenScan(t => t.Velocity == 0, T, "the watchdog halts the axis");
         track.Dispose();
-        await rig.Plc.WaitFor(t => t.Velocity == 0, T, "the watchdog halts the axis");
-        var haltS = sw.Elapsed.TotalSeconds;
+        var haltS = Stopwatch.GetElapsedTime(start, (await halted).At).TotalSeconds;
         var gap = rig.Plc.MaxScanGap;
 
         output.WriteLine($"GA-I-07 halt after the kill: {haltS * 1000:F0} ms, fixture max scan gap {gap.TotalMilliseconds:F0} ms");
@@ -317,12 +316,12 @@ public class DriverIntegrationTests(ITestOutputHelper output)
         var move = await Cruise(rig, track, 9000, 500);
 
         rig.Plc.ResetMaxScanGap();
-        var sw = Stopwatch.StartNew();
+        var start = Stopwatch.GetTimestamp();
+        var halted = rig.Plc.WhenScan(t => t.Velocity == 0, T, "the watchdog halts the axis");
         rig.Plc.SetCommunicationDown(true);
         var ex = await move.Invoking(m => m.WaitAsync(T)).Should().ThrowAsync<MotionException>();
-        var thrownS = sw.Elapsed.TotalSeconds;
-        await rig.Plc.WaitFor(t => t.Velocity == 0, T, "the watchdog halts the axis");
-        var haltS = sw.Elapsed.TotalSeconds;
+        var thrownS = Stopwatch.GetElapsedTime(start).TotalSeconds;
+        var haltS = Stopwatch.GetElapsedTime(start, (await halted).At).TotalSeconds;
         var gap = rig.Plc.MaxScanGap;
 
         output.WriteLine($"GA-I-14 CommunicationLost after {thrownS * 1000:F0} ms, halted after {haltS * 1000:F0} ms, "
@@ -366,12 +365,12 @@ public class DriverIntegrationTests(ITestOutputHelper output)
         var move = await Cruise(rig, track, 9000, 500);
 
         rig.Plc.ResetMaxScanGap();
-        var sw = Stopwatch.StartNew();
+        var start = Stopwatch.GetTimestamp();
+        var halted = rig.Plc.WhenScan(t => t.Velocity == 0, T, "the watchdog halts the axis");
         rig.Plc.SetSilent(true);
         var ex = await move.Invoking(m => m.WaitAsync(T)).Should().ThrowAsync<MotionException>();
-        var thrownS = sw.Elapsed.TotalSeconds;
-        await rig.Plc.WaitFor(t => t.Velocity == 0, T, "the watchdog halts the axis");
-        var haltS = sw.Elapsed.TotalSeconds;
+        var thrownS = Stopwatch.GetElapsedTime(start).TotalSeconds;
+        var haltS = Stopwatch.GetElapsedTime(start, (await halted).At).TotalSeconds;
 
         // Review #34: the STOP lane must not block forever behind a silent read. The Stop is still attempted and
         // fails as CommunicationLost within one in-flight frame plus its own two bounded attempts.

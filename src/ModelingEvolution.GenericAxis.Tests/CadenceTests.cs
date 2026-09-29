@@ -34,6 +34,24 @@ public class CadenceTests
         open.Set();
     }
 
+    [Fact(DisplayName = "GA-U-126 WhenScan times an event by the fixture's scan, not by when the test looked")]
+    public async Task WhenScan_LateObserver_ReturnsTheSatisfyingScansTimestamp()
+    {
+        await using var plc = new MiniPlc();
+        await plc.NextScanAsync();
+        var registered = System.Diagnostics.Stopwatch.GetTimestamp();
+        var first = plc.WhenScan(_ => true, LiveRig.T, "any scan");
+
+        Thread.Sleep(300); // the observer is late (a starved test thread)
+        var truth = await first;
+
+        System.Diagnostics.Stopwatch.GetElapsedTime(registered, truth.At).Should()
+            .BeLessThan(TimeSpan.FromMilliseconds(100), "the first scan after registration, not the one the observer saw");
+        truth.At.Should().BeGreaterThan(registered);
+        await FluentActions.Awaiting(() => plc.WhenScan(_ => false, TimeSpan.FromMilliseconds(100), "never"))
+            .Should().ThrowAsync<TimeoutException>().WithMessage("*never*");
+    }
+
     private static readonly TimeSpan OnCadence = TimeSpan.FromMilliseconds(12);
     private static readonly TimeSpan Missed = TimeSpan.FromMilliseconds(51);
 

@@ -75,6 +75,7 @@ internal sealed class MiniPlc : IAsyncDisposable
     private readonly Thread _thread;
     private readonly ConcurrentDictionary<int, byte> _published = new();
     private readonly ConcurrentBag<int> _writtenRegisters = [];
+    private readonly ConcurrentQueue<(Func<PlcTruth, bool> Predicate, TaskCompletionSource<PlcTruth> Done)> _waiters = new();
     private volatile PlcTruth _truth = null!;
 
     // PLC program state (scan thread only).
@@ -181,6 +182,25 @@ internal sealed class MiniPlc : IAsyncDisposable
     {
         var mark = Stopwatch.GetTimestamp();
         await WaitFor(t => t.At > mark, TimeSpan.FromSeconds(2), "a scan after the mark");
+    }
+
+    /// <summary>
+    /// The first scan, at or after this call, whose published truth satisfies <paramref name="predicate"/>, evaluated
+    /// on the scan thread. Its <see cref="PlcTruth.At"/> is when the fixture did it — a budget measured on it does not
+    /// include the test's own (possibly starved) polling latency.
+    /// </summary>
+    public async Task<PlcTruth> WhenScan(Func<PlcTruth, bool> predicate, TimeSpan timeout, string because)
+    {
+        var waiter = (predicate, new TaskCompletionSource<PlcTruth>(TaskCreationOptions.RunContinuationsAsynchronously));
+        _waiters.Enqueue(waiter);
+        try
+        {
+            return await waiter.Item2.Task.WaitAsync(timeout);
+        }
+        catch (TimeoutException)
+        {
+            throw new TimeoutException($"PLC truth never satisfied '{because}' within {timeout}: {Truth}");
+        }
     }
 
     public async Task WaitFor(Func<PlcTruth, bool> predicate, TimeSpan timeout, string because)
@@ -505,8 +525,14 @@ internal sealed class MiniPlc : IAsyncDisposable
         }
 
         if (_published.Count < 1_000_000) _published.TryAdd(raw, 0);
-        _truth = new PlcTruth(now, _p, _v, _state, flags, _fault, Get(C(1)), _ack, Get(C(8)), _armed, Get(C(10)),
-            _trips, Get(C(9)), _homed, _homeCommands);
+        var truth = _truth = new PlcTruth(now, _p, _v, _state, flags, _fault, Get(C(1)), _ack, Get(C(8)), _armed,
+            Get(C(10)), _trips, Get(C(9)), _homed, _homeCommands);
+        for (var n = _waiters.Count; n > 0 && _waiters.TryDequeue(out var waiter); n--)
+        {
+            if (waiter.Done.Task.IsCompleted) continue;
+            if (waiter.Predicate(truth)) waiter.Done.TrySetResult(truth);
+            else _waiters.Enqueue(waiter);
+        }
     }
 
     public async ValueTask DisposeAsync()
