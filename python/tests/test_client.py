@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import time
 
 import pytest
@@ -37,11 +38,17 @@ async def test_cancelling_a_request_in_flight_raises_cancelled_error_not_plc_err
         client.close()
 
 
-async def test_connect_to_a_closed_port_raises_plc_error() -> None:
+async def test_connect_to_a_closed_port_retries_once_at_warning_and_counts_it(caplog: pytest.LogCaptureFixture) -> None:
+    # GA-U-73.py (review #11): the connect retry is the one retry: one Warning, counted in ``retries``.
     async with StubPlc() as plc:
         port = plc.port
-    with pytest.raises(PlcError, match="connect"):
-        await PlcClient("127.0.0.1", port, 1).connect()
+    client = PlcClient("127.0.0.1", port, 1)
+    with caplog.at_level(logging.WARNING, logger="generic_axis_check.client"), pytest.raises(PlcError, match="connect"):
+        await client.connect()
+    assert client.retries == 1
+    assert [r.getMessage() for r in caplog.records if r.name == "generic_axis_check.client"] == [
+        f"connect to 127.0.0.1:{port} failed; retrying once"
+    ]
 
 
 async def test_read_from_a_silent_server_fails_after_two_half_second_attempts() -> None:

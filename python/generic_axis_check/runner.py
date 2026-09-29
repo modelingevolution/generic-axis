@@ -309,7 +309,8 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
             say(f"{check.id} {check.title} ...")
             running = check.id
             began = time.monotonic()
-            retries_before = client.retries
+            # CHK-01 is the run's transport: its ``retries`` include the connect and pre-flight retries before it.
+            retries_before = 0 if check.id == "CHK-01" else client.retries
             last_read: LastRead | None = None
             try:
                 outcome = await _run_one(check, ctx)

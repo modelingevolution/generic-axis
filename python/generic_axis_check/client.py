@@ -74,14 +74,21 @@ class PlcClient:
     def connected(self) -> bool:
         return self._client is not None and self._client.connected
 
-    async def connect(self) -> None:
+    async def connect(self, attempts: int = CONNECT_ATTEMPTS) -> None:
         """Connect within CHK-01's budget. pymodbus uses one timeout for connect and for requests, so the client
         connects with the 2 s connect timeout and then switches to the 0.5 s request timeout. Automatic reconnection is
         off (``reconnect_delay=0``): a lost link is reported, never silently recovered (protocol.md § Errors and
-        debugging, rule 3)."""
+        debugging, rule 3).
+
+        The second attempt is the tool's one retry: logged at Warning and counted in ``retries`` like a request retry
+        (§ Error class of a FAIL, "The one retry"; review #11). A reconnect after a failed request makes one attempt
+        only, so the request's one retry is not doubled."""
         started = time.monotonic()
         last: BaseException | None = None
-        for _ in range(CONNECT_ATTEMPTS):
+        for attempt in range(attempts):
+            if attempt:
+                log.warning("connect to %s:%d failed; retrying once", self.host, self.port)
+                self.retries += 1
             timeout = connect_timeout(time.monotonic() - started)
             client = AsyncModbusTcpClient(self.host, port=self.port, timeout=timeout, retries=0, reconnect_delay=0)
             try:
@@ -97,7 +104,7 @@ class PlcClient:
             client.close()
         reason = f": {last}" if last is not None else ""
         raise PlcError(
-            f"connect to {self.host}:{self.port} failed ({CONNECT_ATTEMPTS} attempts in "
+            f"connect to {self.host}:{self.port} failed ({attempts} attempt{'s' if attempts > 1 else ''} in "
             f"{time.monotonic() - started:.1f} s){reason}"
         )
 
@@ -117,7 +124,7 @@ class PlcClient:
             if generation != self._generation:
                 return  # another caller already reconnected after the same failure
             self.close()
-            await self.connect()
+            await self.connect(attempts=1)
 
     async def _transact(
         self,
