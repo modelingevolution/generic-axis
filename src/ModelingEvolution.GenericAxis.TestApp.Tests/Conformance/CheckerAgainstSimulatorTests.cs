@@ -301,6 +301,11 @@ public sealed class CheckerAgainstSimulatorTests
     }
 
     [Fact]
+    /// <summary>
+    /// A fault the check did not expect is a Machine error; and (GA-I-58, ruling "Each check restores") a CHK-06
+    /// precondition FAIL is a failure to restore: every later check, CHK-11 included, is SKIPPED naming CHK-06, and
+    /// nothing Resets an axis the checker did not fault.
+    /// </summary>
     public async Task AFaultTheCheckDidNotExpectIsAMachineError()
     {
         using var sim = new LiveSimulator(new SimulatedAxisOptions { Faults = new SimFaults { DriveFault = true } });
@@ -311,8 +316,13 @@ public sealed class CheckerAgainstSimulatorTests
         var chk06 = Get(report, "CHK-06");
         chk06.Result.Should().Be(CheckResultKind.Fail);
         chk06.ErrorClass.Should().Be(ErrorClass.Machine);
-        chk06.Message.Should().StartWith("Machine/DriveFault: the PLC reports ErrorStop. Read FaultCode (S+6 = 106) = 1. also Machine/DriveFault: cannot restore");
+        chk06.Message.Should().Be("Machine/DriveFault: the PLC reports ErrorStop. Read FaultCode (S+6 = 106) = 1.");
         chk06.LastRead!.Status[0].Should().Be(7);
+        foreach (var id in Ids(7, 11)) Get(report, id).Message.Should().Be("restore after CHK-06 failed", id);
+        var end = await sim.SettledAsync();
+        end.CommandSeq.Should().Be(0, "no command, so no Reset, was written to an axis the checker did not fault");
+        end.State.Should().Be(SimAxisState.ErrorStop);
+        ((int)end.FaultCode).Should().Be(1);
     }
 
     [Fact]
@@ -530,8 +540,8 @@ public sealed class CheckerAgainstSimulatorTests
         ShouldBe(report, CheckResultKind.Pass, Ids(1, 5));
         var chk06 = Get(report, "CHK-06");
         chk06.Result.Should().Be(CheckResultKind.Fail);
-        chk06.Message.Should().StartWith("Machine/WatchdogTripped: the PLC reports ErrorStop. Read FaultCode (S+6 = 106) = 4.")
-            .And.Contain("the previous commander's watchdog trip is left for its operator");
+        chk06.Message.Should().Be("Machine/WatchdogTripped: the PLC reports ErrorStop. Read FaultCode (S+6 = 106) = 4.");
+        foreach (var id in Ids(7, 11)) Get(report, id).Message.Should().Be("restore after CHK-06 failed", id);
         report.Cleanup.Should().BeEmpty("the checker took no lease, beat or command, and does not clear a foreign trip");
         var end = await sim.SettledAsync();
         end.WatchdogFault.Should().Be(1, "the dead commander's trip is left for its operator");

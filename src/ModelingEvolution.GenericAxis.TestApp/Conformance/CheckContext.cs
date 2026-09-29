@@ -55,6 +55,12 @@ internal sealed class CheckContext : IAsyncDisposable
     /// </summary>
     public bool ForeignTrip { get; set; }
 
+    /// <summary>
+    /// CHK-06 found the axis not at rest before the checker commanded anything: a failure to restore. No restore runs
+    /// (nothing Resets an axis the checker did not fault) and every later check is SKIPPED naming CHK-06.
+    /// </summary>
+    public bool NotRestorable { get; set; }
+
     /// <summary>The checker caused a watchdog trip, so cleanup clears <c>WatchdogFault</c>.</summary>
     public bool CausedTrip { get; set; }
 

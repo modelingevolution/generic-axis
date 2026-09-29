@@ -94,4 +94,25 @@ public sealed class RunnerLogicTests
         report.Checks.SkipWhile(c => c.Id != "CHK-08").Should().OnlyContain(c =>
             c.Result == CheckResultKind.Skipped && c.Message == "CHK-07 could not restore the axis");
     }
+
+    /// <summary>GA-U-95 (ruling, § Report schema): an exception in the checker itself is a checker error with no class —
+    /// never labelled ProtocolMismatch, because it is not a verdict on the PLC.</summary>
+    [Fact]
+    public async Task GA_U_95_ACheckerExceptionIsACheckerErrorWithNoClass()
+    {
+        var catalog = CheckCatalog.All.Select(d => d.Id == "CHK-03"
+            ? d with { RunAsync = (_, _) => throw new InvalidOperationException("scripted defect") }
+            : d with { RunAsync = (_, _) => Task.FromResult(CheckOutcome.Pass("ok")) }).ToList();
+
+        var report = await Run(catalog, allowMotion: false);
+
+        var chk03 = report.Checks.Single(c => c.Id == "CHK-03");
+        chk03.Result.Should().Be(CheckResultKind.Fail);
+        chk03.ErrorClass.Should().BeNull("the checker failed, not the PLC");
+        chk03.Message.Should().StartWith("checker error: InvalidOperationException: scripted defect");
+        using var doc = System.Text.Json.JsonDocument.Parse(ReportWriter.ToJson(report));
+        doc.RootElement.GetProperty("checks")[2].GetProperty("errorClass").ValueKind.Should().Be(System.Text.Json.JsonValueKind.Null);
+        report.Checks.Skip(3).Take(8).Should().OnlyContain(c => c.Message == "not run: checker error during CHK-03",
+            "a run whose checker failed is not continued");
+    }
 }

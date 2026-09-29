@@ -163,6 +163,16 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
                 // Another commander owns the axis now: no restore, and every later check is SKIPPED with the reason.
                 blocked = $"{def.Id}: {lostLease}";
             }
+            else if (ctx.NotRestorable)
+            {
+                // A precondition FAIL is a failure to restore: the checker did not fault this axis, so it does not Reset it.
+                blocked = $"restore after {def.Id} failed";
+            }
+            else if (outcome.Deciding is { Class: null })
+            {
+                // The checker itself failed: the axis is in a state the checker cannot vouch for; nothing more runs.
+                blocked = $"not run: checker error during {def.Id}";
+            }
             else if (def.Restores)
             {
                 var failed = await RestoreAsync(ctx, ct);
@@ -253,8 +263,9 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
         }
         catch (Exception ex)
         {
+            // A defect in the checker, not a verdict on the PLC: no class (protocol § Report schema).
             _log.LogError(ex, "{Id} threw", def.Id);
-            outcome = CheckOutcome.Fail(Failure.Protocol($"the checker failed unexpectedly: {ex.GetType().Name}: {ex.Message}"));
+            outcome = CheckOutcome.Fail(Failure.CheckerError(ex));
         }
 
         return (outcome, (long)t.Elapsed.TotalMilliseconds);

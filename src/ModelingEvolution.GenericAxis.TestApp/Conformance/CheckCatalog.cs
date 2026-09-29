@@ -325,6 +325,13 @@ internal static class CheckCatalog
             ("ackMs", home.AckMs), ("homedAfterMs", done.Met && s.Homed && s.State == Standstill ? done.ElapsedMs : null), ("faultCode", s.FaultCode));
     }
 
+    /// <summary>protocol § The checks, CHK-13: arrival within 2 × |target − start| ÷ velocity + 5 s (raw units).</summary>
+    internal static TimeSpan Chk13Budget(long start, long target, long velocity) =>
+        TimeSpan.FromSeconds(2.0 * Math.Abs(target - start) / velocity + 5);
+
+    /// <summary>protocol § The checks, CHK-16: <c>ActualVelocity</c> &gt; 0 within 2 s of the jog's ack.</summary>
+    internal static readonly TimeSpan Chk16MovingBudget = TimeSpan.FromSeconds(2);
+
     private static async Task<CheckOutcome> Chk13(CheckContext ctx, CancellationToken ct)
     {
         var (min, _, max) = ctx.Limits ?? throw new InvalidOperationException("CHK-03 passed without recording the limits");
@@ -339,7 +346,7 @@ internal static class CheckCatalog
         var move = await ctx.Commands.SendAsync(CommandBits.Enable | CommandBits.MoveAbsolute, ct);
         if (!move.Acked) return NotAcked("MoveAbsolute", move, ("target", target));
 
-        var budget = TimeSpan.FromSeconds(Math.Abs((double)target - start) / speed + 10);
+        var budget = Chk13Budget(start, target, speed);
         var done = await ctx.WaitForAsync(v => (v.State == Standstill && v.Status.InPosition) || v.State == ErrorStop, budget, move.WrittenAt, ct);
         var s = done.View.Status;
         var error = Math.Abs((long)s.ActualPosition - target);
@@ -348,7 +355,7 @@ internal static class CheckCatalog
         var failures = new List<Failure>();
         if (move.View.State != Discrete) failures.Add(AckWithoutState(ctx, "MoveAbsolute", move, Discrete));
         if (!done.Met)
-            failures.Add(Failure.Machine("MotionFailed", $"not arrived within {budget.TotalSeconds:F0} s. Read State ({ctx.Where(ctx.Map.State)}) = {s.State}, "
+            failures.Add(Failure.Machine("MotionFailed", $"not arrived within {budget.TotalSeconds:0.0} s (2 × |target − start| ÷ velocity + 5 s). Read State ({ctx.Where(ctx.Map.State)}) = {s.State}, "
                                                          + $"Flags.InPosition = {(s.InPosition ? 1 : 0)}, ActualPosition ({ctx.Where(ctx.Map.ActualPosition)}) = {s.ActualPosition}, expected 1, 1, {target}."));
         else if (s.State == Standstill && error > tolerance)
             failures.Add(Failure.Machine("MotionFailed", $"stopped outside --tolerance {ctx.Options.Tolerance}. Read ActualPosition ({ctx.Where(ctx.Map.ActualPosition)}) = {s.ActualPosition}, expected {target} ± {tolerance}."));
@@ -428,9 +435,9 @@ internal static class CheckCatalog
         await ctx.Commands.WriteParametersAsync(here, speed, 0, ct);
         var jog = await ctx.Commands.SendAsync(CommandBits.Enable | CommandBits.MoveVelocity, ct);
         if (!jog.Acked) return NotAcked("MoveVelocity", jog, ("commandedVelocity", speed));
-        var moving = await ctx.WaitForAsync(v => v.Status.ActualVelocity > 0, TimeSpan.FromSeconds(1), jog.WrittenAt, ct);
+        var moving = await ctx.WaitForAsync(v => v.Status.ActualVelocity > 0, Chk16MovingBudget, jog.WrittenAt, ct);
         if (!moving.Met)
-            return CheckOutcome.Fail(Failure.Machine("MotionFailed", $"the jog never moved. Read ActualVelocity ({ctx.Where(ctx.Map.ActualVelocity)}) = "
+            return CheckOutcome.Fail(Failure.Machine("MotionFailed", $"the jog never moved within {Chk16MovingBudget.TotalSeconds:0} s of the ack. Read ActualVelocity ({ctx.Where(ctx.Map.ActualVelocity)}) = "
                                                                      + $"{moving.View.Status.ActualVelocity}, State = {moving.View.State}, expected > 0 and 4."), ("commandedVelocity", speed));
 
         // The commander dies: the beat stops, the connection stays open, polling continues.
@@ -472,10 +479,17 @@ internal static class CheckCatalog
         Failure.Protocol($"{what} was acknowledged without entering its state (the ack must land in the scan that enters it). "
                          + $"Read CommandAck ({ctx.Where(ctx.Map.CommandAck)}) = {ack.Seq}, State ({ctx.Where(ctx.Map.State)}) = {ack.View.State}, expected {expected}.");
 
-    private static CheckOutcome Precondition(CheckContext ctx, StatusBlock s, string expected) =>
-        CheckOutcome.Fail(s.State == ErrorStop && s.FaultCode != 0
+    /// <summary>
+    /// protocol § Rules, "Each check restores": a precondition FAIL is a failure to restore. The axis was not as the
+    /// check needs it before the check commanded anything, so nothing Resets it and every later check is SKIPPED.
+    /// </summary>
+    private static CheckOutcome Precondition(CheckContext ctx, StatusBlock s, string expected)
+    {
+        ctx.NotRestorable = true;
+        return CheckOutcome.Fail(s.State == ErrorStop && s.FaultCode != 0
             ? Failure.Fault(s.FaultCode, ctx.Where(ctx.Map.FaultCode))
             : Failure.Machine("MotionFailed", $"precondition: the axis is not at rest. Read State ({ctx.Where(ctx.Map.State)}) = {s.State}, expected {expected}."));
+    }
 
     private static long Delta(ushort now, ushort before) => (ushort)(now - before);
 

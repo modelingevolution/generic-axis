@@ -14,8 +14,17 @@ public enum CheckResultKind
 /// One thing a check saw go wrong, with its class, its SDK <c>MotionError</c> name and its precedence from protocol
 /// § "Error class of a FAIL" (1 = decided first).
 /// </summary>
-public sealed record Failure(ErrorClass Class, string Name, int Rank, string Text)
+public sealed record Failure(ErrorClass? Class, string Name, int Rank, string Text)
 {
+    /// <summary>
+    /// Rank 0: the checker itself failed (protocol § Report schema). No class: it is not a verdict on the PLC. Rendered
+    /// <c>checker error: &lt;ExceptionType&gt;: &lt;text&gt;</c>.
+    /// </summary>
+    public static Failure CheckerError(Exception ex) => new(null, "checker error", 0, $"{ex.GetType().Name}: {ex.Message}");
+
+    /// <summary>The message form: <c>&lt;Class&gt;/&lt;MotionError&gt;: &lt;text&gt;</c>, or <c>checker error: …</c>.</summary>
+    public string Render() => Class is { } cls ? $"{cls}/{Name}: {Text}" : $"checker error: {Text}";
+
     /// <summary>Rank 1: no answer, connect failed, socket closed, Modbus exception (after the one retry).</summary>
     public static Failure Transport(string text) => new(ErrorClass.Transport, "CommunicationLost", 1, text);
 
@@ -113,8 +122,8 @@ public sealed record CheckOutcome(
     private CheckOutcome WithMessage()
     {
         var deciding = Deciding!;
-        var rest = Failures.Where(f => !ReferenceEquals(f, deciding)).Select(f => $"also {f.Class}/{f.Name}: {f.Text}");
-        return this with { Message = string.Join(" ", new[] { $"{deciding.Class}/{deciding.Name}: {deciding.Text}" }.Concat(rest)) };
+        var rest = Failures.Where(f => !ReferenceEquals(f, deciding)).Select(f => $"also {f.Render()}");
+        return this with { Message = string.Join(" ", new[] { deciding.Render() }.Concat(rest)) };
     }
 
     private static ImmutableArray<KeyValuePair<string, long?>> ToObserved((string Key, long? Value)[] observed) =>
