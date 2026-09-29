@@ -261,7 +261,7 @@ async def _moving_commander(stub: StubPlc) -> tuple[PlcClient, Beater]:
 
 
 async def test_run_interrupted_during_preflight_writes_nothing_to_a_live_commanders_axis(stub: StubPlc) -> None:
-    # GA-U-70.py (review #18): Ctrl-C in the 1 s pre-flight watch → exit 4, no write at all, the commander untouched.
+    # GA-U-100.py (review #18): Ctrl-C in the 1 s pre-flight watch → exit 4, no write at all, the commander untouched.
     commander, beat = await _moving_commander(stub)
     try:
         before = len(stub.writes)
@@ -285,7 +285,7 @@ async def test_run_interrupted_during_preflight_writes_nothing_to_a_live_command
 
 
 async def test_run_interrupted_during_preflight_on_an_idle_axis_writes_nothing(stub: StubPlc) -> None:
-    # GA-U-70.py (review #18), idle case: nothing was written before the interruption, so nothing is undone.
+    # GA-U-100.py (review #18), idle case: nothing was written before the interruption, so nothing is undone.
     task = asyncio.create_task(run(options(stub, motion=True)))
     await asyncio.sleep(0.5)
     task.cancel()
@@ -296,7 +296,7 @@ async def test_run_interrupted_during_preflight_on_an_idle_axis_writes_nothing(s
 
 
 async def test_run_whose_preflight_read_fails_fails_chk01_skips_the_rest_and_writes_nothing(stub: StubPlc) -> None:
-    # GA-U-71.py (review #4): the connect succeeds, the first C+8…C+9 read goes unanswered twice (the one retry
+    # GA-U-101.py (review #4): the connect succeeds, the first C+8…C+9 read goes unanswered twice (the one retry
     # included). Pre-flight did not prove the axis free, so the run stops: CHK-01 FAIL Transport, nothing written.
     stub.drop_next = 2
     report = await run(options(stub), checks=upto("CHK-05"))
@@ -315,7 +315,7 @@ async def test_run_whose_preflight_read_fails_fails_chk01_skips_the_rest_and_wri
 
 @pytest.mark.timeout(60)
 async def test_run_reports_a_dead_beat_during_homing_as_transport_not_a_watchdog_trip(stub: StubPlc) -> None:
-    # GA-U-75.py (review #7): the beat's writes go unanswered once homing starts; the beat dies after its one retry.
+    # GA-U-105.py (review #7): the beat's writes go unanswered once homing starts; the beat dies after its one retry.
     # The PLC then trips its watchdog, but the FAIL is the cause the checker saw: Transport, with the beat's exception.
     def heartbeat_write_while_homing(pdu: bytes) -> bool:
         return pdu[0] == 6 and int.from_bytes(pdu[1:3]) == MAP.heartbeat and stub.axis.state == 2
@@ -334,7 +334,7 @@ async def test_run_reports_a_dead_beat_during_homing_as_transport_not_a_watchdog
 
 @pytest.mark.timeout(60)
 async def test_run_reports_a_dead_beat_during_a_wait_even_when_the_plc_never_trips(stub: StubPlc) -> None:
-    # GA-U-75.py (review #7), second case: with the PLC's watchdog off nothing trips, and homing would PASS with the
+    # GA-U-105.py (review #7), second case: with the PLC's watchdog off nothing trips, and homing would PASS with the
     # checker's beat dead. Every request of a running check consults the beat, so the wait FAILs Transport.
     def heartbeat_write_while_homing(pdu: bytes) -> bool:
         return pdu[0] == 6 and int.from_bytes(pdu[1:3]) == MAP.heartbeat and stub.axis.state == 2
@@ -350,7 +350,7 @@ async def test_run_reports_a_dead_beat_during_a_wait_even_when_the_plc_never_tri
 
 @pytest.mark.timeout(120)
 async def test_cleanup_waits_for_the_stop_ack_before_clearing_the_edge_on_a_slow_scan(stub: StubPlc) -> None:
-    # GA-U-76.py (review #5): Ctrl-C mid-move on a PLC with a 100 ms scan. The Stop edge must stay set until the
+    # GA-U-106.py (review #5): Ctrl-C mid-move on a PLC with a 100 ms scan. The Stop edge must stay set until the
     # PLC acknowledged it, else the scan sees the cleared word and the Stop is never executed.
     task = asyncio.create_task(run(options(stub, motion=True), checks=TO_THE_FIRST_MOVE))
     while stub.axis.state != 3:  # noqa: ASYNC110 — polls the stub's scan state; there is no event to await
@@ -369,7 +369,7 @@ async def test_cleanup_waits_for_the_stop_ack_before_clearing_the_edge_on_a_slow
 
 
 async def test_cleanup_journals_a_stop_that_was_not_acknowledged() -> None:
-    # GA-U-76.py (review #5): no ack within 500 ms → the journal says so, and cleanup continues.
+    # GA-U-106.py (review #5): no ack within 500 ms → the journal says so, and cleanup continues.
     async with StubPlc() as plc:
         task = asyncio.create_task(run(options(plc, motion=True), checks=TO_THE_FIRST_MOVE))
         while plc.axis.state != 3:  # noqa: ASYNC110 — polls the stub's scan state; there is no event to await
@@ -385,7 +385,7 @@ async def test_cleanup_journals_a_stop_that_was_not_acknowledged() -> None:
 
 
 async def test_an_unacknowledged_edge_is_in_last_read_before_the_edge_is_cleared() -> None:
-    # GA-U-77.py (review #2 c): "lastRead is a fresh read … taken when the failure is detected and before any restore
+    # GA-U-107.py (review #2 c): "lastRead is a fresh read … taken when the failure is detected and before any restore
     # write". The clear of an unacknowledged edge is such a write: C+0 in lastRead still shows the Reset edge.
     async def reset_without_ack(ctx: CheckContext) -> Outcome:
         await ctx.command(Command.RESET)
@@ -405,7 +405,7 @@ async def test_an_unacknowledged_edge_is_in_last_read_before_the_edge_is_cleared
 
 
 async def test_chk06_fails_an_axis_found_in_error_stop_and_writes_nothing(stub: StubPlc) -> None:
-    # GA-U-78.py (review #9): "Precondition State 0 or 1" and "No silent recovery": the axis the checker found in
+    # GA-U-108.py (review #9): "Precondition State 0 or 1" and "No silent recovery": the axis the checker found in
     # ErrorStop (FaultCode 2, limit switch) is reported as read, never Reset behind the operator's back.
     stub.axis.state, stub.axis.fault, stub.axis.enable_blocked = 7, 2, True
     wanted = {"CHK-01", "CHK-02", "CHK-06", "CHK-07"}
@@ -423,7 +423,7 @@ async def test_chk06_fails_an_axis_found_in_error_stop_and_writes_nothing(stub: 
 
 
 async def test_last_read_is_a_fresh_read_not_the_checks_last_values(stub: StubPlc) -> None:
-    # GA-U-80.py (review #21 mutant 2): a register that changed after the check's last read shows its new value.
+    # GA-U-110.py (review #21 mutant 2): a register that changed after the check's last read shows its new value.
     async def read_then_fail(ctx: CheckContext) -> Outcome:
         await ctx.client.read(MAP.command, 12)
         await ctx.client.read(MAP.status, 15)
@@ -438,7 +438,7 @@ async def test_last_read_is_a_fresh_read_not_the_checks_last_values(stub: StubPl
 
 
 async def test_run_refuses_a_commander_beating_with_lease_owner_0(stub: StubPlc) -> None:
-    # GA-U-81.py (review #21 mutant 3, #16): "whatever LeaseOwner holds (0, …)" — a beat with LeaseOwner 0 refuses.
+    # GA-U-111.py (review #21 mutant 3, #16): "whatever LeaseOwner holds (0, …)" — a beat with LeaseOwner 0 refuses.
     commander = PlcClient("127.0.0.1", stub.port, 1)
     await commander.connect()
     beat = Beater(commander, MAP)
@@ -457,7 +457,7 @@ async def test_run_refuses_a_commander_beating_with_lease_owner_0(stub: StubPlc)
 
 
 async def test_beat_for_counts_from_the_step_not_from_the_beats_start(stub: StubPlc) -> None:
-    # GA-U-82.py (review #13): the beat has run 1.5 s since restore; "beat for 2 s" still beats 2 s from the step.
+    # GA-U-112.py (review #13): the beat has run 1.5 s since restore; "beat for 2 s" still beats 2 s from the step.
     client = PlcClient("127.0.0.1", stub.port, 1)
     await client.connect()
     ctx = CheckContext(client, MAP, options(stub), Beater(client, MAP))
@@ -478,7 +478,7 @@ async def test_beat_for_counts_from_the_step_not_from_the_beats_start(stub: Stub
 async def test_ctrl_c_during_chk11c_leaves_no_lease_client_running_into_cleanup(
     stub: StubPlc, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # GA-U-83.py (review #12): cancel while (c)'s lease client watches. It is cancelled with the check, so it cannot
+    # GA-U-113.py (review #12): cancel while (c)'s lease client watches. It is cancelled with the check, so it cannot
     # take the lease after cleanup released it: LeaseOwner stays 0.
     monkeypatch.setattr("generic_axis_check.checks.WATCH_BEFORE_STALL_S", 5.0)  # widen (c)'s watch window
     wanted = {"CHK-01", "CHK-02", "CHK-11"}
@@ -501,7 +501,7 @@ async def test_ctrl_c_during_chk11c_leaves_no_lease_client_running_into_cleanup(
 async def test_a_checker_defect_ends_in_a_report_exit_1_and_a_logged_traceback(
     stub: StubPlc, caplog: pytest.LogCaptureFixture
 ) -> None:
-    # GA-U-84.py (review #14): an unexpected exception is not a PLC finding and not a bare traceback: the check
+    # GA-U-114.py (review #14): an unexpected exception is not a PLC finding and not a bare traceback: the check
     # FAILs "checker defect" with no error class, the rest is SKIPPED, cleanup runs, exit 1, traceback at Error.
     async def broken(_ctx: CheckContext) -> Outcome:
         raise ZeroDivisionError("planted")
@@ -524,7 +524,7 @@ async def test_a_checker_defect_ends_in_a_report_exit_1_and_a_logged_traceback(
 
 @pytest.mark.timeout(60)
 async def test_chk13_not_arrived_states_the_arrival_budget_it_used() -> None:
-    # GA-U-85.py (review #10): the protocol sets no arrival budget, so the FAIL names the checker's: 10 mm at
+    # GA-U-115.py (review #10): the protocol sets no arrival budget, so the FAIL names the checker's: 10 mm at
     # 50 mm/s → 2 × 0.2 s + 5 s = 5.4 s.
     wanted = {"CHK-01", "CHK-02", "CHK-03", "CHK-06", "CHK-12", "CHK-13"}
     async with StubPlc(stub_options(initial_position=20_000, stall_discrete=True)) as plc:
@@ -538,7 +538,7 @@ async def test_chk13_not_arrived_states_the_arrival_budget_it_used() -> None:
 
 
 def test_an_unknown_observed_key_is_logged_at_error_never_dropped_silently(caplog: pytest.LogCaptureFixture) -> None:
-    # GA-U-86.py (review #23).
+    # GA-U-116.py (review #23).
     unknown: set[str] = set()
     with caplog.at_level(logging.ERROR, logger="generic_axis_check.runner"):
         observed = normalize_observed("CHK-02", {"mapVersion": 1, "bogus": 7}, 0, unknown)

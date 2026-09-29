@@ -40,7 +40,7 @@ async def test_cancelling_a_request_in_flight_raises_cancelled_error_not_plc_err
 
 
 async def test_connect_to_a_closed_port_retries_once_at_warning_and_counts_it(caplog: pytest.LogCaptureFixture) -> None:
-    # GA-U-73.py (review #11): the connect retry is the one retry: one Warning, counted in ``retries``.
+    # GA-U-103.py (review #11): the connect retry is the one retry: one Warning, counted in ``retries``.
     async with StubPlc() as plc:
         port = plc.port
     client = PlcClient("127.0.0.1", port, 1)
@@ -53,7 +53,7 @@ async def test_connect_to_a_closed_port_retries_once_at_warning_and_counts_it(ca
 
 
 async def test_read_from_a_silent_server_fails_after_two_half_second_attempts() -> None:
-    # GA-U-72.py (review #19): "a request got no answer within 500 ms" is Transport. One attempt, the one reconnect,
+    # GA-U-102.py (review #19): "a request got no answer within 500 ms" is Transport. One attempt, the one reconnect,
     # one more attempt: ≈ 2 × 0.5 s, never pymodbus's 1.5 s per attempt.
     async def never_answer(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         with contextlib.suppress(ConnectionError):
@@ -88,7 +88,7 @@ def test_connect_timeout_is_2_s_and_both_attempts_fit_chk01s_3_s_budget() -> Non
 
 
 async def test_connect_failure_message_carries_the_exception_text() -> None:
-    # GA-U-74.py (review #2 b): rule 1, a transport error names the exception ("Connection refused").
+    # GA-U-104.py (review #2 b): rule 1, a transport error names the exception ("Connection refused").
     async with StubPlc() as plc:
         port = plc.port
     with pytest.raises(PlcError) as failure:
@@ -102,7 +102,7 @@ async def test_connect_failure_message_carries_the_exception_text() -> None:
 async def test_a_lost_answer_is_retried_once_at_warning_and_counted(
     stub: StubPlc, caplog: pytest.LogCaptureFixture
 ) -> None:
-    # GA-U-79.py (review #21 mutant 1): "The one retry … logs it at Warning, and counts it in that check's retries".
+    # GA-U-109.py (review #21 mutant 1): "The one retry … logs it at Warning, and counts it in that check's retries".
     client = PlcClient("127.0.0.1", stub.port, 1)
     await client.connect()
     try:
@@ -119,7 +119,7 @@ async def test_a_lost_answer_is_retried_once_at_warning_and_counted(
 
 
 async def test_a_command_write_is_never_re_sent(stub: StubPlc) -> None:
-    # GA-U-79.py (review #21 mutant 1): "A command is never re-sent": one attempt, then Transport, no retry counted.
+    # GA-U-109.py (review #21 mutant 1): "A command is never re-sent": one attempt, then Transport, no retry counted.
     client = PlcClient("127.0.0.1", stub.port, 1)
     await client.connect()
     try:

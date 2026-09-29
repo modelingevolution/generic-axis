@@ -1,4 +1,4 @@
-"""GA-U-87.py (review #17): tests_target writes each run's report to its own path."""
+"""GA-U-117.py (review #17): tests_target writes each run's report to its own path."""
 
 from __future__ import annotations
 
