@@ -730,5 +730,38 @@ public sealed class CheckerAgainstSimulatorTests
         check.DurationMs.Should().BeLessThan((long)(delaySeconds * 1000), "the check gave up at its budget, before the late drive moved");
     }
 
+    /// <summary>
+    /// GA-I-63 (review #40): the lease-loss guard stops the running check at once. The intruder takes the lease right
+    /// after CHK-06's Enable 1; CHK-06 then must not send its second command (Enable 0) to an axis it no longer owns.
+    /// </summary>
+    [Fact]
+    public async Task GA_I_63_ALeaseLostMidCheckStopsThatCheckBeforeItsNextCommand()
+    {
+        using var sim = new LiveSimulator(new SimulatedAxisOptions { EnableDelay = TimeSpan.FromMilliseconds(300) });
+        using var intruder = new FluentModbus.ModbusTcpClient();
+        intruder.Connect(new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, sim.Port), FluentModbus.ModbusEndianness.BigEndian);
+        ushort seqAtIntrusion = 0;
+        Task? intrusion = null;
+
+        var report = await Check(sim, allowMotion: false, progress: r =>
+        {
+            if (r.Running != "CHK-06" || intrusion is not null) return;
+            intrusion = Task.Run(async () =>
+            {
+                while ((sim.Snapshot.CommandBlock[0] & 1) == 0) await Task.Delay(1); // CHK-06's Enable 1 is on the wire
+                seqAtIntrusion = sim.Snapshot.CommandSeq;
+                intruder.WriteSingleRegister(1, 9, 1);
+            });
+        });
+        await intrusion!;
+
+        var chk06 = Get(report, "CHK-06");
+        chk06.Result.Should().Be(CheckResultKind.Fail);
+        chk06.Message.Should().StartWith("Protocol/ProtocolMismatch: the lease did not hold. Read LeaseOwner (C+9 = 9) = 1, expected 65535.");
+        var end = await sim.SettledAsync();
+        end.CommandSeq.Should().Be(seqAtIntrusion, "no command after the lease was lost: Enable 0 was never sent");
+        end.LeaseOwner.Should().Be(1);
+    }
+
     private volatile bool _chk14Running;
 }
