@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using ModelingEvolution.Drawing.Units;
 using ModelingEvolution.GenericAxis.TestApp.Conformance;
@@ -402,6 +403,41 @@ public sealed class CheckerAgainstSimulatorTests
     }
 
     private static int Count(string text, string what) => (text.Length - text.Replace(what, "").Length) / what.Length;
+
+    /// <summary>
+    /// GA-I-54 (review #25 residual): one link drop mid-check is the one reconnect-and-retry — the check still PASSes,
+    /// reports <c>retries: 1</c>, and the retry is logged once at Warning.
+    /// </summary>
+    [Fact]
+    public async Task GA_I_54_ALinkDroppedOnceMidCheckIsCountedInRetries()
+    {
+        using var sim = new LiveSimulator();
+        var log = new RecordingLoggerProvider();
+        using var factory = Microsoft.Extensions.Logging.LoggerFactory.Create(b => b.AddProvider(log).SetMinimumLevel(Microsoft.Extensions.Logging.LogLevel.Information));
+        Task? drop = null;
+
+        var report = await new ConformanceRunner(factory).RunAsync(
+            new CheckerOptions { Host = "127.0.0.1", Port = sim.Port }, CancellationToken.None, r =>
+            {
+                if (drop is not null || r.Running != "CHK-05") return;
+                drop = Task.Run(async () =>
+                {
+                    await Task.Delay(400); // inside CHK-05's 1 s wait, between two reads
+                    sim.Host.Faults = new SimFaults { CommunicationDown = true };
+                    await Task.Delay(20);
+                    sim.Host.Faults = SimFaults.None;
+                });
+            });
+        await drop!;
+
+        var chk05 = Get(report, "CHK-05");
+        chk05.Result.Should().Be(CheckResultKind.Pass, chk05.Message);
+        Observed(chk05, "retries").Should().Be(1);
+        report.Checks.Where(c => c.Id != "CHK-05").Should().OnlyContain(c => c.Observed.All(kv => kv.Key != "retries" || kv.Value == 0),
+            "only the check the link dropped in retried");
+        log.Logger.At(Microsoft.Extensions.Logging.LogLevel.Warning).Where(m => m.Contains("reconnecting and retrying once"))
+            .Should().ContainSingle();
+    }
 
     private volatile bool _chk14Running;
 }

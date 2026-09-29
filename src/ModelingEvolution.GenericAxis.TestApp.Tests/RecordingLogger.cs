@@ -22,3 +22,13 @@ internal sealed class RecordingLogger : ILogger
         Func<TState, Exception?, string> formatter) =>
         _entries.Enqueue((logLevel, formatter(state, exception)));
 }
+
+/// <summary>A logger provider whose every category logs into one <see cref="RecordingLogger"/>.</summary>
+internal sealed class RecordingLoggerProvider : ILoggerProvider
+{
+    public RecordingLogger Logger { get; } = new();
+
+    public ILogger CreateLogger(string categoryName) => Logger;
+
+    public void Dispose() { }
+}
