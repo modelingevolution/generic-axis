@@ -10,8 +10,14 @@ public readonly record struct PlcView(StatusBlock Status, ushort Heartbeat, usho
     public ushort State => Status.State;
 }
 
-/// <summary>The outcome of waiting for a condition: the last view read, elapsed ms since the trigger, and whether it held.</summary>
-public readonly record struct Wait(PlcView View, long ElapsedMs, bool Met);
+/// <summary>
+/// The outcome of waiting for a condition: the last view read, elapsed ms since the trigger (at the completion of that
+/// read), and whether it held. For an event judged against a window (a watchdog trip), the bracket around it: when the
+/// last read WITHOUT the condition started and ended, and when the first read WITH it started (ms since the trigger;
+/// null when the condition held at the first read).
+/// </summary>
+public readonly record struct Wait(PlcView View, long ElapsedMs, bool Met,
+    long? LastWithoutStartMs = null, long? LastWithoutEndMs = null, long? FirstWithStartMs = null);
 
 /// <summary>A command write's handshake: the sequence, whether and when it was acknowledged, and the view that showed it.</summary>
 public readonly record struct Ack(ushort Seq, bool Acked, long AckMs, PlcView View, long WrittenAt);
@@ -190,12 +196,15 @@ internal sealed class CheckContext : IAsyncDisposable
     public async Task<Wait> WaitForAsync(Func<PlcView, bool> until, TimeSpan timeout, long since, CancellationToken ct)
     {
         var next = Now();
+        long? withoutStart = null, withoutEnd = null;
         while (true)
         {
+            var started = MsSince(since);
             var view = await ReadViewAsync(ct);
             var elapsed = MsSince(since);
-            if (until(view)) return new Wait(view, elapsed, true);
-            if (elapsed >= timeout.TotalMilliseconds) return new Wait(view, elapsed, false);
+            if (until(view)) return new Wait(view, elapsed, true, withoutStart, withoutEnd, started);
+            (withoutStart, withoutEnd) = (started, elapsed);
+            if (elapsed >= timeout.TotalMilliseconds) return new Wait(view, elapsed, false, withoutStart, withoutEnd);
 
             next += (long)(PollPeriod.TotalSeconds * Stopwatch.Frequency);
             var delay = Stopwatch.GetElapsedTime(Now(), next);

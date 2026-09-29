@@ -191,7 +191,7 @@ internal static class CheckCatalog
         // protocol.md: "Setup: first trip the watchdog as in CHK-08 … no trip → FAIL 'setup: no trip'".
         var setup = await StallAndTripAsync(ctx, ct);
         if (!setup.Tripped)
-            return CheckOutcome.Fail(Failure.Protocol($"setup: no trip within 1.5 s of the last beat. {setup.Read(ctx)}"), ("setupTripAfterMs", null));
+            return CheckOutcome.Fail(Failure.Protocol($"setup: no trip within 1.5 s of the last beat (last read {setup.AfterMs} ms). {setup.Read(ctx)}"), ("setupTripAfterMs", null));
 
         // Latched: beats must not arm or count.
         var trips = setup.View.WatchdogTrips;
@@ -217,7 +217,7 @@ internal static class CheckCatalog
             failures.Add(Failure.Protocol($"tripped while beating after the clear. Read WatchdogTrips ({tripsAt}) = {beatingView.WatchdogTrips}, "
                                           + $"WatchdogFault ({ctx.Where(ctx.Map.WatchdogFault)}) = {beatingView.WatchdogFault}, expected {trips} and 0."));
         failures.AddRange(second.Failures(ctx));
-        return CheckOutcome.Judge(failures, $"no trip while latched or beating; second trip after {second.AfterMs} ms",
+        return CheckOutcome.Judge(failures, $"no trip while latched or beating; second trip {TripInterval(second.BeforeMs, second.AfterMs)}",
             ("setupTripAfterMs", setup.AfterMs), ("tripsWhileLatched", tripsWhileLatched), ("tripsWhileBeating", tripsWhileBeating),
             ("secondTripAfterMs", second.Tripped ? second.AfterMs : null), ("watchdogTrips", second.View.WatchdogTrips));
     }
@@ -479,12 +479,12 @@ internal static class CheckCatalog
         if (!trip.Met)
             failures.Add(Failure.Protocol($"no trip within 1.5 s of the last beat. Read FaultCode ({faultAt}) = {trip.View.Status.FaultCode}, "
                                           + $"State ({ctx.Where(ctx.Map.State)}) = {trip.View.State} after 3 s, expected 4 and 7."));
-        else if (trip.ElapsedMs is < TripMinMs or > TripMaxMs)
-            failures.Add(Failure.Protocol($"tripped {trip.ElapsedMs} ms after the last beat, expected 1000–1500 ms. Read FaultCode ({faultAt}) = 4."));
+        else if (TripWindow(trip.LastWithoutStartMs ?? 0, trip.ElapsedMs) is { } off)
+            failures.Add(Failure.Protocol($"{off}. Read FaultCode ({faultAt}) = 4."));
         if (trip.Met && (!halt.Met || halt.ElapsedMs > HaltBudgetMs))
             failures.Add(Failure.Machine("MotionFailed", $"still moving {halt.ElapsedMs} ms after the trip. Read ActualVelocity ({ctx.Where(ctx.Map.ActualVelocity)}) = {halt.View.Status.ActualVelocity}, expected 0 within 200 ms."));
         if (trip.Met && !homed) failures.Add(Failure.Protocol($"the trip cleared Homed. Read Flags ({ctx.Where(ctx.Map.Flags)}) = 0x{(ushort)trip.View.Status.Flags:X4}, expected bit 0 set."));
-        return CheckOutcome.Judge(failures, $"trip after {trip.ElapsedMs} ms, halted {halt.ElapsedMs} ms later, Homed kept",
+        return CheckOutcome.Judge(failures, $"tripped {TripInterval(trip.LastWithoutStartMs ?? 0, trip.ElapsedMs)}, halted {halt.ElapsedMs} ms later, Homed kept",
             ("commandedVelocity", speed), ("tripAfterMs", trip.Met ? trip.ElapsedMs : null), ("haltAfterTripMs", trip.Met && halt.Met ? halt.ElapsedMs : null),
             ("homedAfterTrip", trip.Met ? (homed ? 1 : 0) : null));
     }
@@ -546,15 +546,29 @@ internal static class CheckCatalog
         var sign = await ctx.WaitForAsync(
             v => v.WatchdogFault != 0 || v.WatchdogTrips != tripsBefore || (v.State == ErrorStop && v.Status.FaultCode == 4),
             TimeSpan.FromSeconds(3), last, ct);
-        if (!sign.Met) return new Trip(false, sign.ElapsedMs, sign.View, tripsBefore);
+        if (!sign.Met) return new Trip(false, sign.LastWithoutStartMs ?? 0, sign.ElapsedMs, sign.View, tripsBefore);
 
         ctx.CausedTrip = true;
         // The trip actions happen in one scan; the view spans two reads, so judge a fresh view taken after the first sign.
         var settled = await ctx.ReadViewAsync(ct);
-        return new Trip(true, sign.ElapsedMs, settled, tripsBefore);
+        return new Trip(true, sign.LastWithoutStartMs ?? 0, sign.ElapsedMs, settled, tripsBefore);
     }
 
-    private readonly record struct Trip(bool Tripped, long AfterMs, PlcView View, ushort TripsBefore)
+    /// <summary>
+    /// protocol § Rules, "Timing" (review #31): the trip happened between the last read without it and the first read with
+    /// it, both from the last beat. A read samples somewhere between its start and its end, so the conservative instants
+    /// are: <paramref name="beforeMs"/> = when the last read WITHOUT it started (0 when the first read already showed it:
+    /// the last beat itself), <paramref name="afterMs"/> = when the first read WITH it completed. Early only if that first
+    /// read completed before 1.0 s; late only if that last read had started after 1.5 s. Null when inside the window.
+    /// </summary>
+    internal static string? TripWindow(long beforeMs, long afterMs) =>
+        afterMs < TripMinMs ? $"tripped {TripInterval(beforeMs, afterMs)}, before the 1 s stall window"
+        : beforeMs > TripMaxMs ? $"tripped {TripInterval(beforeMs, afterMs)}, after the 1.5 s bound"
+        : null;
+
+    internal static string TripInterval(long beforeMs, long afterMs) => $"between {beforeMs} and {afterMs} ms after the last beat";
+
+    private readonly record struct Trip(bool Tripped, long BeforeMs, long AfterMs, PlcView View, ushort TripsBefore)
     {
         public string Read(CheckContext ctx) =>
             $"Read WatchdogFault ({ctx.Where(ctx.Map.WatchdogFault)}) = {View.WatchdogFault}, WatchdogTrips ({ctx.Where(ctx.Map.WatchdogTrips)}) = {View.WatchdogTrips}, "
@@ -565,12 +579,11 @@ internal static class CheckCatalog
         {
             if (!Tripped)
             {
-                yield return Failure.Protocol($"no trip within 1.5 s of the last beat. {Read(ctx)}");
+                yield return Failure.Protocol($"no trip within 1.5 s of the last beat (last read {AfterMs} ms). {Read(ctx)}");
                 yield break;
             }
 
-            if (AfterMs < TripMinMs) yield return Failure.Protocol($"tripped {AfterMs} ms after the last beat, before 1.0 s. {Read(ctx)}");
-            else if (AfterMs > TripMaxMs) yield return Failure.Protocol($"no trip within 1.5 s of the last beat (tripped after {AfterMs} ms). {Read(ctx)}");
+            if (TripWindow(BeforeMs, AfterMs) is { } off) yield return Failure.Protocol($"{off}. {Read(ctx)}");
             if (View.WatchdogFault != 1 || Delta(View.WatchdogTrips, TripsBefore) != 1 || View.State != ErrorStop || View.Status.FaultCode != 4)
                 yield return Failure.Protocol($"incomplete trip actions. {Read(ctx)}");
         }
@@ -578,6 +591,6 @@ internal static class CheckCatalog
         public (string, long?)[] Observed(string afterKey) =>
             [(afterKey, Tripped ? AfterMs : null), ("watchdogTrips", View.WatchdogTrips), ("faultCode", View.Status.FaultCode), ("state", View.State)];
 
-        public CheckOutcome Judge(CheckContext ctx, string what) => CheckOutcome.Judge(Failures(ctx), $"{what} after {AfterMs} ms", Observed("tripAfterMs"));
+        public CheckOutcome Judge(CheckContext ctx, string what) => CheckOutcome.Judge(Failures(ctx), $"{what}: tripped {TripInterval(BeforeMs, AfterMs)}", Observed("tripAfterMs"));
     }
 }

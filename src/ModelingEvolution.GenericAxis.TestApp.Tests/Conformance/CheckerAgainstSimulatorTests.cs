@@ -142,7 +142,7 @@ public sealed class CheckerAgainstSimulatorTests
         var report = await Check(sim, allowMotion: true);
 
         Get(report, "CHK-08").Result.Should().Be(CheckResultKind.Fail);
-        Get(report, "CHK-08").Message.Should().StartWith("Protocol/ProtocolMismatch: no trip within 1.5 s of the last beat.");
+        Get(report, "CHK-08").Message.Should().StartWith("Protocol/ProtocolMismatch: no trip within 1.5 s of the last beat (last read ");
         Get(report, "CHK-08").ErrorClass.Should().Be(ErrorClass.Protocol);
         ShouldBe(report, CheckResultKind.Skipped, ["CHK-09", "CHK-10", "CHK-16"]);
         Get(report, "CHK-16").Message.Should().Be("needs CHK-08, which FAILED", "the kill test never runs without a proven watchdog");
@@ -871,6 +871,15 @@ public sealed class CheckerAgainstSimulatorTests
     /// <summary>1.5 s exactly would put the 10 ms-scanned trip at ~1520 ms, a legitimate CHK-08 FAIL.</summary>
     [TimingFact(Timeout = 180_000)]
     public Task GA_I_65_TripAt1Point45s() => GA_I_65_Chk11RestoresAfterTheIncumbentsTripWhateverItsTiming(1.45);
+
+    /// <summary>
+    /// A trip planted close to the bound: configured 1.47 s, it lands by ~1.49 s after the checker's beat (the simulator
+    /// counts from the scan that saw the beat and trips on a 10 ms scan). It is often first SEEN after 1.5 s (20 ms polls);
+    /// judged by the bracket (review #31) CHK-08, CHK-09 and CHK-11 pass it, where judging by the showing read FAILs a
+    /// conforming PLC. (1.49 configured can genuinely land after 1.5 s; the exact 1490 ms case is GA-U-100.)
+    /// </summary>
+    [TimingFact(Timeout = 180_000)]
+    public Task GA_I_65_TripAt1Point47s() => GA_I_65_Chk11RestoresAfterTheIncumbentsTripWhateverItsTiming(1.47);
 
     private static async Task GA_I_65_Chk11RestoresAfterTheIncumbentsTripWhateverItsTiming(double tripSeconds)
     {
