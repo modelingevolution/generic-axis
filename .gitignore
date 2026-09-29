@@ -63,6 +63,7 @@ staging/
 .venv/
 __pycache__/
 *.egg-info/
+python/build/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
