@@ -461,17 +461,19 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
                 ctx.Journal($"C+0 = 0x0000 (clear edge bits, Enable 0), CommandSeq {off.Seq}");
             }
 
-            if (ctx.Beater.IsRunning)
-            {
-                await ctx.Beater.StopAsync();
-                ctx.Journal($"C+{c.Heartbeat - c.CommandBase} (Heartbeat): stopped beating");
-            }
-
+            // protocol § Rules, Cleanup (review #52): the beat continues through cleanup and stops just before
+            // LeaseOwner = 0, so no unbeaten frames (a read, a clear) can outlast the 1 s stall on a starved host.
             v = await ctx.ReadViewAsync(ct);
             if (ctx.CausedTrip && v.WatchdogFault != 0)
             {
                 await ctx.ClearWatchdogFaultAsync(ct);
                 ctx.Journal($"C+{c.WatchdogFault - c.CommandBase} = 0 (clear the WatchdogFault the checker caused)");
+            }
+
+            if (ctx.Beater.IsRunning)
+            {
+                await ctx.Beater.StopAsync();
+                ctx.Journal($"C+{c.Heartbeat - c.CommandBase} (Heartbeat): stopped beating");
             }
 
             if (v.LeaseOwner == ctx.Options.OwnerId)
