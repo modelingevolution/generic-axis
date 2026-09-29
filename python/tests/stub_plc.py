@@ -161,12 +161,13 @@ class StubPlc:
                 if self.drop_if is not None and self.drop_if(pdu):
                     continue
                 reply = self._handle(pdu)
+                frame = struct.pack(">HHHB", tid, 0, len(reply) + 1, unit) + reply
                 delay = self.reply_delay_if(pdu) if self.reply_delay_if is not None else 0.0
                 if delay > 0:
                     self.replying_late = True
                     await asyncio.sleep(delay)
                     self.replying_late = False
-                writer.write(struct.pack(">HHHB", tid, 0, len(reply) + 1, unit) + reply)
+                writer.write(frame)
                 await writer.drain()
         except (asyncio.IncompleteReadError, ConnectionError):
             pass

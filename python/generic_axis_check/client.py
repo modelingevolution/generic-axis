@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import time
@@ -66,6 +67,20 @@ def _reason(exc: BaseException) -> str:
     if isinstance(exc, OSError) and exc.errno is not None:
         return f"{os.strerror(exc.errno)} ({exc})"
     return str(exc) or type(exc).__name__
+
+
+async def _complete_on_the_wire(pending: Awaitable[ModbusPDU]) -> ModbusPDU:
+    """Await a request so that a cancellation (Ctrl-C) takes effect only once its answer arrived or timed out (≤ the
+    0.5 s request timeout). Cancelling pymodbus mid-request left the answer to arrive later on the shared connection,
+    where it spoiled the next requests (the beat's among them): they timed out, reconnected, and the stalled beat
+    tripped the PLC watchdog during cleanup (GA-I-38 red under taskset -c 0,1: FaultCode 4)."""
+    inner = asyncio.ensure_future(pending)
+    try:
+        return await asyncio.shield(inner)
+    except asyncio.CancelledError:
+        with contextlib.suppress(Exception):
+            await asyncio.wait({inner})
+        raise
 
 
 class PlcClient:
@@ -168,7 +183,7 @@ class PlcClient:
             generation = self._generation
             client = self._require()
             try:
-                response = await request(client)
+                response = await _complete_on_the_wire(request(client))
                 if response.isError():
                     raise PlcError(f"{where} failed: Modbus exception {response}")
                 return response

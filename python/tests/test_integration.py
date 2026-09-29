@@ -197,12 +197,17 @@ async def test_ga_i_38_interrupting_a_run_cleans_up(simulator: START, tmp_path: 
         if line.startswith("CHK-14 "):
             break
     process.send_signal(signal.SIGINT)
-    process.communicate(timeout=60)
+    _out, err = process.communicate(timeout=60)
     await asyncio.sleep(0.5)
-    status = await registers(sim.port, MAP.status, 6)
+    status = await registers(sim.port, MAP.status, 7)
     (lease,) = await registers(sim.port, MAP.lease_owner, 1)
+    fault, trips = await registers(sim.port, MAP.watchdog_fault, 2)
     doc = json.loads(report.with_suffix(".json").read_text(encoding="utf-8"))
-    assert status[0] in (0, 1)
+    evidence = (
+        f"State {status[0]}, FaultCode {status[6]}, WatchdogFault {fault}, WatchdogTrips {trips}; "
+        f"cleanup {doc['cleanup']}; checker stderr tail {err.strip().splitlines()[-6:]}"
+    )
+    assert status[0] in (0, 1), evidence
     assert status[4:6] == [0, 0]  # ActualVelocity
     assert lease == 0
     assert "C+9 = 0 (release lease)" in doc["cleanup"]
