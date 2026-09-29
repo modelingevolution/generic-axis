@@ -9,7 +9,9 @@ namespace ModelingEvolution.GenericAxis.Tests;
 /// fix — keep FluentModbus' synchronous read/write and wrap it in Task.Run — parks a pool thread per frame instead (the
 /// PR #6 starvation) and is invisible to any timing test except by load. This guard reads ModbusChannel's IL (its own
 /// methods and every compiler-generated lambda/state machine nested in it): no synchronous FluentModbus I/O, no
-/// Task.Wait, no Task&lt;T&gt;.Result. Deterministic and independent of pool size, CPU count and load.
+/// Task.Wait*, no Task&lt;T&gt;.Result, no awaiter GetResult beyond the compiler's own awaits (review #48), and no
+/// Task.Run / TaskFactory.StartNew (the channel has no reason to hop threads). Deterministic and independent of pool
+/// size, CPU count and load.
 /// </summary>
 public class ChannelSourceTests
 {
@@ -17,28 +19,47 @@ public class ChannelSourceTests
     private static readonly HashSet<string> AllowedSync =
         [".ctor", "Initialize", "Disconnect", "Dispose", "get_IsConnected"];
 
-    [Fact(DisplayName = "GA-U-136 ModbusChannel never calls synchronous FluentModbus I/O, Task.Wait or Task<T>.Result")]
+    [Fact(DisplayName = "GA-U-136 ModbusChannel never blocks on a frame or hops threads (sync FluentModbus I/O, Wait, Result, GetResult, Task.Run)")]
     public void ModbusChannel_IL_NoBlockingCalls()
     {
         var channel = typeof(ModbusChannel);
-        var called = CalledMethods(channel).ToList();
+        var calls = Calls(channel).ToList();
+        var called = calls.Select(c => c.Target).ToList();
 
         called.Should().Contain(m => m.DeclaringType!.Namespace == "FluentModbus" && m.Name == "ReadHoldingRegistersAsync",
             "anchor: the walker sees the channel's FluentModbus calls, lambdas included");
 
         var offending = called.Where(m =>
                 (m.DeclaringType!.Namespace == "FluentModbus" && !m.Name.EndsWith("Async") && !AllowedSync.Contains(m.Name))
-                || (m.DeclaringType == typeof(Task) && m.Name == "Wait")
+                || (m.DeclaringType == typeof(Task) && m.Name is "Wait" or "WaitAll" or "WaitAny")
+                || (m.DeclaringType == typeof(Task) && m.Name == "Run")
+                || (m.DeclaringType is { } f && (f == typeof(TaskFactory) || (f.IsGenericType
+                    && f.GetGenericTypeDefinition() == typeof(TaskFactory<>))) && m.Name == "StartNew")
                 || (m.DeclaringType is { IsGenericType: true } t && t.GetGenericTypeDefinition() == typeof(Task<>)
                     && m.Name == "get_Result"))
-            .Select(m => $"{m.DeclaringType!.FullName}.{m.Name}")
+            .Select(m => $"{m.DeclaringType!.Name}.{m.Name}")
             .Distinct()
             .ToList();
+
+        // Review #48: an awaiter's GetResult is blocking unless the compiler emitted it for an await, which always checks
+        // IsCompleted on that awaiter first. `.GetAwaiter().GetResult()` has no such check, so per method the GetResult
+        // calls on awaiters may not outnumber the IsCompleted checks.
+        foreach (var method in calls.GroupBy(c => c.Caller))
+        {
+            var results = method.Count(c => IsAwaiter(c.Target.DeclaringType) && c.Target.Name == "GetResult");
+            var checks = method.Count(c => IsAwaiter(c.Target.DeclaringType) && c.Target.Name == "get_IsCompleted");
+            if (results > checks)
+                offending.Add($"{method.Key.DeclaringType!.Name}.{method.Key.Name}: {results} awaiter GetResult, {checks} IsCompleted");
+        }
+
         offending.Should().BeEmpty("a frame must never park a thread (review #46, PR #6)");
     }
 
-    /// <summary>Every method called (call/callvirt/newobj/ldftn) from the type's methods and its nested types' methods.</summary>
-    private static IEnumerable<MethodBase> CalledMethods(Type type)
+    private static bool IsAwaiter(Type? type) =>
+        type is not null && type.Name.Contains("Awaiter") && type.Namespace == "System.Runtime.CompilerServices";
+
+    /// <summary>Every (caller, callee) pair of call/callvirt/newobj/ldftn in the type's methods and its nested types' methods.</summary>
+    private static IEnumerable<(MethodBase Caller, MethodBase Target)> Calls(Type type)
     {
         const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance |
                                  BindingFlags.Static | BindingFlags.DeclaredOnly;
@@ -63,7 +84,7 @@ public class ChannelSourceTests
                     continue;
                 }
 
-                if (target is not null) yield return target;
+                if (target is not null) yield return (method, target);
             }
         }
     }
