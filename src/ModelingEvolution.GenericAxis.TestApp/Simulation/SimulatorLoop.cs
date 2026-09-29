@@ -15,6 +15,9 @@ public sealed class SimulatorLoop : IDisposable
     private readonly ILogger _log;
     private readonly CancellationTokenSource _cts = new();
     private readonly Thread _thread;
+    private readonly Stopwatch _clock = Stopwatch.StartNew();
+    private long _lastScanTicks;
+    private long _maxGapTicks;
 
     public SimulatorLoop(SimulatorHost host, ILogger? logger = null)
     {
@@ -27,6 +30,7 @@ public sealed class SimulatorLoop : IDisposable
     public SimulatorLoop Start()
     {
         _host.Start();
+        ResetMaxScanGap();
         _thread.Start();
         return this;
     }
@@ -48,6 +52,7 @@ public sealed class SimulatorLoop : IDisposable
             try
             {
                 _host.Tick(now - last);
+                RecordScan();
             }
             catch (Exception ex)
             {
@@ -60,6 +65,35 @@ public sealed class SimulatorLoop : IDisposable
         }
 
         _log.LogInformation("PLC scan loop stopped");
+    }
+
+    /// <summary>
+    /// The longest time between two completed scans since the last <see cref="ResetMaxScanGap"/>, including the time
+    /// since the last one (a scan stuck right now counts). Nominal: <see cref="SimulatedAxisOptions.ScanInterval"/>. A
+    /// test reads it to tell a budget the PLC missed from a budget the starved fixture could not keep.
+    /// </summary>
+    public TimeSpan MaxScanGap
+    {
+        get
+        {
+            var sinceLast = _clock.Elapsed.Ticks - Interlocked.Read(ref _lastScanTicks);
+            return TimeSpan.FromTicks(Math.Max(Interlocked.Read(ref _maxGapTicks), sinceLast));
+        }
+    }
+
+    /// <summary>Forgets the gaps seen so far; the next gap is measured from now.</summary>
+    public void ResetMaxScanGap()
+    {
+        Interlocked.Exchange(ref _lastScanTicks, _clock.Elapsed.Ticks);
+        Interlocked.Exchange(ref _maxGapTicks, 0);
+    }
+
+    private void RecordScan()
+    {
+        var now = _clock.Elapsed.Ticks;
+        var gap = now - Interlocked.Exchange(ref _lastScanTicks, now);
+        long seen;
+        while (gap > (seen = Interlocked.Read(ref _maxGapTicks)) && Interlocked.CompareExchange(ref _maxGapTicks, gap, seen) != seen) { }
     }
 
     /// <summary>Stops the scan thread. Does not dispose the host.</summary>

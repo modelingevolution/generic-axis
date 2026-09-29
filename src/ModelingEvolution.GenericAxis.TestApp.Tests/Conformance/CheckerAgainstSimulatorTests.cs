@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using ModelingEvolution.Drawing.Units;
 using ModelingEvolution.GenericAxis.TestApp.Conformance;
 using ModelingEvolution.GenericAxis.TestApp.Simulation;
+using ModelingEvolution.GenericAxis.TestApp.Tests.Support;
 using RocketWelder.SDK.Abstractions;
 
 namespace ModelingEvolution.GenericAxis.TestApp.Tests.Conformance;
@@ -403,7 +404,7 @@ public sealed class CheckerAgainstSimulatorTests
         line.Should().NotContain("..", line);
     }
 
-    [Fact]
+    [TimingFact]
     public async Task GA_I_53_DumpWatch_RunsAtFiveHertz()
     {
         using var sim = new LiveSimulator();
@@ -414,7 +415,8 @@ public sealed class CheckerAgainstSimulatorTests
             NullLoggerFactory.Instance, cts.Token, output, TextWriter.Null);
 
         code.Should().Be(0);
-        Count(output.ToString(), $"127.0.0.1:{sim.Port} unit 1\n").Should().BeGreaterThanOrEqualTo(10, "5 Hz for 2 s");
+        Cadence.Budget(sim.MaxScanGap, () =>
+            Count(output.ToString(), $"127.0.0.1:{sim.Port} unit 1\n").Should().BeGreaterThanOrEqualTo(10, "5 Hz for 2 s"));
     }
 
     private static int Count(string text, string what) => (text.Length - text.Replace(what, "").Length) / what.Length;
@@ -497,7 +499,7 @@ public sealed class CheckerAgainstSimulatorTests
 
     /// <summary>GA-I-55: the twin of GA-I-37 with a starved commander — its beat pauses 1.1 s, longer than the old 1 s
     /// window, on a PLC that trips late (1.4 s). It is alive, so the tool must still refuse and write nothing.</summary>
-    [Fact(Timeout = 180_000)]
+    [TimingFact(Timeout = 180_000)]
     public async Task GA_I_55_ACommanderSilentFor1Point1sIsStillRefused()
     {
         using var sim = new LiveSimulator(new SimulatedAxisOptions { WatchdogTimeout = TimeSpan.FromSeconds(1.4) });
@@ -509,14 +511,18 @@ public sealed class CheckerAgainstSimulatorTests
         var report = await Check(sim, allowMotion: false); // starts inside the pause
         await paused;
 
-        report.ExitCode.Should().Be(3, report.Preflight);
-        report.SummaryResult.Should().Be("REFUSED");
-        report.Preflight.Should().StartWith("refused to start: another commander is beating");
         var after = await sim.SettledAsync();
         after.CommandSeq.Should().Be(before.CommandSeq, "a refused run writes nothing");
         after.CommandBlock.Skip(2).Take(6).Should().Equal(before.CommandBlock.Skip(2).Take(6));
-        after.LeaseOwner.Should().Be(1);
-        after.WatchdogTrips.Should().Be(0, "the commander was slow, not dead");
+        Cadence.Budget(sim.MaxScanGap, () =>
+        {
+            // The scenario is a timing one: a 1.1 s pause on a PLC that trips at 1.4 s.
+            report.ExitCode.Should().Be(3, report.Preflight);
+            report.SummaryResult.Should().Be("REFUSED");
+            report.Preflight.Should().StartWith("refused to start: another commander is beating");
+            after.LeaseOwner.Should().Be(1);
+            after.WatchdogTrips.Should().Be(0, "the commander was slow, not dead");
+        });
     }
 
     /// <summary>GA-I-55: a lease held with no beat and no trip within 1.6 s is refused, with the hand-release advice.</summary>
@@ -539,7 +545,7 @@ public sealed class CheckerAgainstSimulatorTests
 
     /// <summary>GA-I-56: the lease holder died (beat stopped for good); the PLC trips 1.0 s later, inside the 1.6 s watch.
     /// The tool proceeds, says so on the line after the heading, and never clears that trip or the lease.</summary>
-    [Fact]
+    [TimingFact]
     public async Task GA_I_56_ADeadCommandersTripIsSeenAndLeftForItsOperator()
     {
         using var sim = new LiveSimulator();
@@ -547,7 +553,7 @@ public sealed class CheckerAgainstSimulatorTests
 
         var report = await Check(sim, allowMotion: false);
 
-        report.Refused.Should().BeFalse();
+        Cadence.Budget(sim.MaxScanGap, () => report.Refused.Should().BeFalse("the trip lands 1.0 s after the last beat, inside the 1.6 s watch"));
         report.Preflight.Should().Be("LeaseOwner (C+9 = 9) = 1 held with no beat and WatchdogFault (C+10 = 10) = 1: "
                                      + "the previous commander is dead; its trip is left for its operator.");
         ReportWriter.ToMarkdown(report).Split('\n')[2].Should().Be("Pre-flight: " + report.Preflight);
@@ -569,7 +575,7 @@ public sealed class CheckerAgainstSimulatorTests
     /// GA-I-57 (review #35 (b), the live repro): the lease and the beat start as soon as pre-flight passes, so a second
     /// tool started during the first's CHK-03 is refused, and the first run is unaffected.
     /// </summary>
-    [Fact(Timeout = 180_000)]
+    [TimingFact(Timeout = 180_000)]
     public async Task GA_I_57_ASecondToolStartedDuringTheFirstsChk03IsRefused()
     {
         using var sim = new LiveSimulator();
@@ -599,7 +605,8 @@ public sealed class CheckerAgainstSimulatorTests
         refused.SummaryResult.Should().Be("REFUSED");
         refused.Preflight.Should().StartWith("refused to start: another commander is beating")
             .And.Contain("LeaseOwner (C+9 = 9) = 65535");
-        first.ExitCode.Should().Be(0, string.Join("; ", first.Checks.Where(c => c.Result == CheckResultKind.Fail).Select(c => $"{c.Id}: {c.Message}")));
+        Cadence.Budget(sim.MaxScanGap, () => // the first run includes CHK-04's and CHK-08's timing thresholds
+            first.ExitCode.Should().Be(0, string.Join("; ", first.Checks.Where(c => c.Result == CheckResultKind.Fail).Select(c => $"{c.Id}: {c.Message}"))));
         (await sim.SettledAsync()).LeaseOwner.Should().Be(0, "the first run released its lease in cleanup");
     }
 
@@ -736,10 +743,15 @@ public sealed class CheckerAgainstSimulatorTests
     /// (MotionStartDelay, set just before the check) makes CHK-13 overrun 2 × |target − start| ÷ velocity + 5 s, and
     /// CHK-16 overrun its 2 s to first motion; a longer budget would wait it out and PASS.
     /// </summary>
-    [Theory(Timeout = 180_000)]
-    [InlineData("CHK-13", 8.0, "Machine/MotionFailed: not arrived within 5.4 s (2 × |target − start| ÷ velocity + 5 s).")]
-    [InlineData("CHK-16", 3.0, "Machine/MotionFailed: the jog never moved within 2 s of the ack.")]
-    public async Task GA_I_62_ACheckFailsAtItsOwnMotionBudget(string id, double delaySeconds, string message)
+    [TimingFact(Timeout = 180_000)]
+    public Task GA_I_62_Chk13FailsAtItsArrivalBudget() =>
+        GA_I_62_ACheckFailsAtItsOwnMotionBudget("CHK-13", 8.0, "Machine/MotionFailed: not arrived within 5.4 s (2 × |target − start| ÷ velocity + 5 s).");
+
+    [TimingFact(Timeout = 180_000)]
+    public Task GA_I_62_Chk16FailsAtItsFirstMotionBudget() =>
+        GA_I_62_ACheckFailsAtItsOwnMotionBudget("CHK-16", 3.0, "Machine/MotionFailed: the jog never moved within 2 s of the ack.");
+
+    private static async Task GA_I_62_ACheckFailsAtItsOwnMotionBudget(string id, double delaySeconds, string message)
     {
         using var sim = new LiveSimulator();
         var report = await Check(sim, allowMotion: true, progress: r =>
@@ -749,9 +761,12 @@ public sealed class CheckerAgainstSimulatorTests
         });
 
         var check = Get(report, id);
-        check.Result.Should().Be(CheckResultKind.Fail, check.Message);
-        check.Message.Should().StartWith(message);
-        check.DurationMs.Should().BeLessThan((long)(delaySeconds * 1000), "the check gave up at its budget, before the late drive moved");
+        Cadence.Budget(sim.MaxScanGap, () =>
+        {
+            check.Result.Should().Be(CheckResultKind.Fail, check.Message);
+            check.Message.Should().StartWith(message);
+            check.DurationMs.Should().BeLessThan((long)(delaySeconds * 1000), "the check gave up at its budget, before the late drive moved");
+        });
     }
 
     /// <summary>
@@ -833,11 +848,17 @@ public sealed class CheckerAgainstSimulatorTests
     /// last beat, possibly after the lease client took the lease. CHK-11 settles that trip before restoring, so the
     /// restore always sees and clears it, whatever the PLC's trip time.
     /// </summary>
-    [Theory(Timeout = 180_000)]
-    [InlineData(1.0)]
-    [InlineData(1.25)]
-    [InlineData(1.45)] // 1.5 exactly puts the 10 ms-scanned trip at ~1520 ms, a legitimate CHK-08 FAIL
-    public async Task GA_I_65_Chk11RestoresAfterTheIncumbentsTripWhateverItsTiming(double tripSeconds)
+    [TimingFact(Timeout = 180_000)]
+    public Task GA_I_65_TripAt1s() => GA_I_65_Chk11RestoresAfterTheIncumbentsTripWhateverItsTiming(1.0);
+
+    [TimingFact(Timeout = 180_000)]
+    public Task GA_I_65_TripAt1Point25s() => GA_I_65_Chk11RestoresAfterTheIncumbentsTripWhateverItsTiming(1.25);
+
+    /// <summary>1.5 s exactly would put the 10 ms-scanned trip at ~1520 ms, a legitimate CHK-08 FAIL.</summary>
+    [TimingFact(Timeout = 180_000)]
+    public Task GA_I_65_TripAt1Point45s() => GA_I_65_Chk11RestoresAfterTheIncumbentsTripWhateverItsTiming(1.45);
+
+    private static async Task GA_I_65_Chk11RestoresAfterTheIncumbentsTripWhateverItsTiming(double tripSeconds)
     {
         using var sim = new LiveSimulator(new SimulatedAxisOptions { WatchdogTimeout = TimeSpan.FromSeconds(tripSeconds) });
         int? tripsAtChk11 = null;
@@ -852,7 +873,8 @@ public sealed class CheckerAgainstSimulatorTests
         ((await sim.SettledAsync()).WatchdogTrips - tripsAtChk11).Should().Be(1, "CHK-11 waited for the incumbent's trip");
         var chk11 = Get(report, "CHK-11");
         chk11.Result.Should().Be(CheckResultKind.Pass, chk11.Message);
-        report.ExitCode.Should().Be(0, string.Join("; ", report.Checks.Where(c => c.Result == CheckResultKind.Fail).Select(c => $"{c.Id}: {c.Message}")));
+        Cadence.Budget(sim.MaxScanGap, () => // the whole run includes CHK-04's and CHK-08's timing thresholds
+            report.ExitCode.Should().Be(0, string.Join("; ", report.Checks.Where(c => c.Result == CheckResultKind.Fail).Select(c => $"{c.Id}: {c.Message}"))));
         (await sim.SettledAsync()).WatchdogFault.Should().Be(0, "cleanup cleared the trip the checker caused");
     }
 

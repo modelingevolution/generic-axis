@@ -18,6 +18,11 @@ internal sealed class LiveSimulator : IDisposable
     public int Port => Host.Port;
     public SimSnapshot Snapshot => Host.Snapshot();
 
+    /// <summary>The scan loop's longest gap since start or the last reset (see <see cref="SimulatorLoop.MaxScanGap"/>).</summary>
+    public TimeSpan MaxScanGap => _loop.MaxScanGap;
+
+    public void ResetMaxScanGap() => _loop.ResetMaxScanGap();
+
     /// <summary>
     /// The snapshot a few scans from now. A client sees its write complete inside a scan, before that scan's snapshot is
     /// taken, so ground truth read right after a write can be one scan stale.

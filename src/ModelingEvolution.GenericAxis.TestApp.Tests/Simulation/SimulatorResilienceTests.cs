@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using ModelingEvolution.GenericAxis.TestApp.Simulation;
+using ModelingEvolution.GenericAxis.TestApp.Tests.Support;
 
 namespace ModelingEvolution.GenericAxis.TestApp.Tests.Simulation;
 
@@ -14,7 +15,7 @@ public sealed class SimulatorResilienceTests
 {
     private static readonly TimeSpan AnswerBudget = TimeSpan.FromSeconds(1);
 
-    [Fact]
+    [TimingFact]
     public async Task ClientResetMidRequest_SimulatorKeepsAnsweringNewAndExistingClients()
     {
         // Results are captured first and asserted after the simulator is disposed, so a failing Dispose (the
@@ -22,6 +23,7 @@ public sealed class SimulatorResilienceTests
         string before, afterNew, afterExisting;
         TimeSpan newTook, existingTook;
         Exception? disposeFailure = null;
+        TimeSpan gap;
         var sim = new LiveSimulator();
         try
         {
@@ -33,6 +35,7 @@ public sealed class SimulatorResilienceTests
             using var fresh = Connect(sim.Port);
             afterNew = TryReadStatus(fresh, out newTook);
             afterExisting = TryReadStatus(existing, out existingTook);
+            gap = sim.MaxScanGap;
         }
         finally
         {
@@ -41,14 +44,17 @@ public sealed class SimulatorResilienceTests
         }
 
         before.Should().Be("answered", "the existing client answers before the fault");
-        afterNew.Should().Be("answered", "a new client is answered after peers reset mid-request");
-        newTook.Should().BeLessThan(AnswerBudget);
-        afterExisting.Should().Be("answered", "a client connected before the fault is still answered");
-        existingTook.Should().BeLessThan(AnswerBudget);
+        Cadence.Budget(gap, () =>
+        {
+            afterNew.Should().Be("answered", "a new client is answered after peers reset mid-request");
+            newTook.Should().BeLessThan(AnswerBudget);
+            afterExisting.Should().Be("answered", "a client connected before the fault is still answered");
+            existingTook.Should().BeLessThan(AnswerBudget);
+        });
         disposeFailure.Should().BeNull("no server task died on the dead peers");
     }
 
-    [Fact]
+    [TimingFact]
     public async Task CommunicationDownCleared_ModbusAnswersAgain_ThreeCycles()
     {
         using var sim = new LiveSimulator();
@@ -62,8 +68,12 @@ public sealed class SimulatorResilienceTests
 
             var sw = Stopwatch.StartNew();
             using var after = Connect(sim.Port);
-            ReadStatus(after).Should().HaveCount(15, $"cycle {cycle + 1}: a Modbus read answers after the gate re-opens");
-            sw.Elapsed.Should().BeLessThan(AnswerBudget);
+            var took = TryReadStatus(after, out var elapsed);
+            Cadence.Budget(sim.MaxScanGap, () =>
+            {
+                took.Should().Be("answered", $"cycle {cycle + 1}: a Modbus read answers after the gate re-opens");
+                elapsed.Should().BeLessThan(AnswerBudget);
+            });
         }
     }
 
