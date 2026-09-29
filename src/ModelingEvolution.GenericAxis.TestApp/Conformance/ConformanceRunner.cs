@@ -47,8 +47,24 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
         var refused = false;
         try
         {
-            var refusal = await PreflightAsync(ctx, ct);
-            if (refusal is { } reason)
+            string? refusal = null;
+            var interruptedInPreflight = false;
+            try
+            {
+                refusal = await PreflightAsync(ctx, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // Review #29: Ctrl-C before pre-flight proved the axis free. Nothing has been written, so the cleanup
+                // below finds nothing to undo and writes nothing — the axis may belong to a live commander.
+                interruptedInPreflight = true;
+                var reason = Interrupted("pre-flight");
+                _log.LogWarning("{Reason}; nothing was written", reason);
+                foreach (var def in _catalog) results.Add(Skipped(def, reason));
+            }
+
+            if (interruptedInPreflight) { }
+            else if (refusal is { } reason)
             {
                 refused = true;
                 _log.LogWarning("{Reason}", reason);
