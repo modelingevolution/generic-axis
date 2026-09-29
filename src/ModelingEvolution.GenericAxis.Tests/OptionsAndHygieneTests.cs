@@ -104,4 +104,25 @@ public class OptionsAndHygieneTests
         rig.Logs.GetSnapshot().Where(r => r.Message.Contains("Heartbeat (C+8"))
             .Should().OnlyContain(r => r.Level == LogLevel.Trace);
     }
+
+    [Fact(DisplayName = "GA-U-78 DefaultSpeed above 100 % is unreachable: every way to build a Percentage refuses or saturates")]
+    public void Percentage_AboveHundred_CannotExist()
+    {
+        // Review #10, closed as unreachable: GenericAxisOptions.DefaultSpeed is a ModelingEvolution.Drawing
+        // Percentage, whose invariant is [0, 100]. This pins that invariant on the referenced assembly; if a Drawing
+        // update ever lifts it, this goes red and Validate() needs the upper bound.
+        var ctor = () => new Percentage(101f);
+        ctor.Should().Throw<ArgumentOutOfRangeException>();
+        var parse = () => Percentage.Parse("150", null);
+        parse.Should().Throw<FormatException>();
+        Percentage.TryParse("100.5%", null, out _).Should().BeFalse();
+        Percentage.Clamp(150f).Value.Should().Be(100f);
+        (Percentage.Full + Percentage.Full).Value.Should().Be(100f);
+        Percentage.FromFraction(1f).Value.Should().Be(100f);
+        var fraction = () => Percentage.FromFraction(1.01f);
+        fraction.Should().Throw<ArgumentOutOfRangeException>();
+
+        new GenericAxisOptions { Name = "carriage", Host = "plc", DefaultSpeed = Percentage.Full }
+            .Invoking(o => o.Validate()).Should().NotThrow("100 % is the design's inclusive upper bound");
+    }
 }
