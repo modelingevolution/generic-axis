@@ -25,7 +25,7 @@ from generic_axis_check.client import PlcClient
 from generic_axis_check.registers import COMMAND_LENGTH, RegisterMap
 
 from .conftest import PYTHON_DIR
-from .simproc import Simulator
+from .simproc import Simulator, simulator_cwd
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(240)]
 MAP = RegisterMap()
@@ -97,7 +97,13 @@ async def test_ga_i_32_wrong_map_version_stops_the_run(simulator: START, tmp_pat
     code, doc = run_checker(sim.port, tmp_path, "--allow-motion")
     r = results(doc)
     assert r["CHK-01"][0] == "PASS"
-    assert r["CHK-02"] == ("FAIL", "MapVersion 2, expected 1")
+    assert r["CHK-02"] == (
+        "FAIL",
+        "Protocol/ProtocolMismatch: MapVersion not 1. Read MapVersion (S+14 = 114) = 2, expected 1.",
+    )
+    chk02 = doc["checks"][1]
+    assert chk02["errorClass"] == "Protocol"
+    assert chk02["lastRead"]["status"][14] == 2
     assert all(r[i][0] == "SKIPPED" for i in ids(3, 16))
     assert code == 1
     assert await registers(sim.port, MAP.command, COMMAND_LENGTH) == before
@@ -107,7 +113,11 @@ async def test_ga_i_33_unpublished_limits_fail_chk03_only(simulator: START, tmp_
     sim = simulator(Simulator__PublishLimits="false")
     code, doc = run_checker(sim.port, tmp_path, "--allow-motion")
     r = results(doc)
-    assert r["CHK-03"] == ("FAIL", "limits not published: TravelMin 0, TravelMax 0, MaxVelocity 0")
+    assert r["CHK-03"] == (
+        "FAIL",
+        "Protocol/ProtocolMismatch: limits not published (all zero). Read TravelMin (S+8 = 108) = 0, "
+        "TravelMax (S+10 = 110) = 0, MaxVelocity (S+12 = 112) = 0.",
+    )
     assert all(r[i][0] == "SKIPPED" for i in ids(13, 16))
     assert [r[i][0] for i in ids(4, 12)] == ["PASS"] * 9
     assert code == 1
@@ -128,7 +138,7 @@ async def test_ga_i_35_a_plc_that_never_acknowledges_is_caught(simulator: START,
     _code, doc = run_checker(sim.port, tmp_path)
     r = results(doc)
     assert r["CHK-06"][0] == "FAIL"
-    assert "no CommandAck within 500 ms" in r["CHK-06"][1]
+    assert r["CHK-06"][1].startswith("Protocol/NotAcknowledged: Enable 1 not accepted. CommandSeq ")
     assert [r[i][0] for i in ("CHK-07", "CHK-08", "CHK-09", "CHK-10", "CHK-12")] == ["SKIPPED"] * 5
 
 
@@ -137,7 +147,8 @@ async def test_ga_i_36_swapped_word_order_is_caught(simulator: START, tmp_path: 
     code, doc = run_checker(sim.port, tmp_path)
     chk03 = next(c for c in doc["checks"] if c["id"] == "CHK-03")
     assert chk03["result"] == "FAIL"
-    assert set(chk03["observed"]) == {"travelMin", "travelMax", "maxVelocity"}
+    assert list(chk03["observed"]) == ["travelMin", "travelMax", "maxVelocity", "retries"]
+    assert chk03["errorClass"] == "Protocol"
     assert code == 1
 
 
@@ -164,6 +175,8 @@ async def test_ga_i_37_the_checker_never_fights_a_live_commander(simulator: STAR
     doc = json.loads(report.with_suffix(".json").read_text(encoding="utf-8"))
     assert process.returncode == 3
     assert all(c["result"] == "SKIPPED" for c in doc["checks"])
+    assert "another commander is live" in doc["checks"][0]["message"]
+    assert "LeaseOwner (C+9) 1" in doc["checks"][0]["message"]
     assert elapsed < 10  # "exits after about 1 s" plus interpreter start-up
     assert after[:8] == before[:8]  # Command, CommandSeq and the parameters are untouched
     assert lease == 1
@@ -187,9 +200,10 @@ async def test_ga_i_38_interrupting_a_run_cleans_up(simulator: START, tmp_path: 
     assert status[4:6] == [0, 0]  # ActualVelocity
     assert lease == 0
     assert "C+9 = 0 (release lease)" in doc["cleanup"]
-    assert process.returncode == 1
-    chk14 = next(c for c in doc["checks"] if c["id"] == "CHK-14")
-    assert (chk14["result"], chk14["message"]) == ("FAIL", "interrupted (Ctrl-C) during this check")
+    assert process.returncode == 4
+    assert doc["summary"]["result"] == "INTERRUPTED"
+    r = results(doc)
+    assert [r[i] for i in ids(14, 16)] == [("SKIPPED", "interrupted by the operator during CHK-14")] * 3
 
 
 def test_ga_i_39_both_tools_agree(simulator: START, tmp_path: Path) -> None:
@@ -203,6 +217,7 @@ def test_ga_i_39_both_tools_agree(simulator: START, tmp_path: Path) -> None:
         capture_output=True,
         text=True,
         timeout=200,
+        cwd=simulator_cwd(),
         check=False,
     )
     assert cs_report.exists(), cs.stderr

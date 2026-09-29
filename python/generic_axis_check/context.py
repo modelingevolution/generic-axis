@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from .beat import Beater
 from .client import PlcClient
 from .lease import acquire
-from .poll import PollResult, ms, wait_for
+from .poll import PollResult, wait_for
 from .registers import EDGE_BITS, AxisState, Command, RegisterMap, StatusBlock, next_nonzero, to_words
 
 ACK_TIMEOUT_S = 0.5
@@ -42,11 +42,30 @@ class Options:
     tolerance: float = 0.1
 
 
+def command_label(word: int) -> str:
+    """How a command write is named in messages: the edge it sets, else the Enable level."""
+    for bit, name in (
+        (Command.STOP, "Stop"),
+        (Command.RESET, "Reset"),
+        (Command.HOME, "Home"),
+        (Command.MOVE_ABSOLUTE, "MoveAbsolute"),
+        (Command.MOVE_VELOCITY, "MoveVelocity"),
+    ):
+        if word & bit:
+            return name
+    return f"Enable {word & Command.ENABLE}"
+
+
 class AckTimeout(Exception):  # noqa: N818 — the protocol's name for the condition ("Acknowledge")
-    def __init__(self, seq: int, status: StatusBlock) -> None:
-        super().__init__(
-            f"no CommandAck within {ms(ACK_TIMEOUT_S)} ms (CommandSeq {seq}, CommandAck {status.command_ack})"
+    """Protocol/NotAcknowledged: ``CommandAck`` did not echo ``CommandSeq`` within 500 ms."""
+
+    def __init__(self, word: int, seq: int, status: StatusBlock, elapsed_ms: int) -> None:
+        self.what = f"{command_label(word)} not accepted"
+        self.detail = (
+            f"CommandSeq {seq} written, CommandAck {status.command_ack} read after {elapsed_ms} ms, "
+            f"State {status.state} read"
         )
+        super().__init__(f"{self.what}. {self.detail}.")
         self.seq = seq
         self.status = status
 
@@ -72,6 +91,8 @@ class CheckContext:
     session_lease: bool = False
     """CHK-06 established the lease; every later check restores it."""
     caused_trip: bool = False
+    connect_ms: int | None = None
+    """How long the run's TCP connect took (CHK-01 ``connectMs``)."""
 
     # --- the command handshake (protocol.md § Command semantics, "Handshake") ---
 
@@ -95,7 +116,7 @@ class CheckContext:
         """
         seq = await self._next_seq()
         word = int(bits)
-        await self.client.write(self.registers.command, [word, seq])
+        await self.client.write(self.registers.command, [word, seq], retry=False)  # a command is never re-sent
         written_at = time.monotonic()
         self.command_word = word
         poll = await wait_for(
@@ -104,7 +125,7 @@ class CheckContext:
         if word & EDGE_BITS:
             await self.clear_edges()
         if not poll.met:
-            raise AckTimeout(seq, poll.status)
+            raise AckTimeout(word, seq, poll.status, poll.elapsed_ms)
         return Ack(seq, poll, written_at)
 
     async def clear_edges(self) -> None:

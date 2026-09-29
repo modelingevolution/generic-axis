@@ -15,7 +15,7 @@ async def test_read_from_a_silent_unit_raises_plc_error(stub: StubPlc) -> None:
     client = PlcClient("127.0.0.1", stub.port, 9)  # the stub stays silent for a unit it does not serve
     await client.connect()
     try:
-        with pytest.raises(PlcError, match="FC03 100"):
+        with pytest.raises(PlcError, match=r"read S\+0…S\+14 \(100…114\) on 127\.0\.0\.1:\d+ unit 9 failed: "):
             await client.read(100, 15)
     finally:
         client.close()
