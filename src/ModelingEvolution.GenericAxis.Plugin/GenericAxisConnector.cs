@@ -257,9 +257,10 @@ public sealed class GenericAxisConnector : BackgroundService
         }
         else
         {
+            // Same line as the Warning: only the level says "still" (design.md § Plugin line shape).
             _logger?.LogDebug(ex,
-                "{ErrorClass}: generic axis {Device} still did not attach: {ErrorMessage}",
-                failure.Label, id, failure.Message);
+                "{ErrorClass}: generic axis {Device} did not attach: {ErrorMessage} (next attempt in {Seconds} s)",
+                failure.Label, id, failure.Message, FailureRetryInterval.TotalSeconds);
         }
     }
 
