@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using Microsoft.Extensions.Logging.Abstractions;
+using ModelingEvolution.Drawing.Units;
 using ModelingEvolution.GenericAxis.TestApp.Conformance;
 using ModelingEvolution.GenericAxis.TestApp.Simulation;
 using RocketWelder.SDK.Abstractions;
@@ -189,6 +190,45 @@ public sealed class CheckerAgainstSimulatorTests
         after.CommandBlock.Skip(2).Take(6).Should().Equal(before.CommandBlock.Skip(2).Take(6), "the parameters are untouched");
         after.WatchdogTrips.Should().Be(0);
         report.Cleanup.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// GA-I-51 (review #29): Ctrl-C inside the 1 s pre-flight watch, with a live commander moving the axis. Before
+    /// pre-flight has proved the axis free the checker has written nothing, so it must end INTERRUPTED (exit 4) with a
+    /// report and without one write — no Stop, no Enable 0, no CommandSeq taken from the commander.
+    /// </summary>
+    [Fact]
+    public async Task GA_I_51_InterruptingPreflightWritesNothingToALiveCommandersAxis()
+    {
+        using var sim = new LiveSimulator();
+        var options = new GenericAxisOptions { Name = "carriage", Host = "127.0.0.1", Port = sim.Port };
+        await using var commander = new ModbusLinearTrack(DeviceId.New("GenericLinearTrack"), options, ownerId: 1);
+        await commander.ConnectAsync();
+        var axis = (ModbusLinearAxis)commander.Axis;
+        await axis.PowerAsync(true);
+        await axis.MoveVelocityAsync(new Speed<double, MillimetrePerSecond<double>>(20));
+        var before = await sim.SettledAsync();
+        before.State.Should().Be(SimAxisState.ContinuousMotion);
+        before.LeaseOwner.Should().Be(1);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(500)); // inside the 1 s watch
+        var report = await Check(sim, allowMotion: true, cts.Token);
+
+        report.ExitCode.Should().Be(4);
+        report.SummaryResult.Should().Be("INTERRUPTED");
+        report.Checks.Should().HaveCount(16).And.OnlyContain(c =>
+            c.Result == CheckResultKind.Skipped && c.Message == "interrupted by the operator during pre-flight");
+        report.Cleanup.Should().BeEmpty("nothing was written, so there is nothing to undo");
+
+        var after = await sim.SettledAsync();
+        after.CommandSeq.Should().Be(before.CommandSeq, "the checker took no sequence number");
+        after.CommandBlock[0].Should().Be(before.CommandBlock[0], "no Stop, no Enable 0");
+        after.CommandBlock.Skip(2).Take(6).Should().Equal(before.CommandBlock.Skip(2).Take(6), "the parameters are untouched");
+        after.LeaseOwner.Should().Be(1, "the commander's lease is untouched");
+        after.State.Should().Be(SimAxisState.ContinuousMotion, "the commander's move is still running");
+        after.WatchdogTrips.Should().Be(0);
+
+        await axis.StopAsync();
     }
 
     [Fact]
