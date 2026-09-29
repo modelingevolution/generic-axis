@@ -53,6 +53,7 @@ class Beater:
         """The id ``LeaseOwner`` must hold while this beat runs (None: not checked). protocol.md § Rules for every run,
         "Lease and beat between checks": a beating checker that reads another owner has lost the axis."""
         self.lease_lost: LeaseLost | None = None
+        self._stopping = asyncio.Event()
 
     @property
     def running(self) -> bool:
@@ -64,17 +65,23 @@ class Beater:
         (current,) = await self._client.read(self._registers.heartbeat, 1)
         self._value = current
         await self._beat()  # the first beat is written before start() returns, so the PLC sees a change now
-        self._task = asyncio.create_task(self._loop(), name="heartbeat")
+        self._stopping = asyncio.Event()
+        self._task = asyncio.create_task(self._loop(self._stopping), name="heartbeat")
 
     async def _beat(self) -> None:
         self._value = next_nonzero(self._value)
         await self._client.write(self._registers.heartbeat, [self._value])
         self.last_beat = time.monotonic()
 
-    async def _loop(self) -> None:
+    async def _loop(self, stopping: asyncio.Event) -> None:
         next_at = time.monotonic() + self._period_s
         while True:
-            await asyncio.sleep(max(0.0, next_at - time.monotonic()))
+            # Review #30: stop only between beats. A stop that cancelled a write already on the wire left last_beat
+            # one beat early (the PLC saw that write), so every trip timing measured from it came 100 ms short.
+            with contextlib.suppress(TimeoutError):
+                async with asyncio.timeout(max(0.0, next_at - time.monotonic())):
+                    await stopping.wait()
+                return
             next_at += self._period_s
             try:
                 await self._beat()
@@ -105,9 +112,11 @@ class Beater:
             if exc is not None:
                 raise PlcError(f"heartbeat loop failed: {exc}") from exc
             return self.last_beat
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
+        self._stopping.set()  # the loop ends after the write in flight, if any, has completed
+        try:
             await task
+        except PlcError as exc:
+            raise PlcError(f"heartbeat loop failed: {exc}") from exc
         return self.last_beat
 
     async def stop_beating(self) -> float:

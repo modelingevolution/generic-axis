@@ -115,6 +115,12 @@ class StubPlc:
         """Requests received, answered or not."""
         self.drop_next = 0
         """Leave this many of the next requests unanswered (a lost answer: the client times out)."""
+        self.reply_delay_if: Callable[[bytes], float] | None = None
+        """Seconds to hold the reply of a request that was already applied (a slow answer; 0 = answer at once)."""
+        self.replying_late = False
+        """True while a delayed reply is pending: the write has been applied, the client does not know yet."""
+        self.write_times: list[float] = []
+        """``time.monotonic()`` of each applied write, parallel to ``writes``."""
         self.drop_if: Callable[[bytes], bool] | None = None
         """Leave every request whose PDU matches unanswered (for example, every write of ``Heartbeat``)."""
         self._publish()
@@ -155,6 +161,11 @@ class StubPlc:
                 if self.drop_if is not None and self.drop_if(pdu):
                     continue
                 reply = self._handle(pdu)
+                delay = self.reply_delay_if(pdu) if self.reply_delay_if is not None else 0.0
+                if delay > 0:
+                    self.replying_late = True
+                    await asyncio.sleep(delay)
+                    self.replying_late = False
                 writer.write(struct.pack(">HHHB", tid, 0, len(reply) + 1, unit) + reply)
                 await writer.drain()
         except (asyncio.IncompleteReadError, ConnectionError):
@@ -183,6 +194,7 @@ class StubPlc:
 
     def _write(self, addr: int, values: list[int]) -> None:
         self.writes.append((addr, values))
+        self.write_times.append(time.monotonic())
         for i, value in enumerate(values):
             if addr + i not in PLC_OWNED:
                 self.regs[addr + i] = value

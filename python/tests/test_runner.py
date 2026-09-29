@@ -762,3 +762,26 @@ async def test_chk11_waits_for_the_incumbents_late_trip_before_restoring(trip_af
     assert results["CHK-11"][0] == PASS, results["CHK-11"]
     assert (MAP.watchdog_fault, [0]) in during_chk11, "the incumbent's trip did not land during CHK-11 (no wait)"
     assert results["CHK-12"] == (PASS, "State 0, WatchdogFault 0"), results["CHK-12"]
+
+
+async def test_stopping_the_beat_during_a_write_keeps_that_write_as_the_last_beat(stub: StubPlc) -> None:
+    # GA-U-128.py (review #30): Heartbeat replies take 80 ms. The beat is stopped while a write the PLC has already
+    # applied is still unanswered. last_beat must not be earlier than the PLC's last beat, or every trip timing is
+    # measured from a beat 100 ms early ("setup: no trip within 1.5 s" on a PLC tripping at 1.4 s).
+    def slow_heartbeat_reply(pdu: bytes) -> float:
+        return 0.08 if pdu[0] == 6 and int.from_bytes(pdu[1:3]) == MAP.heartbeat else 0.0
+
+    client = PlcClient("127.0.0.1", stub.port, 1)
+    await client.connect()
+    beater = Beater(client, MAP)
+    try:
+        await beater.start()
+        stub.reply_delay_if = slow_heartbeat_reply
+        await asyncio.sleep(0.35)
+        while not stub.replying_late:  # noqa: ASYNC110 — waits for the stub's pending reply; no event to await
+            await asyncio.sleep(0.002)
+        last_beat = await beater.stop_beating()
+    finally:
+        client.close()
+    heartbeat_applied = [t for (address, _), t in zip(stub.writes, stub.write_times, strict=True) if address == 8]
+    assert last_beat >= heartbeat_applied[-1], last_beat - heartbeat_applied[-1]
