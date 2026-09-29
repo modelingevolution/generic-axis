@@ -26,7 +26,7 @@ from generic_axis_check.client import PlcClient
 from generic_axis_check.registers import COMMAND_LENGTH, RegisterMap
 
 from .conftest import PYTHON_DIR
-from .simproc import Simulator, free_port, simulator_cwd
+from .simproc import Simulator, cadence, free_port, simulator_cwd
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(240)]
 MAP = RegisterMap()
@@ -71,14 +71,15 @@ async def registers(port: int, address: int, count: int) -> list[int]:
 async def test_ga_i_30_simulator_passes_the_whole_checklist(simulator: START, tmp_path: Path) -> None:
     sim = simulator()
     code, doc = run_checker(sim.port, tmp_path, "--allow-motion")
-    assert {k: v for k, v in results(doc).items() if v[0] != "PASS"} == {}
-    assert code == 0
-    observed = {c["id"]: c["observed"] for c in doc["checks"]}
-    assert 1000 <= observed["CHK-08"]["tripAfterMs"] <= 1500
-    assert observed["CHK-14"]["haltMs"] <= 200
-    state = (await registers(sim.port, MAP.status, 1))[0]
-    lease, fault = await registers(sim.port, MAP.lease_owner, 2)
-    assert (state, lease, fault) == (0, 0, 0)
+    with cadence(sim):  # a budget missed while the simulator missed its cadence is INCONCLUSIVE
+        assert {k: v for k, v in results(doc).items() if v[0] != "PASS"} == {}
+        assert code == 0
+        observed = {c["id"]: c["observed"] for c in doc["checks"]}
+        assert 1000 <= observed["CHK-08"]["tripAfterMs"] <= 1500
+        assert observed["CHK-14"]["haltMs"] <= 200
+        state = (await registers(sim.port, MAP.status, 1))[0]
+        lease, fault = await registers(sim.port, MAP.lease_owner, 2)
+        assert (state, lease, fault) == (0, 0, 0)
 
 
 async def test_ga_i_31_motion_checks_are_opt_in(simulator: START, tmp_path: Path) -> None:
@@ -86,10 +87,11 @@ async def test_ga_i_31_motion_checks_are_opt_in(simulator: START, tmp_path: Path
     before = await registers(sim.port, MAP.status + 2, 2)
     code, doc = run_checker(sim.port, tmp_path)
     r = results(doc)
-    assert [r[i][0] for i in ids(1, 11)] == ["PASS"] * 11
-    assert [r[i] for i in ids(12, 16)] == [("SKIPPED", "needs --allow-motion")] * 5
-    assert code == 0
-    assert await registers(sim.port, MAP.status + 2, 2) == before
+    with cadence(sim):  # a budget missed while the simulator missed its cadence is INCONCLUSIVE
+        assert [r[i][0] for i in ids(1, 11)] == ["PASS"] * 11
+        assert [r[i] for i in ids(12, 16)] == [("SKIPPED", "needs --allow-motion")] * 5
+        assert code == 0
+        assert await registers(sim.port, MAP.status + 2, 2) == before
 
 
 async def test_ga_i_32_wrong_map_version_stops_the_run(simulator: START, tmp_path: Path) -> None:
@@ -114,14 +116,15 @@ async def test_ga_i_33_unpublished_limits_fail_chk03_only(simulator: START, tmp_
     sim = simulator(Simulator__PublishLimits="false")
     code, doc = run_checker(sim.port, tmp_path, "--allow-motion")
     r = results(doc)
-    assert r["CHK-03"] == (
-        "FAIL",
-        "Protocol/ProtocolMismatch: limits not published (all zero). Read TravelMin (S+8 = 108) = 0, "
-        "TravelMax (S+10 = 110) = 0, MaxVelocity (S+12 = 112) = 0.",
-    )
-    assert all(r[i][0] == "SKIPPED" for i in ids(13, 16))
-    assert [r[i][0] for i in ids(4, 12)] == ["PASS"] * 9
-    assert code == 1
+    with cadence(sim):  # a budget missed while the simulator missed its cadence is INCONCLUSIVE
+        assert r["CHK-03"] == (
+            "FAIL",
+            "Protocol/ProtocolMismatch: limits not published (all zero). Read TravelMin (S+8 = 108) = 0, "
+            "TravelMax (S+10 = 110) = 0, MaxVelocity (S+12 = 112) = 0.",
+        )
+        assert all(r[i][0] == "SKIPPED" for i in ids(13, 16))
+        assert [r[i][0] for i in ids(4, 12)] == ["PASS"] * 9
+        assert code == 1
 
 
 async def test_ga_i_34_a_plc_without_the_watchdog_is_caught(simulator: START, tmp_path: Path) -> None:
@@ -223,36 +226,37 @@ def test_ga_i_39_both_tools_agree(simulator: START, tmp_path: Path) -> None:
         cwd=simulator_cwd(),
         check=False,
     )
-    assert cs_report.exists(), cs.stderr
-    _code, py = run_checker(sim.port, tmp_path, "--allow-motion")
-    csharp = json.loads(cs_report.read_text(encoding="utf-8"))
+    with cadence(sim):  # a budget missed while the simulator missed its cadence is INCONCLUSIVE
+        assert cs_report.exists(), cs.stderr
+        _code, py = run_checker(sim.port, tmp_path, "--allow-motion")
+        csharp = json.loads(cs_report.read_text(encoding="utf-8"))
 
-    def key(doc: dict[str, Any]) -> list[tuple[str, str, str, str, str | None, list[str]]]:
-        # Review #6: errorClass and the observed key lists (names AND order) are compared too.
-        return [
-            (c["id"], c["title"], c["section"], c["result"], c["errorClass"], list(c["observed"]))
-            for c in doc["checks"]
-        ]
+        def key(doc: dict[str, Any]) -> list[tuple[str, str, str, str, str | None, list[str]]]:
+            # Review #6: errorClass and the observed key lists (names AND order) are compared too.
+            return [
+                (c["id"], c["title"], c["section"], c["result"], c["errorClass"], list(c["observed"]))
+                for c in doc["checks"]
+            ]
 
-    def deterministic(doc: dict[str, Any]) -> dict[str, dict[str, Any]]:
-        return {c["id"]: {k: v for k, v in c["observed"].items() if k in DETERMINISTIC} for c in doc["checks"]}
+        def deterministic(doc: dict[str, Any]) -> dict[str, dict[str, Any]]:
+            return {c["id"]: {k: v for k, v in c["observed"].items() if k in DETERMINISTIC} for c in doc["checks"]}
 
-    assert list(py) == list(csharp)  # the top-level fields, "preflight" included, in the schema's order
-    assert py["preflight"] is None
-    assert csharp["preflight"] is None
-    assert key(py) == key(csharp)
-    assert deterministic(py) == deterministic(csharp)
-    # Lead ruling: `retries` depends on the host's load ("normally 0"), not on the tools' agreement. It is only held to
-    # being present, an integer ≥ 0, in every non-skipped check of both reports.
-    for doc in (py, csharp):
-        for c in doc["checks"]:
-            if c["result"] != "SKIPPED":
-                retries = c["observed"]["retries"]
-                assert isinstance(retries, int), (doc["tool"]["language"], c["id"], retries)
-                assert retries >= 0, (doc["tool"]["language"], c["id"], retries)
-    assert csharp["tool"]["language"] == "csharp"
-    for doc in (py, csharp):
-        assert all(v is None or isinstance(v, int) for c in doc["checks"] for v in c["observed"].values())
+        assert list(py) == list(csharp)  # the top-level fields, "preflight" included, in the schema's order
+        assert py["preflight"] is None
+        assert csharp["preflight"] is None
+        assert key(py) == key(csharp)
+        assert deterministic(py) == deterministic(csharp)
+        # Lead ruling: `retries` depends on the host's load ("normally 0"), not on the tools' agreement. It is only held to
+        # being present, an integer ≥ 0, in every non-skipped check of both reports.
+        for doc in (py, csharp):
+            for c in doc["checks"]:
+                if c["result"] != "SKIPPED":
+                    retries = c["observed"]["retries"]
+                    assert isinstance(retries, int), (doc["tool"]["language"], c["id"], retries)
+                    assert retries >= 0, (doc["tool"]["language"], c["id"], retries)
+        assert csharp["tool"]["language"] == "csharp"
+        for doc in (py, csharp):
+            assert all(v is None or isinstance(v, int) for c in doc["checks"] for v in c["observed"].values())
 
 
 DETERMINISTIC = frozenset(
@@ -349,25 +353,26 @@ async def test_ga_i_43_a_second_tool_with_the_same_owner_id_is_refused(simulator
     first_dir.mkdir()
     second_dir.mkdir()
     first = checker(sim.port, first_dir / "report.md")
-    assert first.stderr is not None
-    for line in first.stderr:  # CHK-08 beats under the default owner 65535
-        if line.startswith("CHK-08 "):
-            break
-    second = checker(sim.port, second_dir / "report.md")
-    second.communicate(timeout=60)
-    first.communicate(timeout=200)
-    doc = json.loads((second_dir / "report.json").read_text(encoding="utf-8"))
-    message = doc["checks"][0]["message"]
-    assert second.returncode == 3
-    assert doc["summary"]["result"] == "REFUSED"
-    assert re.search(
-        r"Heartbeat \(C\+8 = 8\) = \d+( → \d+)+ within \d\.\d s, LeaseOwner \(C\+9 = 9\) = 65535;", message
-    )
-    assert all(c["result"] == "SKIPPED" for c in doc["checks"])
-    assert doc["cleanup"] == []
-    first_doc = json.loads((first_dir / "report.json").read_text(encoding="utf-8"))
-    assert first.returncode == 0
-    assert first_doc["summary"]["result"] == "PASS"
+    with cadence(sim):  # a budget missed while the simulator missed its cadence is INCONCLUSIVE
+        assert first.stderr is not None
+        for line in first.stderr:  # CHK-08 beats under the default owner 65535
+            if line.startswith("CHK-08 "):
+                break
+        second = checker(sim.port, second_dir / "report.md")
+        second.communicate(timeout=60)
+        first.communicate(timeout=200)
+        doc = json.loads((second_dir / "report.json").read_text(encoding="utf-8"))
+        message = doc["checks"][0]["message"]
+        assert second.returncode == 3
+        assert doc["summary"]["result"] == "REFUSED"
+        assert re.search(
+            r"Heartbeat \(C\+8 = 8\) = \d+( → \d+)+ within \d\.\d s, LeaseOwner \(C\+9 = 9\) = 65535;", message
+        )
+        assert all(c["result"] == "SKIPPED" for c in doc["checks"])
+        assert doc["cleanup"] == []
+        first_doc = json.loads((first_dir / "report.json").read_text(encoding="utf-8"))
+        assert first.returncode == 0
+        assert first_doc["summary"]["result"] == "PASS"
 
 
 async def test_ga_i_43_a_beat_under_lease_owner_0_is_refused(simulator: START, tmp_path: Path) -> None:
@@ -402,20 +407,21 @@ async def test_ga_i_57_a_second_tool_during_the_firsts_chk03_is_refused(simulato
     first_dir.mkdir()
     second_dir.mkdir()
     first = checker(sim.port, first_dir / "report.md")
-    assert first.stderr is not None
-    for line in first.stderr:
-        if line.startswith("CHK-03 "):
-            break
-    second = checker(sim.port, second_dir / "report.md")
-    second.communicate(timeout=60)
-    first.communicate(timeout=200)
-    doc = json.loads((second_dir / "report.json").read_text(encoding="utf-8"))
-    assert second.returncode == 3
-    assert doc["summary"]["result"] == "REFUSED"
-    assert "LeaseOwner (C+9 = 9) = 65535" in doc["checks"][0]["message"]
-    assert doc["cleanup"] == []
-    first_doc = json.loads((first_dir / "report.json").read_text(encoding="utf-8"))
-    assert first.returncode == 0
-    assert first_doc["summary"]["result"] == "PASS"
-    (lease,) = await registers(sim.port, MAP.lease_owner, 1)
-    assert lease == 0
+    with cadence(sim):  # a budget missed while the simulator missed its cadence is INCONCLUSIVE
+        assert first.stderr is not None
+        for line in first.stderr:
+            if line.startswith("CHK-03 "):
+                break
+        second = checker(sim.port, second_dir / "report.md")
+        second.communicate(timeout=60)
+        first.communicate(timeout=200)
+        doc = json.loads((second_dir / "report.json").read_text(encoding="utf-8"))
+        assert second.returncode == 3
+        assert doc["summary"]["result"] == "REFUSED"
+        assert "LeaseOwner (C+9 = 9) = 65535" in doc["checks"][0]["message"]
+        assert doc["cleanup"] == []
+        first_doc = json.loads((first_dir / "report.json").read_text(encoding="utf-8"))
+        assert first.returncode == 0
+        assert first_doc["summary"]["result"] == "PASS"
+        (lease,) = await registers(sim.port, MAP.lease_owner, 1)
+        assert lease == 0

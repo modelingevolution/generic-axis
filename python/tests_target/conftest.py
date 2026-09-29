@@ -73,7 +73,7 @@ def conformance(request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPat
         report = asyncio.run(run(Options(host=host, port=port, unit=unit, allow_motion=allow_motion())))
     finally:
         if simulator is not None:
-            simulator.stop()
+            simulator.dispose()
     markdown = report_path(request.config.getoption("--generic-axis-report"), tmp_path_factory)
     markdown.write_text(to_markdown(report), encoding="utf-8")
     markdown.with_suffix(".json").write_text(to_json_text(report), encoding="utf-8")

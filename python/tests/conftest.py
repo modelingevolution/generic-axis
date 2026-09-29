@@ -35,7 +35,7 @@ def simulator() -> Iterator[Callable[..., Simulator]]:
 
     yield start
     for sim in started:
-        sim.stop()
+        sim.dispose()
 
 
 def stub_options(**changes: object) -> StubOptions:

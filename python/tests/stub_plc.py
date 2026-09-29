@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import math
 import os
+import signal
 import struct
 import sys
 import time
@@ -102,6 +103,9 @@ class StubPlc:
         self._server: asyncio.Server | None = None
         self._scan: asyncio.Task[None] | None = None
         self._connections: set[asyncio.StreamWriter] = set()
+        self.max_scan_gap_s = 0.0
+        """The longest gap between two scans since the first client connected (the fixture's own cadence)."""
+        self._clients_seen = False
         """Open client connections, closed on exit: a client the code under test leaked must not hang the teardown."""
         self.port = self.o.port
         self.writes: list[tuple[int, list[int]]] = []
@@ -136,6 +140,7 @@ class StubPlc:
     # ----------------------------------------------------------------------------------------- Modbus TCP
     async def _serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         self._connections.add(writer)
+        self._clients_seen = True
         try:
             while True:
                 header = await reader.readexactly(7)
@@ -200,6 +205,8 @@ class StubPlc:
         while True:
             await asyncio.sleep(self.o.scan_s)
             now = time.monotonic()
+            if self._clients_seen:
+                self.max_scan_gap_s = max(self.max_scan_gap_s, now - last)
             self.scan(now - last, now)
             last = now
 
@@ -314,9 +321,17 @@ class StubPlc:
 
 
 async def _main(port: int) -> None:
+    stopping = asyncio.Event()
+    asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, stopping.set)
     async with StubPlc(StubOptions.from_env(dict(os.environ), port)) as plc:
         print(f"stub PLC listening on 127.0.0.1:{plc.port}", flush=True)
-        await asyncio.Event().wait()
+        await stopping.wait()
+        # The same exit line as the test app's --headless (tests/simproc.py MAX_SCAN_GAP_LINE).
+        print(
+            f"simulator: max scan gap {round(plc.max_scan_gap_s * 1000)} ms since the first client connected "
+            f"(scan interval {round(plc.o.scan_s * 1000)} ms)",
+            flush=True,
+        )
 
 
 if __name__ == "__main__":
