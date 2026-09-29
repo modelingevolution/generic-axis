@@ -104,7 +104,7 @@ async def test_run_refuses_a_live_foreign_commander_with_exit_3_and_writes_nothi
     assert to_json(report)["preflight"] == report.checks[0].message  # the refusal, also the line after the heading
     message = report.checks[0].message
     assert re.fullmatch(
-        r"pre-flight: another commander is live: Heartbeat \(C\+8\) changed \d+( → \d+)+ within 1 s, "
+        r"pre-flight: another commander is live: Heartbeat \(C\+8\) changed \d+( → \d+)+ within 1\.[01] s, "
         r"LeaseOwner \(C\+9\) 1; stop it first",
         message,
     )
@@ -120,11 +120,12 @@ async def test_run_refuses_a_held_lease_with_no_beat_and_no_trip(stub: StubPlc) 
     stub.regs[MAP.lease_owner] = 1
     report = await run(options(stub), checks=upto("CHK-07"))
     assert report.exit_code == 3
-    assert report.checks[0].message == (
-        "pre-flight: LeaseOwner (C+9 = 9) = 1 is held and WatchdogFault (C+10 = 10) = 0: no beat and no trip within "
-        "1.6 s — a live commander, or a PLC without a working watchdog; release LeaseOwner by hand only if no "
-        "commander runs"
-    )
+    assert re.fullmatch(
+        r"pre-flight: LeaseOwner \(C\+9 = 9\) = 1 is held and WatchdogFault \(C\+10 = 10\) = 0: no beat and no trip "
+        r"within 1\.[67] s — a live commander, or a PLC without a working watchdog; release LeaseOwner by hand only if "
+        r"no commander runs",
+        report.checks[0].message,
+    ), report.checks[0].message
     assert stub.writes == []
 
 
@@ -615,6 +616,10 @@ async def test_a_commander_silent_for_1_1_s_is_still_refused() -> None:
     assert report.exit_code == 3
     assert report.result == "REFUSED"
     assert "another commander is live" in report.checks[0].message
+    # Review #27: the message names the window actually watched (the beat resumed after 1.1 s), not "1 s".
+    watched = re.search(r"within (\d\.\d) s,", report.checks[0].message)
+    assert watched is not None
+    assert float(watched.group(1)) >= 1.1, report.checks[0].message
     assert ours == []
     assert fault == 0
 
@@ -674,3 +679,26 @@ async def test_a_second_tool_started_during_the_firsts_chk03_is_refused(stub: St
     assert second.cleanup == []
     assert report.exit_code == 0
     assert stub.regs[MAP.lease_owner] == 0
+
+
+async def test_a_commander_still_beating_after_a_trip_is_refused_not_declared_dead(stub: StubPlc) -> None:
+    # GA-U-123.py (review #25): WatchdogFault = 1 at the first read does not make the holder dead. It keeps beating,
+    # so the watch sees Heartbeat change: REFUSED, and nothing at all is written to its axis.
+    commander = PlcClient("127.0.0.1", stub.port, 1)
+    await commander.connect()
+    await commander.write(MAP.lease_owner, [1])
+    beat = Beater(commander, MAP)
+    await beat.start()
+    stub.regs[MAP.watchdog_fault] = 1  # an old trip, latched; the commander is alive and beating
+    try:
+        before = len(stub.writes)
+        report = await run(options(stub, motion=True))
+        ours = [w for w in stub.writes[before:] if w[0] != MAP.heartbeat]
+    finally:
+        await beat.stop()
+        commander.close()
+    assert report.exit_code == 3
+    assert report.result == "REFUSED"
+    assert "another commander is live" in report.checks[0].message
+    assert ours == []
+    assert report.cleanup == []

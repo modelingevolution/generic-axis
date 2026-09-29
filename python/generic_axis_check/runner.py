@@ -146,7 +146,9 @@ async def preflight(client: PlcClient, registers: RegisterMap) -> Preflight:
         if len(beats) > 1:
             return elapsed < PREFLIGHT_WATCH_S  # a beat is still watched to 1 s so the refusal names several values
         if owner != 0 and fault != 0:
-            return False
+            # Review #25: a trip does not make its holder dead. Only a full 1 s with no Heartbeat change does; a live
+            # commander still beating after a trip must be refused, not overwritten.
+            return elapsed < PREFLIGHT_WATCH_S
         return elapsed < (PREFLIGHT_WATCH_S if owner == 0 else HELD_LEASE_WATCH_S)
 
     while watching():
@@ -154,12 +156,13 @@ async def preflight(client: PlcClient, registers: RegisterMap) -> Preflight:
         now_beat, owner, fault = await client.read(registers.heartbeat, 3)
         if now_beat != beats[-1]:
             beats.append(now_beat)
+    watched_s = time.monotonic() - started  # review #27: messages name the window actually watched
     owner_at = f"LeaseOwner (C+9 = {registers.lease_owner}) = {owner}"
     fault_at = f"WatchdogFault (C+10 = {registers.watchdog_fault}) = {fault}"
     if len(beats) > 1:
         seen = " → ".join(str(b) for b in beats)
         return Preflight(
-            f"pre-flight: another commander is live: Heartbeat (C+8) changed {seen} within {PREFLIGHT_WATCH_S:g} s, "
+            f"pre-flight: another commander is live: Heartbeat (C+8) changed {seen} within {watched_s:.1f} s, "
             f"LeaseOwner (C+9) {owner}; stop it first"
         )
     if owner == 0:
@@ -171,7 +174,7 @@ async def preflight(client: PlcClient, registers: RegisterMap) -> Preflight:
         )
         return Preflight(note=note, foreign_trip=True)
     return Preflight(
-        f"pre-flight: {owner_at} is held and {fault_at}: no beat and no trip within {HELD_LEASE_WATCH_S:g} s — "
+        f"pre-flight: {owner_at} is held and {fault_at}: no beat and no trip within {watched_s:.1f} s — "
         "a live commander, or a PLC without a working watchdog; release LeaseOwner by hand only if no commander runs"
     )
 

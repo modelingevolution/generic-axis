@@ -352,7 +352,7 @@ async def test_ga_i_43_a_second_tool_with_the_same_owner_id_is_refused(simulator
     message = doc["checks"][0]["message"]
     assert second.returncode == 3
     assert doc["summary"]["result"] == "REFUSED"
-    assert re.search(r"Heartbeat \(C\+8\) changed \d+( → \d+)+ within 1 s, LeaseOwner \(C\+9\) 65535;", message)
+    assert re.search(r"Heartbeat \(C\+8\) changed \d+( → \d+)+ within \d\.\d s, LeaseOwner \(C\+9\) 65535;", message)
     assert all(c["result"] == "SKIPPED" for c in doc["checks"])
     assert doc["cleanup"] == []
     first_doc = json.loads((first_dir / "report.json").read_text(encoding="utf-8"))
