@@ -179,7 +179,7 @@ async def test_ga_i_37_the_checker_never_fights_a_live_commander(simulator: STAR
     assert report.read_text(encoding="utf-8").endswith("\nRESULT: REFUSED\n")
     assert all(c["result"] == "SKIPPED" for c in doc["checks"])
     assert "another commander is live" in doc["checks"][0]["message"]
-    assert "LeaseOwner (C+9) 1" in doc["checks"][0]["message"]
+    assert "LeaseOwner (C+9 = 9) = 1;" in doc["checks"][0]["message"]
     assert elapsed < 10  # "exits after about 1 s" plus interpreter start-up
     assert after[:8] == before[:8]  # Command, CommandSeq and the parameters are untouched
     assert lease == 1
@@ -352,7 +352,9 @@ async def test_ga_i_43_a_second_tool_with_the_same_owner_id_is_refused(simulator
     message = doc["checks"][0]["message"]
     assert second.returncode == 3
     assert doc["summary"]["result"] == "REFUSED"
-    assert re.search(r"Heartbeat \(C\+8\) changed \d+( → \d+)+ within \d\.\d s, LeaseOwner \(C\+9\) 65535;", message)
+    assert re.search(
+        r"Heartbeat \(C\+8 = 8\) = \d+( → \d+)+ within \d\.\d s, LeaseOwner \(C\+9 = 9\) = 65535;", message
+    )
     assert all(c["result"] == "SKIPPED" for c in doc["checks"])
     assert doc["cleanup"] == []
     first_doc = json.loads((first_dir / "report.json").read_text(encoding="utf-8"))
@@ -380,7 +382,7 @@ async def test_ga_i_43_a_beat_under_lease_owner_0_is_refused(simulator: START, t
     doc = json.loads(report.with_suffix(".json").read_text(encoding="utf-8"))
     assert process.returncode == 3
     assert doc["summary"]["result"] == "REFUSED"
-    assert "LeaseOwner (C+9) 0;" in doc["checks"][0]["message"]
+    assert "LeaseOwner (C+9 = 9) = 0;" in doc["checks"][0]["message"]
     assert after[:8] == before[:8]
     assert lease == 0
 
@@ -402,7 +404,7 @@ async def test_ga_i_57_a_second_tool_during_the_firsts_chk03_is_refused(simulato
     doc = json.loads((second_dir / "report.json").read_text(encoding="utf-8"))
     assert second.returncode == 3
     assert doc["summary"]["result"] == "REFUSED"
-    assert "LeaseOwner (C+9) 65535" in doc["checks"][0]["message"]
+    assert "LeaseOwner (C+9 = 9) = 65535" in doc["checks"][0]["message"]
     assert doc["cleanup"] == []
     first_doc = json.loads((first_dir / "report.json").read_text(encoding="utf-8"))
     assert first.returncode == 0
