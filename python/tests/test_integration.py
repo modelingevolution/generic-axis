@@ -237,6 +237,9 @@ def test_ga_i_39_both_tools_agree(simulator: START, tmp_path: Path) -> None:
     def deterministic(doc: dict[str, Any]) -> dict[str, dict[str, Any]]:
         return {c["id"]: {k: v for k, v in c["observed"].items() if k in DETERMINISTIC} for c in doc["checks"]}
 
+    assert list(py) == list(csharp)  # the top-level fields, "preflight" included, in the schema's order
+    assert py["preflight"] is None
+    assert csharp["preflight"] is None
     assert key(py) == key(csharp)
     assert deterministic(py) == deterministic(csharp)
     assert csharp["tool"]["language"] == "csharp"

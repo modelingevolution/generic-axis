@@ -10,7 +10,7 @@ from generic_axis_check.errors import ErrorClass
 from generic_axis_check.report import to_json, to_json_text, to_markdown
 from generic_axis_check.runner import CheckResult, Report
 
-TOP_KEYS = {
+TOP_KEYS = [
     "schema",
     "mapVersion",
     "tool",
@@ -18,10 +18,12 @@ TOP_KEYS = {
     "allowMotion",
     "startedAt",
     "finishedAt",
+    "preflight",
     "summary",
     "checks",
     "cleanup",
-}
+]
+"""protocol.md § Report schema, in the example's order."""
 CHECK_KEYS = {"id", "title", "section", "result", "durationMs", "message", "errorClass", "observed"}
 
 
@@ -59,7 +61,8 @@ def sample() -> Report:
 
 def test_json_has_exactly_the_schema_fields() -> None:
     doc = json.loads(to_json_text(sample()))
-    assert set(doc) == TOP_KEYS
+    assert list(doc) == TOP_KEYS
+    assert doc["preflight"] is None
     assert doc["schema"] == "generic-axis-conformance/1"
     assert doc["mapVersion"] == 1
     assert doc["tool"] == {"name": "generic-axis-check", "language": "python", "version": doc["tool"]["version"]}

@@ -101,6 +101,7 @@ async def test_run_refuses_a_live_foreign_commander_with_exit_3_and_writes_nothi
     assert report.result == "REFUSED"
     assert to_markdown(report).endswith("\nRESULT: REFUSED\n")
     assert to_json(report)["summary"] == {"result": "REFUSED", "pass": 0, "fail": 0, "skipped": 16}
+    assert to_json(report)["preflight"] == report.checks[0].message  # the refusal, also the line after the heading
     message = report.checks[0].message
     assert re.fullmatch(
         r"pre-flight: another commander is live: Heartbeat \(C\+8\) changed \d+( → \d+)+ within 1 s, "
@@ -640,6 +641,7 @@ async def test_a_dead_commander_whose_watchdog_trips_lets_the_run_proceed_and_it
         "its trip is left for its operator."
     )
     assert report.preflight == note
+    assert to_json(report)["preflight"] == note
     assert to_markdown(report).splitlines()[2] == f"Pre-flight: {note}"
     results = by_id(report)
     assert [results[f"CHK-{n:02d}"][0] for n in range(1, 6)] == [PASS] * 5

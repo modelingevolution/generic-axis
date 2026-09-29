@@ -45,6 +45,7 @@ def to_json(report: Report) -> dict[str, Any]:
         "allowMotion": o.allow_motion,
         "startedAt": _utc(report.started_at),
         "finishedAt": _utc(report.finished_at),
+        "preflight": report.preflight,  # null unless pre-flight had something to say (the Markdown's line after the heading)
         "summary": {
             "result": report.result,
             "pass": sum(c.result == PASS for c in report.checks),
