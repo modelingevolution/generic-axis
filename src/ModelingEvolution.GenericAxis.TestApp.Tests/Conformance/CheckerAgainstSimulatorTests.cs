@@ -688,9 +688,11 @@ public sealed class CheckerAgainstSimulatorTests
         using var sim = new LiveSimulator();
         var dll = Path.Combine(AppContext.BaseDirectory, "ModelingEvolution.GenericAxis.TestApp.dll");
         var workDir = Directory.CreateTempSubdirectory("ga-i-61-").FullName;
-        var psi = new System.Diagnostics.ProcessStartInfo("dotnet")
+        // Through `env --default-signal=INT` (execs, same PID): a test host started as a background job inherits SIGINT
+        // ignored, the child would inherit that too and .NET honours it, so Ctrl-C would never reach the checker.
+        var psi = new System.Diagnostics.ProcessStartInfo("env")
         {
-            ArgumentList = { dll, "--check", $"127.0.0.1:{sim.Port}", "--allow-motion", "--report", Path.Combine(workDir, "r.md") },
+            ArgumentList = { "--default-signal=INT", "dotnet", dll, "--check", $"127.0.0.1:{sim.Port}", "--allow-motion", "--report", Path.Combine(workDir, "r.md") },
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             WorkingDirectory = workDir,
