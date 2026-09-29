@@ -234,6 +234,19 @@ public sealed class ConnectorTests
     }
 
     [Fact]
+    public async Task GA_U_82_A_Held_Lease_Ends_An_Outage_So_The_Next_Transport_Failure_Warns_Again()
+    {
+        // Lead ruling 2026-09-29: a LeaseHeld answer proves the PLC answered, so the outage is over.
+        await Attach(new SocketException((int)SocketError.ConnectionRefused));
+        _time.Advance(GenericAxisConnector.FailureRetryInterval);
+        await Attach(new MotionException(MotionError.LeaseHeld, LeaseMessage, "carriage"));
+        _time.Advance(GenericAxisConnector.TickInterval);
+        await Attach(new SocketException((int)SocketError.ConnectionRefused));
+
+        Levels.Should().Equal(LogLevel.Warning, LogLevel.Information, LogLevel.Warning);
+    }
+
+    [Fact]
     public async Task Two_Machines_Are_Suppressed_Independently()
     {
         var other = DeviceId.New(GenericAxisPlugin.PositionerDeviceType);
