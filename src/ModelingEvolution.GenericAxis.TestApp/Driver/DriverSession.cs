@@ -99,7 +99,8 @@ public sealed class DriverSession : IAsyncDisposable
         if (_device is null) return;
         try
         {
-            await _device.StopAllAsync();
+            var device = _device;
+            await Task.Run(() => device.StopAllAsync()); // off the circuit's context (review #45)
             Report("Stop", null);
         }
         catch (Exception ex)
@@ -153,7 +154,12 @@ public sealed class DriverSession : IAsyncDisposable
     /// <summary>Cancels a running Connect (a lease wait) — moves are stopped with STOP instead.</summary>
     public void Cancel() => _cts?.Cancel();
 
-    private async Task Run(string what, Func<CancellationToken, Task> action, bool cancellable = false)
+    /// <remarks>
+    /// The verb runs on the thread pool, not on the Blazor circuit's context (review #45): a verb awaited on a busy caller
+    /// context holds the channel's gate while its continuations wait for that context, and the beat starves. The result
+    /// comes back to the caller's context for the UI as before.
+    /// </remarks>
+    internal async Task Run(string what, Func<CancellationToken, Task> action, bool cancellable = false)
     {
         _cts?.Dispose();
         _cts = cancellable ? new CancellationTokenSource() : null;
@@ -163,7 +169,8 @@ public sealed class DriverSession : IAsyncDisposable
         Changed?.Invoke();
         try
         {
-            await action(_cts?.Token ?? CancellationToken.None);
+            var token = _cts?.Token ?? CancellationToken.None;
+            await Task.Run(() => action(token), CancellationToken.None);
             Report(what, null);
         }
         catch (Exception ex)
