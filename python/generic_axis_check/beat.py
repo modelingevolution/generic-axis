@@ -76,6 +76,13 @@ class Beater:
             await task
         return self.last_beat
 
+    async def stop_beating(self) -> float:
+        """Stop a beat that ran; returns the time of its last write (every watchdog timing starts there)."""
+        last_beat = await self.stop()
+        if last_beat is None:
+            raise RuntimeError("the beat was stopped before it ever wrote Heartbeat")
+        return last_beat
+
     def raise_if_failed(self) -> None:
         """Raise the beat's failure as ``PlcError`` (Transport) if the loop ended by itself."""
         failure = self.failure()

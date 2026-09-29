@@ -42,7 +42,6 @@ from .registers import (
     FaultCode,
     StatusBlock,
     from_words,
-    to_words,
 )
 
 PASS = "PASS"
@@ -119,6 +118,8 @@ class Outcome:
     """The SDK ``MotionError`` name of a FAIL (the runner re-checks a ``WatchdogTripped`` against the beat, #7)."""
     restore: bool = True
     """False when the check wrote nothing and found the axis unfit: the runner then writes nothing either (#9)."""
+    defect: bool = False
+    """The checker itself failed (an unexpected exception): the run stops after cleanup (review #14)."""
 
 
 def passed(message: str, **observed: int | None) -> Outcome:
@@ -340,7 +341,6 @@ async def chk05(ctx: CheckContext) -> Outcome:
     address = ctx.registers.target_position
     observed: dict[str, int | None] = {}
     for index, (value, words) in enumerate(WORD_ORDER_VALUES, start=1):
-        assert to_words(value) == words  # the table's words are the codec's words, by construction
         await ctx.client.write(address, list(words))
         back = await ctx.client.read(address, 2)
         observed[("firstReadBack", "secondReadBack")[index - 1]] = from_words(*back)
@@ -430,8 +430,7 @@ async def chk08(ctx: CheckContext) -> Outcome:
     await ctx.clear_watchdog_fault()
     _, trips_before = await ctx.watchdog()
     await beat_for(ctx, ARMED_BEAT_S)
-    last_beat = await ctx.beater.stop()
-    assert last_beat is not None
+    last_beat = await ctx.beater.stop_beating()
     watch = await watch_trip(ctx, last_beat, trips_before)
     observed = {
         "tripAfterMs": watch.after_ms,
@@ -450,7 +449,7 @@ async def chk09(ctx: CheckContext) -> Outcome:
     await ctx.clear_watchdog_fault()
     _, trips0 = await ctx.watchdog()
     await beat_for(ctx, ARMED_BEAT_S)
-    first = await watch_trip(ctx, await ctx.beater.stop() or time.monotonic(), trips0)
+    first = await watch_trip(ctx, await ctx.beater.stop_beating(), trips0)
     observed = {"setupTripAfterMs": first.after_ms}
     problem = judge_trip(ctx, first, "setup", **observed)
     if problem:
@@ -478,7 +477,7 @@ async def chk09(ctx: CheckContext) -> Outcome:
     if fault or trips_beating != trips1:
         reads = (Read("WatchdogFault", fault, 0), Read("WatchdogTrips", trips_beating, trips1))
         return mismatch(ctx, "tripped while beating after the clear", *reads, **observed)
-    second = await watch_trip(ctx, await ctx.beater.stop() or time.monotonic(), trips1)
+    second = await watch_trip(ctx, await ctx.beater.stop_beating(), trips1)
     observed |= {"secondTripAfterMs": second.after_ms, "watchdogTrips": second.trips}
     problem = judge_trip(ctx, second, "after clear", **observed)
     if problem:
@@ -544,8 +543,7 @@ async def chk11(ctx: CheckContext) -> Outcome:
         # (c) the incumbent dies while the client watches → taken within 2 s of its last beat.
         take = asyncio.create_task(acquire(ctx.client, registers, own, LEASE_TIMEOUT_S))
         await asyncio.sleep(WATCH_BEFORE_STALL_S)
-        last_beat = await incumbent.stop()
-        assert last_beat is not None
+        last_beat = await incumbent.stop_beating()
         try:
             taken = await take
         except LeaseHeld as held:
@@ -553,7 +551,8 @@ async def chk11(ctx: CheckContext) -> Outcome:
             what += ": Heartbeat kept changing after the incumbent stopped writing it, or LeaseOwner did not hold"
             return mismatch(ctx, what, Read("LeaseOwner", held.owner, own), **observed)
         ctx.holds_lease = True
-        observed["takenAfterMs"] = ms(taken.taken_at - last_beat)
+        taken_ms = ms(taken.taken_at - last_beat)
+        observed["takenAfterMs"] = taken_ms
     finally:
         if take is not None and not take.done():
             # Review #12: a Ctrl-C during (c) must not leave the lease client running into cleanup, where it would
@@ -571,8 +570,6 @@ async def chk11(ctx: CheckContext) -> Outcome:
         if not ctx.session_lease and ctx.holds_lease:
             await ctx.release_lease()
 
-    taken_ms = observed["takenAfterMs"]
-    assert taken_ms is not None  # set by (c), which returns early when the lease was not taken
     if taken_ms > LEASE_TAKEOVER_MS:
         what = f"(c) taken {taken_ms} ms after the incumbent's last beat, > {LEASE_TAKEOVER_MS} ms"
         return mismatch(ctx, what, **observed)
@@ -766,8 +763,7 @@ async def chk16(ctx: CheckContext) -> Outcome:
             Read("ActualVelocity", moving.status.actual_velocity),
         )
         return motion_failed(ctx, "not moving before the kill", *reads, **observed)
-    last_beat = await ctx.beater.stop()
-    assert last_beat is not None
+    last_beat = await ctx.beater.stop_beating()
     watch = await watch_trip(ctx, last_beat, 0, need_latch=False)
     observed |= {"tripAfterMs": watch.after_ms}
     problem = judge_trip(ctx, watch, "kill", **observed)

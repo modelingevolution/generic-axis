@@ -177,7 +177,8 @@ class CheckContext:
 
     async def clear_edges(self) -> None:
         """Clear edge bits, keep Enable, keep the seq (protocol.md: this write does not increment ``CommandSeq``)."""
-        assert self.seq is not None
+        if self.seq is None:
+            raise RuntimeError("clear_edges before any command write: there is no CommandSeq to keep")
         self.command_word &= int(Command.ENABLE)
         await self.client.write(self.registers.command, [self.command_word, self.seq])
 

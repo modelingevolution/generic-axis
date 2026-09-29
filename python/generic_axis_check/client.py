@@ -163,7 +163,8 @@ class PlcClient:
         "A command is never re-sent"."""
         if self.guard is not None:
             self.guard()
-        for attempt in range(2):
+        retried = False
+        while True:
             generation = self._generation
             client = self._require()
             try:
@@ -173,15 +174,15 @@ class PlcClient:
                 return response
             except (OSError, ModbusException, PlcError) as exc:
                 failure = exc if isinstance(exc, PlcError) else _failure(f"{where} failed", exc)
-                if isinstance(failure, asyncio.CancelledError) or attempt == 1 or not retry:
+                if isinstance(failure, asyncio.CancelledError) or retried or not retry:
                     raise failure from exc
                 log.warning("%s; reconnecting and retrying once", failure)
                 self.retries += 1
+                retried = True
                 try:
                     await self._reconnect(generation)
                 except PlcError as again:
                     raise PlcError(f"{failure}; reconnect failed: {again}") from exc
-        raise AssertionError("unreachable")
 
     async def read(self, address: int, count: int) -> list[int]:
         where = self._where("read", address, count)

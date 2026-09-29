@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
 import re
 
 import pytest
@@ -494,3 +495,27 @@ async def test_ctrl_c_during_chk11c_leaves_no_lease_client_running_into_cleanup(
     await asyncio.sleep(2.0)  # longer than the lease expiry a leaked client would wait for
     assert (MAP.lease_owner, [65535]) not in stub.writes[cancelled_at:]
     assert stub.regs[MAP.lease_owner] != 65535
+
+
+async def test_a_checker_defect_ends_in_a_report_exit_1_and_a_logged_traceback(
+    stub: StubPlc, caplog: pytest.LogCaptureFixture
+) -> None:
+    # GA-U-84.py (review #14): an unexpected exception is not a PLC finding and not a bare traceback: the check
+    # FAILs "checker defect" with no error class, the rest is SKIPPED, cleanup runs, exit 1, traceback at Error.
+    async def broken(_ctx: CheckContext) -> Outcome:
+        raise ZeroDivisionError("planted")
+
+    checks = (FAKE[0], dataclasses.replace(FAKE[1], run=broken), *FAKE[2:])
+    with caplog.at_level(logging.ERROR, logger="generic_axis_check.runner"):
+        report = await run(options(stub), checks=checks)
+    chk02 = report.checks[1]
+    assert chk02.result == FAIL
+    assert chk02.error_class is None
+    assert chk02.message == (
+        "checker defect during CHK-02: ZeroDivisionError: planted. The traceback is logged; not a PLC finding."
+    )
+    assert all(c.result == SKIPPED and c.message == "not run: checker defect during CHK-02" for c in report.checks[2:])
+    assert report.exit_code == 1
+    assert to_json(report)["checks"][1]["errorClass"] is None
+    record = next(r for r in caplog.records if r.getMessage() == "CHK-02: checker defect")
+    assert record.exc_info is not None

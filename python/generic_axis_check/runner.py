@@ -185,6 +185,9 @@ async def cleanup(ctx: CheckContext) -> None:
                 await result
         except (PlcError, AckTimeout, OSError) as exc:
             journal.append(f"{label}: failed ({exc})")
+        except Exception as exc:  # review #14: the next cleanup step still runs
+            log.exception("cleanup %s: checker defect", label)
+            journal.append(f"{label}: failed (checker defect: {type(exc).__name__}: {exc})")
 
     async def stop_if_moving() -> None:
         status = await ctx.status()
@@ -279,6 +282,12 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
             )
             abort = "needs CHK-01, which FAILED"
             say(f"CHK-01: {preflight_failure.message}")
+        except Exception as exc:  # review #14: a checker defect before anything was written
+            log.exception("pre-flight: checker defect")
+            live = None
+            preflight_failure = defect_outcome(exc, "pre-flight (nothing was written)")
+            abort = "needs CHK-01, which FAILED"
+            say(f"CHK-01: {preflight_failure.message}")
         if live is not None:
             refused = True
             abort = live
@@ -295,7 +304,7 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
                     ms(time.monotonic() - run_started),
                     preflight_failure.message,
                     observed,
-                    ErrorClass.TRANSPORT,
+                    preflight_failure.error_class,
                     await ctx.capture(),
                 )
                 continue
@@ -322,7 +331,9 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
                     # § Error class of a FAIL, "lastRead": the read the check took at detection, before any write
                     # of its own undid the evidence (an edge clear, CHK-11's recovery); else a fresh read now.
                     last_read = ctx.evidence or await ctx.capture()
-                if check.id >= FIRST_LEASED_CHECK and outcome.restore:
+                if outcome.defect:
+                    abort = f"not run: checker defect during {check.id}"
+                elif check.id >= FIRST_LEASED_CHECK and outcome.restore:
                     why = await _restore(ctx)
                     if why is not None:
                         if outcome.result != FAIL:
@@ -393,6 +404,13 @@ def normalize_observed(
     return {**{key: observed.get(key) for key in keys}, RETRIES_KEY: retries}
 
 
+def defect_outcome(exc: Exception, where: str) -> Outcome:
+    """A defect of the checker, not a PLC finding: it carries no error class, because none of the four is what was
+    seen (§ Errors and debugging: never claim a cause not observed). The traceback is in the log."""
+    message = f"checker defect during {where}: {type(exc).__name__}: {exc}. The traceback is logged; not a PLC finding."
+    return Outcome(FAIL, message, {}, None, defect=True)
+
+
 def exception_outcome(exc: PlcError | AckTimeout | LeaseHeld, registers: RegisterMap) -> Outcome:
     """One cause, one class (protocol.md § Errors and debugging, rule 2)."""
     if isinstance(exc, AckTimeout):
@@ -421,6 +439,9 @@ async def _run_one(check: Check, ctx: CheckContext) -> Outcome:
         return outcome
     except (PlcError, AckTimeout, LeaseHeld) as exc:
         return exception_outcome(exc, ctx.registers)
+    except Exception as exc:  # review #14: a checker defect ends in a report and exit 1, never a bare traceback
+        log.exception("%s: checker defect", check.id)
+        return defect_outcome(exc, check.id)
     finally:
         ctx.client.guard = None  # evidence, restore and cleanup must still reach the PLC
 
