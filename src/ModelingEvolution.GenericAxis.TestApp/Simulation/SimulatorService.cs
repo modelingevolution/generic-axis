@@ -29,8 +29,12 @@ public sealed class SimulatorService(SimulatorHost host, ILogger<SimulatorServic
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
-        _loop = new SimulatorLoop(host, logger).Start();
+        // Subscribe before the loop opens the listener: a client accepted in between would never be counted, and the
+        // exit line would say "not measured" although a client connected (GA-I-66 flake on the 2-vCPU runner).
+        var loop = new SimulatorLoop(host, logger);
+        _loop = loop;
         host.ClientConnected += OnClientConnected;
+        loop.Start();
         return Task.CompletedTask;
     }
 

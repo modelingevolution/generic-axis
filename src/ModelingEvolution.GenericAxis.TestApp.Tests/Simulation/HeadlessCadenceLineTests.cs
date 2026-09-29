@@ -28,27 +28,40 @@ public sealed partial class HeadlessCadenceLineTests
             WorkingDirectory = workDir,
         };
         psi.Environment["DOTNET_hostBuilder__reloadConfigOnChange"] = "false";
-        using var process = Process.Start(psi)!;
-        var stdout = process.StandardOutput.ReadToEndAsync();
+
+        // stdout is read line by line as it arrives, so the test can wait for the child's own log of the accepted
+        // client (an observed condition) before it sends SIGTERM; the full text is read after the process has exited.
+        var output = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        var accepted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var process = new Process { StartInfo = psi };
+        process.OutputDataReceived += (_, e) =>
+        {
+            if (e.Data is null) return;
+            output.Enqueue(e.Data);
+            if (e.Data.Contains($"connected on port {port}", StringComparison.Ordinal)) accepted.TrySetResult();
+        };
+        process.Start();
+        process.BeginOutputReadLine();
         var stderr = process.StandardError.ReadToEndAsync();
         try
         {
             using var client = await ConnectWhenListeningAsync(port, process);
             client.ReadHoldingRegisters<ushort>(1, 100, 15).ToArray().Should().HaveCount(15);
+            await accepted.Task.WaitAsync(TimeSpan.FromSeconds(30)); // the child has counted the client
 
             using (var kill = Process.Start("kill", ["-TERM", process.Id.ToString(System.Globalization.CultureInfo.InvariantCulture)])!) kill.WaitForExit();
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            await process.WaitForExitAsync(timeout.Token);
+            await process.WaitForExitAsync(timeout.Token); // also drains the redirected stdout to EOF
         }
         finally
         {
             if (!process.HasExited) process.Kill(entireProcessTree: true);
         }
 
-        var output = await stdout;
+        var text = string.Join("\n", output);
         process.ExitCode.Should().Be(0, await stderr);
-        var lines = CadenceLine().Matches(output);
-        lines.Should().ContainSingle("printed once: " + output[^Math.Min(400, output.Length)..]);
+        var lines = CadenceLine().Matches(text);
+        lines.Should().ContainSingle("printed once:\n" + text);
         long.Parse(lines[0].Groups[1].Value).Should().BeGreaterThanOrEqualTo(0);
         lines[0].Groups[2].Value.Should().Be("10", "the configured scan interval");
         Directory.Delete(workDir, recursive: true);
