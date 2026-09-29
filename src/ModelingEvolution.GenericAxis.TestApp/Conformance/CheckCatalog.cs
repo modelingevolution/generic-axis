@@ -96,7 +96,7 @@ internal static class CheckCatalog
             }
             catch (MotionException ex)
             {
-                errors.Add(ex.Message);
+                errors.Add(CheckerText.Facts(ex));
             }
 
             slowest = Math.Max(slowest, CheckContext.MsSince(t));

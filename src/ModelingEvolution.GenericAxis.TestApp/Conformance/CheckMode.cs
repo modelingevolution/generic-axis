@@ -56,10 +56,18 @@ public static class CheckMode
     /// Rule 4: read C+0…C+11 and S+0…S+14 once (or at 5 Hz with <c>--watch</c> until Ctrl-C) and print them decoded.
     /// Writes nothing and takes no lease. Exit 0 when both blocks were read, 1 on a Transport error.
     /// </summary>
-    public static async Task<int> DumpAsync(CheckerOptions options, ILoggerFactory loggerFactory, CancellationToken ct)
+    /// <summary><c>--watch</c> repeats the dump at 5 Hz (rule 4).</summary>
+    public static readonly TimeSpan WatchPeriod = TimeSpan.FromMilliseconds(200);
+
+    public static async Task<int> DumpAsync(CheckerOptions options, ILoggerFactory loggerFactory, CancellationToken ct,
+        TextWriter? output = null, TextWriter? error = null)
     {
+        output ??= Console.Out;
+        error ??= Console.Error;
         // The context owns and disposes the channel.
         await using var ctx = new CheckContext(options, new ModbusChannel(options.Host, options.Port, loggerFactory.CreateLogger<ModbusChannel>()), loggerFactory.CreateLogger("GenericAxis.Dump"));
+        // 5 Hz from the start of one dump to the start of the next, not 200 ms after each read (review #33: 4.3 Hz).
+        using var period = new PeriodicTimer(WatchPeriod);
         do
         {
             try
@@ -73,14 +81,14 @@ public static class CheckMode
             }
             catch (RocketWelder.SDK.Devices.Motion.MotionException ex)
             {
-                await Console.Error.WriteLineAsync($"dump: Transport/CommunicationLost: {ex.Message}");
+                await error.WriteLineAsync($"dump: {CheckerText.Describe(ex)}");
                 return ConformanceExitCodes.Fail;
             }
 
-            await Console.Out.WriteAsync(
+            await output.WriteAsync(
                 $"{DateTime.UtcNow:yyyy-MM-dd'T'HH:mm:ss.fff'Z'} {options.Host}:{options.Port} unit {options.Unit}\n\n{LastReadDump.Render(ctx.LastValues(), ctx.Map)}\n");
             if (!options.Watch) return ConformanceExitCodes.Pass;
-            try { await Task.Delay(TimeSpan.FromMilliseconds(200), ct); }
+            try { await period.WaitForNextTickAsync(ct); }
             catch (OperationCanceledException) { return ConformanceExitCodes.Pass; }
         } while (true);
     }

@@ -331,5 +331,77 @@ public sealed class CheckerAgainstSimulatorTests
         dead.Should().Be(1, "a Transport error is exit 1");
     }
 
+    /// <summary>
+    /// GA-I-52 (review #33, lead ruling): a foreign LeaseOwner written mid-run fails the running check
+    /// Protocol/ProtocolMismatch naming the register, SKIPs every later check with that reason, and the cleanup writes
+    /// nothing to the axis the checker no longer owns.
+    /// </summary>
+    [Fact]
+    public async Task GA_I_52_ALeaseOwnerChangedMidRunFailsTheRunningCheckAndSkipsTheRest()
+    {
+        using var sim = new LiveSimulator();
+        using var intruder = new FluentModbus.ModbusTcpClient();
+        intruder.Connect(new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, sim.Port), FluentModbus.ModbusEndianness.BigEndian);
+        var written = false;
+        ushort seqAtIntrusion = 0;
+
+        var report = await Check(sim, allowMotion: false, progress: r =>
+        {
+            if (written || r.Running != "CHK-07") return;
+            written = true;
+            intruder.WriteSingleRegister(1, 9, 1); // before CHK-07 starts: the checker holds the lease and beats
+            seqAtIntrusion = sim.Snapshot.CommandSeq;
+        });
+
+        written.Should().BeTrue();
+        var chk07 = Get(report, "CHK-07");
+        chk07.Result.Should().Be(CheckResultKind.Fail);
+        chk07.ErrorClass.Should().Be(ErrorClass.Protocol);
+        chk07.Message.Should().StartWith("Protocol/ProtocolMismatch: the lease did not hold. Read LeaseOwner (C+9 = 9) = 1, expected 65535.");
+        foreach (var id in Ids(8, 16))
+            Get(report, id).Message.Should().Be("CHK-07: the lease did not hold. Read LeaseOwner (C+9 = 9) = 1, expected 65535.", id);
+        report.ExitCode.Should().Be(1);
+        report.Cleanup.Should().NotContain(l => l.StartsWith("C+0", StringComparison.Ordinal) || l.Contains("release lease"),
+            "nothing is written to an axis the checker no longer owns");
+        report.Cleanup.Should().Contain(l => l.Contains("stopped beating"), "the checker's own beat is stopped")
+            .And.NotContain(l => l.StartsWith("cleanup incomplete", StringComparison.Ordinal), "a lost lease is a clean end, not a cleanup error");
+
+        var end = await sim.SettledAsync();
+        end.LeaseOwner.Should().Be(1, "the intruder's lease is untouched");
+        end.CommandSeq.Should().BeLessThanOrEqualTo((ushort)(seqAtIntrusion + 1), "at most the command already in flight");
+    }
+
+    [Fact]
+    public async Task GA_I_53_DumpOnAClosedPort_StatesEachFactOnce()
+    {
+        var error = new StringWriter();
+        var code = await CheckMode.DumpAsync(new CheckerOptions { Host = "127.0.0.1", Port = 1, Dump = true },
+            NullLoggerFactory.Instance, CancellationToken.None, TextWriter.Null, error);
+
+        code.Should().Be(1);
+        var line = error.ToString().Trim();
+        line.Should().StartWith("dump: Transport/CommunicationLost: read C+0…C+11");
+        Count(line, "127.0.0.1:1").Should().Be(1, line);
+        Count(line, "unit 1").Should().Be(1, line);
+        Count(line, "CommunicationLost").Should().Be(1, line);
+        line.Should().NotContain("..", line);
+    }
+
+    [Fact]
+    public async Task GA_I_53_DumpWatch_RunsAtFiveHertz()
+    {
+        using var sim = new LiveSimulator();
+        var output = new StringWriter();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+
+        var code = await CheckMode.DumpAsync(new CheckerOptions { Host = "127.0.0.1", Port = sim.Port, Dump = true, Watch = true },
+            NullLoggerFactory.Instance, cts.Token, output, TextWriter.Null);
+
+        code.Should().Be(0);
+        Count(output.ToString(), $"127.0.0.1:{sim.Port} unit 1\n").Should().BeGreaterThanOrEqualTo(10, "5 Hz for 2 s");
+    }
+
+    private static int Count(string text, string what) => (text.Length - text.Replace(what, "").Length) / what.Length;
+
     private volatile bool _chk14Running;
 }

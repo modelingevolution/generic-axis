@@ -94,7 +94,7 @@ internal sealed class CheckContext : IAsyncDisposable
             : $"C+{address - Map.CommandBase} = {address}";
 
     private string Range(ushort address, int count) =>
-        $"{Where(address).Split(' ')[0]}…{Where((ushort)(address + count - 1)).Split(' ')[0]} unit {Unit}";
+        $"{Where(address).Split(' ')[0]}…{Where((ushort)(address + count - 1)).Split(' ')[0]}"; // the channel adds "on host:port unit N"
 
     public async Task<ushort[]> ReadAsync(ushort address, ushort count, CancellationToken ct, ChannelPriority lane = ChannelPriority.Move)
     {
@@ -111,8 +111,26 @@ internal sealed class CheckContext : IAsyncDisposable
     {
         var watchdog = await ReadAsync(Map.Heartbeat, 4, ct);
         var status = await ReadStatusAsync(ct);
-        return new PlcView(status, watchdog[0], watchdog[1], watchdog[2], watchdog[3]);
+        var view = new PlcView(status, watchdog[0], watchdog[1], watchdog[2], watchdog[3]);
+        if (HoldsLease && Beater.IsRunning && view.LeaseOwner != Options.OwnerId)
+        {
+            // Lead ruling 2026-09-29 (#33): the register does not hold what the beating checker wrote.
+            LeaseLost ??= $"the lease did not hold. Read LeaseOwner ({Where(Map.LeaseOwner)}) = {view.LeaseOwner}, expected {Options.OwnerId}.";
+            throw new MotionException(MotionError.ProtocolMismatch, LeaseLost);
+        }
+
+        return view;
     }
+
+    /// <summary>
+    /// The checker wrote <c>LeaseOwner</c> = its own id and has not released or overwritten it since. While it also
+    /// beats, every view that reads another owner fails the running check (<see cref="LeaseLost"/>).
+    /// </summary>
+    public bool HoldsLease { get; set; }
+
+    /// <summary>Set once a beating checker read a foreign <c>LeaseOwner</c>: the message, and the reason every later
+    /// check is SKIPPED. After it the checker writes no command, lease or restore to that axis.</summary>
+    public string? LeaseLost { get; private set; }
 
     /// <summary>
     /// <c>lastRead</c>: a fresh read of both blocks taken when a failure is detected, before any restore write. A read
@@ -128,7 +146,13 @@ internal sealed class CheckContext : IAsyncDisposable
         return LastValues();
     }
 
-    public Task WriteAsync(ushort address, ushort value, string what, CancellationToken ct) =>
+    public Task WriteAsync(ushort address, ushort value, string what, CancellationToken ct)
+    {
+        if (address == Map.LeaseOwner) HoldsLease = value == Options.OwnerId;
+        return WriteOneAsync(address, value, what, ct);
+    }
+
+    private Task WriteOneAsync(ushort address, ushort value, string what, CancellationToken ct) =>
         Channel.WriteRegisterAsync(Unit, address, value, $"write {Where(address)} ({what})", ChannelPriority.Move, ct);
 
     public Task WriteAsync(ushort address, ushort[] values, string what, CancellationToken ct) =>
