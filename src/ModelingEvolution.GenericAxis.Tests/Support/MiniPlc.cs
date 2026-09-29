@@ -552,19 +552,35 @@ internal sealed class MiniPlc : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await _stop.CancelAsync();
-        _thread.Join(TimeSpan.FromSeconds(2));
-        try
+        // Teardown blocks: the scan thread's join, and FluentModbus 5.3.2's ModbusTcpServer.Stop() → each
+        // ModbusRequestHandler.Dispose() → _task.Wait(). On a thread-pool thread that is one worker fewer for everyone
+        // (a 2-CPU host's pool starts with two, and the test host already parks two), so it runs on its own thread.
+        var torndown = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        new Thread(() =>
         {
-            _server.Stop();
-        }
-        catch (AggregateException)
-        {
-            // A handler whose connection the fixture dropped on purpose ends with a socket error; teardown only.
-        }
+            try
+            {
+                _thread.Join(TimeSpan.FromSeconds(2));
+                try
+                {
+                    _server.Stop();
+                }
+                catch (AggregateException)
+                {
+                    // A handler whose connection the fixture dropped on purpose ends with a socket error; teardown only.
+                }
 
-        _server.Dispose();
-        _provider.Dispose();
-        _stop.Dispose();
+                _server.Dispose();
+                _provider.Dispose();
+                _stop.Dispose();
+                torndown.SetResult();
+            }
+            catch (Exception ex)
+            {
+                torndown.SetException(ex);
+            }
+        }) { IsBackground = true, Name = "MiniPlc teardown" }.Start();
+        await torndown.Task;
     }
 
     /// <summary>A listener on 127.0.0.1:0 that reports its port and can drop and refuse connections.</summary>
