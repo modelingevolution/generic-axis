@@ -227,10 +227,10 @@ the operator (Ctrl-C / SIGINT) before the list finished.
   3. A refused run never reports PASS. This also catches a second conformance tool using the same owner id.
   A held lease is watched longer, because a commander silent for 1 s may still be alive (the watchdog trips only
   1.0–1.5 s after its last beat). When `LeaseOwner ≠ 0`, the tool also reads `WatchdogFault` (C+10) and watches for
-  1.6 s (1.5 s plus one 100 ms read):
-  - `Heartbeat` changes: refused, as above.
-  - `WatchdogFault` reads 1 and `Heartbeat` did not change: the lease holder is dead. The tool proceeds, and the line
-    after the Markdown heading says "Pre-flight: LeaseOwner (C+9 = 9) = n held with no beat and WatchdogFault (C+10 = 10) = 1:
+  at least 1 s and up to 1.6 s (1.5 s plus one 100 ms read):
+  - `Heartbeat` changes at any time: refused, as above. A beat after a trip is a live commander.
+  - `WatchdogFault` reads 1 and `Heartbeat` did not change for the full 1 s watch: the lease holder is dead. The tool
+    proceeds, and the line after the Markdown heading says "Pre-flight: LeaseOwner (C+9 = 9) = n held with no beat and WatchdogFault (C+10 = 10) = 1:
     the previous commander is dead; its trip is left for its operator." The tool never clears that trip: a restore
     that finds it FAILs `Machine/WatchdogTripped`, and cleanup leaves it and the lease as they were.
   - Neither within 1.6 s: refused (exit 3, `REFUSED`), naming `LeaseOwner` and `WatchdogFault`: "a live commander,

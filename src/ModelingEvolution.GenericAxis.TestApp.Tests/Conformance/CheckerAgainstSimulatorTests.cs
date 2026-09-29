@@ -615,5 +615,36 @@ public sealed class CheckerAgainstSimulatorTests
         end.CommandBlock.Should().OnlyContain(w => w == 0, "no lease, no beat, no write");
     }
 
+    /// <summary>
+    /// GA-I-60 (Python review #25, both tools): a commander that tripped and still beats is alive. WatchdogFault = 1 is
+    /// evidence of death only together with a Heartbeat silent for the whole 1 s watch, so the tool must refuse and write
+    /// nothing, never declare it dead at the first read.
+    /// </summary>
+    [Fact]
+    public async Task GA_I_60_ACommanderStillBeatingAfterATripIsRefused()
+    {
+        using var sim = new LiveSimulator();
+        using var commander = new RawCommander(sim.Port);
+        await commander.BeatAsync(TimeSpan.FromSeconds(0.5));
+        await Task.Delay(1300); // the watchdog trips 1.0 s after the last beat
+        (await sim.SettledAsync()).WatchdogFault.Should().Be(1, "setup: the commander's axis tripped");
+        using var stop = new CancellationTokenSource();
+        var beating = Task.Run(async () => { while (!stop.IsCancellationRequested) await commander.BeatAsync(TimeSpan.FromMilliseconds(100)); });
+        await Task.Delay(300);
+        var before = await sim.SettledAsync();
+
+        var report = await Check(sim, allowMotion: false);
+        await stop.CancelAsync();
+        await beating;
+
+        report.ExitCode.Should().Be(3, report.Preflight);
+        report.Preflight.Should().StartWith("refused to start: another commander is beating");
+        var after = await sim.SettledAsync();
+        after.CommandBlock.Skip(2).Take(6).Should().Equal(before.CommandBlock.Skip(2).Take(6), "CHK-05 never ran: the parameters are untouched");
+        after.CommandSeq.Should().Be(before.CommandSeq);
+        after.LeaseOwner.Should().Be(1);
+        after.WatchdogFault.Should().Be(1, "the commander's trip is its own");
+    }
+
     private volatile bool _chk14Running;
 }
