@@ -54,11 +54,15 @@ public class ChannelBlockingTests(ITestOutputHelper output)
         await channel.ReadHoldingAsync(MiniPlc.Unit, 100, 15, "connect", ChannelPriority.Move).WaitAsync(LiveRig.T);
         using var ui = new HoldableContext();
 
-        // The frame starts on the "UI" thread, which then stays busy 1.5 s: its continuation must not need that thread.
+        // The frame starts on the "UI" thread, which stays busy 1.5 s in the SAME work item (review #47): no continuation
+        // of the frame can run on that thread before the busy period, however fast the PLC answers.
         var started = new TaskCompletionSource<Task>(TaskCreationOptions.RunContinuationsAsynchronously);
-        ui.Post(_ => started.SetResult(channel.WriteRegistersAsync(MiniPlc.Unit, 2, [0, 0, 0, 0, 0, 0], "parameters",
-            ChannelPriority.Move)), null);
-        ui.Post(_ => Thread.Sleep(1500), null);
+        ui.Post(_ =>
+        {
+            started.SetResult(channel.WriteRegistersAsync(MiniPlc.Unit, 2, [0, 0, 0, 0, 0, 0], "parameters",
+                ChannelPriority.Move));
+            Thread.Sleep(1500);
+        }, null);
         var move = await started.Task.WaitAsync(LiveRig.T);
 
         var sw = Stopwatch.StartNew();
