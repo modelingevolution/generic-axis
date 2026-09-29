@@ -23,22 +23,32 @@ public sealed class ConnectorConcurrencyTests
     private readonly DeviceId _held = DeviceId.New(GenericAxisPlugin.LinearTrackDeviceType);
     private readonly DeviceId _free = DeviceId.New(GenericAxisPlugin.PositionerDeviceType);
 
+    // Review #28: every attempt is awaited through the Task StartAttempt returned. A finished attempt
+    // removes itself from AttemptFor on the thread that finished it, so looking it up after its gate
+    // is released races that removal (measured: null in ~7 % of 2000 iterations for the free axis).
+
     [Fact]
     public async Task An_Axis_Waiting_For_A_Lease_Does_Not_Hold_Up_Another_Axis()
     {
         var leaseWait = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var freeAttached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        _connector.StartAttempt(_held, 1, _ => leaseWait.Task, CancellationToken.None).Should().BeTrue();
-        _connector.StartAttempt(_free, 1, _ => { freeAttached.SetResult(); return Task.CompletedTask; },
-            CancellationToken.None).Should().BeTrue();
+        var held = _connector.StartAttempt(_held, 1, _ => leaseWait.Task, CancellationToken.None);
+        var free = _connector.StartAttempt(_free, 1, _ => { freeAttached.SetResult(); return Task.CompletedTask; },
+            CancellationToken.None);
+        held.Should().NotBeNull();
+        free.Should().NotBeNull();
 
-        await freeAttached.Task.WaitAsync(Bound);
-        await _connector.AttemptFor(_free)!.WaitAsync(Bound).ContinueWith(_ => { });
-        _connector.AttemptFor(_held).Should().NotBeNull("the held axis is still waiting for its lease");
+        // The free axis attaches to completion while the held one is still waiting for its lease.
+        await free!.WaitAsync(Bound);
+        freeAttached.Task.IsCompletedSuccessfully.Should().BeTrue("the free axis's connect ran");
+        free.IsCompletedSuccessfully.Should().BeTrue();
+        held!.IsCompleted.Should().BeFalse("the held axis is still waiting for its lease");
+        _connector.AttemptFor(_held).Should().BeSameAs(held, "the held axis's attempt is still in flight");
 
         leaseWait.SetResult();
-        await _connector.AttemptFor(_held)!.WaitAsync(Bound).ContinueWith(_ => { });
+        await held.WaitAsync(Bound);
+        held.IsCompletedSuccessfully.Should().BeTrue();
     }
 
     [Fact]
@@ -48,29 +58,35 @@ public sealed class ConnectorConcurrencyTests
         var calls = 0;
         Func<CancellationToken, Task> connect = _ => { Interlocked.Increment(ref calls); return leaseWait.Task; };
 
-        _connector.StartAttempt(_held, 1, connect, CancellationToken.None).Should().BeTrue();
-        _connector.StartAttempt(_held, 1, connect, CancellationToken.None).Should().BeFalse();
-        _connector.StartAttempt(_held, 1, connect, CancellationToken.None).Should().BeFalse();
+        var attempt = _connector.StartAttempt(_held, 1, connect, CancellationToken.None);
+        attempt.Should().NotBeNull();
+        _connector.StartAttempt(_held, 1, connect, CancellationToken.None).Should().BeNull();
+        _connector.StartAttempt(_held, 1, connect, CancellationToken.None).Should().BeNull();
+        _connector.AttemptFor(_held).Should().BeSameAs(attempt);
 
-        var attempt = _connector.AttemptFor(_held)!;
         leaseWait.SetResult();
-        await attempt.WaitAsync(Bound);
+        await attempt!.WaitAsync(Bound);
 
         calls.Should().Be(1);
         await WaitUntilAsync(() => _connector.AttemptFor(_held) is null);
         _connector.StartAttempt(_held, 1, _ => Task.CompletedTask, CancellationToken.None)
-            .Should().BeTrue("a finished attempt frees the device for the next tick");
+            .Should().NotBeNull("a finished attempt frees the device for the next tick");
     }
 
     [Fact]
     public async Task A_Failed_Attempt_Frees_The_Device_For_Its_Next_Attempt()
     {
-        _connector.StartAttempt(_held, 1,
+        var attempt = _connector.StartAttempt(_held, 1,
             _ => Task.FromException(new MotionException(MotionError.LeaseHeld, "carriage: held", "carriage")),
-            CancellationToken.None).Should().BeTrue();
+            CancellationToken.None);
+        attempt.Should().NotBeNull();
 
+        // The failure is reported inside the attempt, so the attempt itself completes without faulting.
+        await attempt!.WaitAsync(Bound);
         await WaitUntilAsync(() => _connector.AttemptFor(_held) is null);
         _connector.IsDue(_held).Should().BeTrue();
+        _connector.StartAttempt(_held, 1, _ => Task.CompletedTask, CancellationToken.None)
+            .Should().NotBeNull("a failed attempt frees the device");
     }
 
     [Fact]
@@ -80,11 +96,14 @@ public sealed class ConnectorConcurrencyTests
         var connector = new GenericAxisConnector(logger: log, timeProvider: new FakeTimeProvider());
         using var stopping = new CancellationTokenSource();
 
-        connector.StartAttempt(_held, 1, ct => Task.Delay(Timeout.Infinite, ct), stopping.Token).Should().BeTrue();
+        var attempt = connector.StartAttempt(_held, 1, ct => Task.Delay(Timeout.Infinite, ct), stopping.Token);
+        attempt.Should().NotBeNull();
+        attempt!.IsCompleted.Should().BeFalse("the attempt is in flight until the host stops");
         await stopping.CancelAsync();
 
         await connector.DrainAsync().WaitAsync(Bound);
-        connector.AttemptFor(_held).Should().BeNull();
+        attempt.IsCanceled.Should().BeTrue("drain returns only once the in-flight attempt has ended");
+        await WaitUntilAsync(() => connector.AttemptFor(_held) is null);
         log.Levels.Should().NotContain(l => l >= LogLevel.Warning);
     }
 

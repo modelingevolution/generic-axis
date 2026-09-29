@@ -144,20 +144,21 @@ public sealed class GenericAxisConnector : BackgroundService
 
         if (!IsDue(id)) return;
 
-        StartAttempt(id, device.OwnerId, device.ConnectAsync, ct);
+        _ = StartAttempt(id, device.OwnerId, device.ConnectAsync, ct);
     }
 
     /// <summary>
     /// Starts one attach attempt for <paramref name="id"/> on its own task, unless one is already in
     /// flight for that device. The caller never waits for it.
     /// </summary>
-    /// <returns><see langword="true"/> when an attempt was started; <see langword="false"/> when the
-    /// device already has one in flight.</returns>
-    internal bool StartAttempt(DeviceId id, int ownerId, Func<CancellationToken, Task> connect, CancellationToken ct)
+    /// <returns>The attempt that was started, or <see langword="null"/> when the device already has one
+    /// in flight. A finished attempt removes itself from <see cref="AttemptFor"/> at once, so a caller
+    /// that needs to await it holds this reference rather than looking it up later (review #28).</returns>
+    internal Task? StartAttempt(DeviceId id, int ownerId, Func<CancellationToken, Task> connect, CancellationToken ct)
     {
         var start = new Task<Task>(() => AttachAsync(id, ownerId, connect, ct));
         var attempt = start.Unwrap();
-        if (!_attempts.TryAdd(id, attempt)) return false;
+        if (!_attempts.TryAdd(id, attempt)) return null;
 
         attempt.ContinueWith(
             finished =>
@@ -168,7 +169,7 @@ public sealed class GenericAxisConnector : BackgroundService
             },
             CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         start.Start(TaskScheduler.Default);
-        return true;
+        return attempt;
     }
 
     /// <summary>The attempt in flight for <paramref name="id"/>, or <see langword="null"/>.</summary>
