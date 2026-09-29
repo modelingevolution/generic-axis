@@ -1,76 +1,108 @@
 @page "/registers"
 @inherits LiveComponentBase
+@implements IAsyncDisposable
+@using ModelingEvolution.GenericAxis.TestApp.Registers
 @inject SimulatorHost Host
+@inject ILoggerFactory LoggerFactory
 
 <PageTitle>Registers &middot; Generic Axis</PageTitle>
 
 @{
-    var s = Host.Snapshot();
     var o = Host.Options;
+    var reader = _reader;
+    var reading = reader?.Latest;
 }
 
 <h1 class="mud-typography mud-typography-h5 mb-1">Registers</h1>
 <MudText Typo="Typo.body2" Class="mud-text-secondary mb-4">
-    The words a client reads from the simulator, unit @o.UnitId, per <code>docs/protocol.md</code> map v1.
-    32-bit values decoded low word first@(s.Faults.SwappedWordOrder ? " (the simulator is injecting SwappedWordOrder, so they decode wrong on purpose)" : "").
+    Both blocks decoded by the same decoder as <code>--dump</code> (<code>docs/protocol.md</code> map v1, 32-bit values
+    low word first). Read-only: no lease, no beat, no write.
 </MudText>
 
-<MudGrid>
-    <MudItem xs="12" lg="6">
-        <MudText Typo="Typo.subtitle1" Class="mb-2">Command block (driver → PLC)</MudText>
-        <RegisterTable Rows="@CommandRows(s, o.CommandBase)"/>
-    </MudItem>
-    <MudItem xs="12" lg="6">
-        <MudText Typo="Typo.subtitle1" Class="mb-2">Status block (PLC → driver)</MudText>
-        <RegisterTable Rows="@StatusRows(s, o.StatusBase)"/>
-    </MudItem>
-</MudGrid>
+<MudPaper Class="pa-4 mb-4" Elevation="1">
+    <div class="d-flex flex-wrap gap-2 align-center">
+        <MudSelect T="bool" @bind-Value="_remote" Label="Source" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="@(reader is not null)" Style="max-width:220px" data-testid="registers-source">
+            <MudSelectItem Value="false">In-app simulator</MudSelectItem>
+            <MudSelectItem Value="true">host:port / unit</MudSelectItem>
+        </MudSelect>
+        @if (_remote)
+        {
+            <MudTextField T="string" @bind-Value="_host" Label="Host" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="@(reader is not null)" Style="max-width:180px" data-testid="registers-host"/>
+            <MudNumericField T="int" @bind-Value="_port" Label="Port" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="@(reader is not null)" Style="max-width:110px" data-testid="registers-port"/>
+            <MudNumericField T="int" @bind-Value="_unit" Label="Unit" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="@(reader is not null)" Style="max-width:90px"/>
+            <MudNumericField T="int" @bind-Value="_commandBase" Label="Command base" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="@(reader is not null)" Style="max-width:130px"/>
+            <MudNumericField T="int" @bind-Value="_statusBase" Label="Status base" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="@(reader is not null)" Style="max-width:130px"/>
+            @if (reader is null)
+            {
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="StartAsync" data-testid="registers-read">Read at 5 Hz</MudButton>
+            }
+            else
+            {
+                <MudButton Variant="Variant.Outlined" OnClick="StopAsync" data-testid="registers-stop">Stop reading</MudButton>
+            }
+        }
+    </div>
+    @if (_formError is not null)
+    {
+        <MudAlert Severity="Severity.Error" Dense="true" Class="mt-2">@_formError</MudAlert>
+    }
+</MudPaper>
+
+@if (!_remote)
+{
+    var s = Host.Snapshot();
+    <MudText Typo="Typo.body2" Class="mb-2">
+        In-app simulator, unit @o.UnitId, C=@o.CommandBase, S=@o.StatusBase@(s.Faults.SwappedWordOrder ? " — injecting SwappedWordOrder, so 32-bit values decode wrong on purpose" : "").
+    </MudText>
+    <RegisterBlocks Rows="@RegisterDump.Decode(new RegisterMap(o.CommandBase, o.StatusBase), s.CommandBlock.AsSpan(), s.StatusBlock.AsSpan())"/>
+}
+else if (reader is not null)
+{
+    <MudText Typo="Typo.body2" Class="mb-2" data-testid="registers-endpoint">
+        @reader.Endpoint — @reader.Reads reads@(reading is null ? "" : $", last at {reading.At:HH:mm:ss.fff} UTC")
+    </MudText>
+    @if (reading?.Error is { } error)
+    {
+        <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-testid="registers-error">@error</MudAlert>
+    }
+    @if (reading is { Rows.Count: > 0 })
+    {
+        <RegisterBlocks Rows="@reading.Rows"/>
+    }
+}
 
 @code {
-    private static SimRegisterRow Row(int baseAddress, int offset, string prefix, string name, IReadOnlyList<ushort> block, string decoded) =>
-        new($"{baseAddress + offset} ({prefix}+{offset})", name, $"0x{block[offset]:X4}", decoded);
+    private bool _remote;
+    private string _host = "127.0.0.1";
+    private int _port = 502;
+    private int _unit = 1;
+    private int _commandBase = 0;
+    private int _statusBase = 100;
+    private string? _formError;
+    private RemoteRegisterReader? _reader;
 
-    private static SimRegisterRow Row32(int baseAddress, int offset, string prefix, string name, IReadOnlyList<ushort> block, string unit) =>
-        new($"{baseAddress + offset}–{baseAddress + offset + 1} ({prefix}+{offset})", name,
-            $"0x{block[offset]:X4} 0x{block[offset + 1]:X4}",
-            $"{I32(block, offset)} ({(I32(block, offset) / SimRegisters.Scale).ToString("F3", CultureInfo.InvariantCulture)} {unit})");
+    protected override TimeSpan RefreshInterval => RemoteRegisterReader.Period;
 
-    private static int I32(IReadOnlyList<ushort> b, int offset) => unchecked((int)(((uint)b[offset + 1] << 16) | b[offset]));
-
-    private IReadOnlyList<SimRegisterRow> CommandRows(SimSnapshot s, int c)
+    private async Task StartAsync()
     {
-        var b = s.CommandBlock;
-        var u = Host.Options.Unit;
-        return
-        [
-            Row(c, 0, "C", "Command", b, ((SimCommandBits)b[0]).ToString()),
-            Row(c, 1, "C", "CommandSeq", b, b[1].ToString()),
-            Row32(c, 2, "C", "TargetPosition", b, u),
-            Row32(c, 4, "C", "Velocity", b, u + "/s"),
-            Row32(c, 6, "C", "Acceleration", b, u + "/s²"),
-            Row(c, 8, "C", "Heartbeat", b, b[8].ToString()),
-            Row(c, 9, "C", "LeaseOwner", b, b[9] == 0 ? "0 (unowned)" : b[9].ToString()),
-            Row(c, 10, "C", "WatchdogFault", b, b[10] == 0 ? "0 healthy" : $"{b[10]} tripped"),
-            Row(c, 11, "C", "WatchdogTrips", b, b[11].ToString()),
-        ];
+        _formError = null;
+        if (string.IsNullOrWhiteSpace(_host)) { _formError = "Host is required."; return; }
+        if (_port is < 1 or > 65535) { _formError = $"Port {_port} is outside 1–65535."; return; }
+        if (_unit is < 0 or > 255) { _formError = $"Unit {_unit} is outside 0–255."; return; }
+        await StopAsync();
+        _reader = new RemoteRegisterReader(new RegisterEndpoint(_host.Trim(), _port, (byte)_unit, _commandBase, _statusBase), LoggerFactory);
     }
 
-    private IReadOnlyList<SimRegisterRow> StatusRows(SimSnapshot s, int st)
+    private async Task StopAsync()
     {
-        var b = s.StatusBlock;
-        var u = Host.Options.Unit;
-        return
-        [
-            Row(st, 0, "S", "State", b, $"{b[0]} {(SimAxisState)b[0]}"),
-            Row(st, 1, "S", "Flags", b, ((SimStatusFlags)b[1]).ToString()),
-            Row32(st, 2, "S", "ActualPosition", b, u),
-            Row32(st, 4, "S", "ActualVelocity", b, u + "/s"),
-            Row(st, 6, "S", "FaultCode", b, $"{b[6]} {(SimFaultCode)b[6]}"),
-            Row(st, 7, "S", "CommandAck", b, b[7].ToString()),
-            Row32(st, 8, "S", "TravelMin", b, u),
-            Row32(st, 10, "S", "TravelMax", b, u),
-            Row32(st, 12, "S", "MaxVelocity", b, u + "/s"),
-            Row(st, 14, "S", "MapVersion", b, b[14].ToString()),
-        ];
+        var reader = _reader;
+        _reader = null;
+        if (reader is not null) await reader.DisposeAsync();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        base.Dispose();
+        await StopAsync();
     }
 }

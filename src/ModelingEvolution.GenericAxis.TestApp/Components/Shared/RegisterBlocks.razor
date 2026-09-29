@@ -1,0 +1,22 @@
+@* Both blocks from RegisterDump.Decode (command rows first, then status rows), side by side. *@
+<MudGrid>
+    <MudItem xs="12" lg="6">
+        <MudText Typo="Typo.subtitle1" Class="mb-2">Command block (driver → PLC)</MudText>
+        <RegisterTable Rows="@Command"/>
+    </MudItem>
+    <MudItem xs="12" lg="6">
+        <MudText Typo="Typo.subtitle1" Class="mb-2">Status block (PLC → driver)</MudText>
+        <RegisterTable Rows="@Status"/>
+    </MudItem>
+</MudGrid>
+
+@code {
+    /// <summary>The rows of <see cref="RegisterDump.Decode"/>: addresses starting "C+" are the command block.</summary>
+    [Parameter, EditorRequired] public IReadOnlyList<RegisterRow> Rows { get; set; } = [];
+
+    private IReadOnlyList<SimRegisterRow> Command => Select("C+");
+    private IReadOnlyList<SimRegisterRow> Status => Select("S+");
+
+    private IReadOnlyList<SimRegisterRow> Select(string prefix) =>
+        [.. Rows.Where(r => r.Address.StartsWith(prefix, StringComparison.Ordinal)).Select(r => new SimRegisterRow(r.Address, r.Name, r.RawHex, r.Value))];
+}
