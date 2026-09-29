@@ -48,6 +48,12 @@ public sealed record SimFaults
     /// </summary>
     public bool Silent { get; init; }
 
+    /// <summary>
+    /// A slow drive: a move is accepted and acknowledged at once (State 3 or 4), but the axis starts moving only this
+    /// long afterwards. Zero (the default) means no delay. Makes a check exceed its motion budget in tests.
+    /// </summary>
+    public TimeSpan MotionStartDelay { get; init; }
+
     /// <summary>Names of the faults in force, for logs and the UI.</summary>
     public IEnumerable<string> Active()
     {
@@ -63,6 +69,7 @@ public sealed record SimFaults
         if (WatchdogDisabled) yield return nameof(WatchdogDisabled);
         if (SwappedWordOrder) yield return nameof(SwappedWordOrder);
         if (Silent) yield return nameof(Silent);
+        if (MotionStartDelay > TimeSpan.Zero) yield return $"{nameof(MotionStartDelay)} {MotionStartDelay.TotalSeconds:0.#} s";
     }
 
     /// <inheritdoc/>

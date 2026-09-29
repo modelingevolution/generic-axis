@@ -102,10 +102,12 @@ async def test_run_refuses_a_live_foreign_commander_with_exit_3_and_writes_nothi
     assert to_markdown(report).endswith("\nRESULT: REFUSED\n")
     assert to_json(report)["summary"] == {"result": "REFUSED", "pass": 0, "fail": 0, "skipped": 16}
     assert to_json(report)["preflight"] == report.checks[0].message  # the refusal, also the line after the heading
+    # Review #28: one label, and the JSON text is the Markdown line's text.
+    assert to_markdown(report).splitlines()[2] == f"Pre-flight: {report.checks[0].message}"
     message = report.checks[0].message
     assert re.fullmatch(
-        r"pre-flight: another commander is live: Heartbeat \(C\+8\) changed \d+( → \d+)+ within 1\.[01] s, "
-        r"LeaseOwner \(C\+9\) 1; stop it first",
+        r"another commander is live: Heartbeat \(C\+8 = 8\) = \d+( → \d+)+ within 1\.[01] s, "
+        r"LeaseOwner \(C\+9 = 9\) = 1; stop it first",
         message,
     )
     assert all(c.result == SKIPPED and c.message == message for c in report.checks)
@@ -121,7 +123,7 @@ async def test_run_refuses_a_held_lease_with_no_beat_and_no_trip(stub: StubPlc) 
     report = await run(options(stub), checks=upto("CHK-07"))
     assert report.exit_code == 3
     assert re.fullmatch(
-        r"pre-flight: LeaseOwner \(C\+9 = 9\) = 1 is held and WatchdogFault \(C\+10 = 10\) = 0: no beat and no trip "
+        r"LeaseOwner \(C\+9 = 9\) = 1 is held and WatchdogFault \(C\+10 = 10\) = 0: no beat and no trip "
         r"within 1\.[67] s — a live commander, or a PLC without a working watchdog; release LeaseOwner by hand only if "
         r"no commander runs",
         report.checks[0].message,
@@ -240,7 +242,7 @@ async def test_run_refuses_a_second_tool_beating_under_the_checkers_own_id(stub:
         await beat.stop()
         other.close()
     assert report.exit_code == 3
-    assert "LeaseOwner (C+9) 65535" in report.checks[0].message
+    assert "LeaseOwner (C+9 = 9) = 65535" in report.checks[0].message
 
 
 async def test_every_failure_path_reports_only_listed_observed_keys() -> None:
@@ -465,7 +467,7 @@ async def test_run_refuses_a_commander_beating_with_lease_owner_0(stub: StubPlc)
         commander.close()
     assert report.exit_code == 3
     assert report.result == "REFUSED"
-    assert "LeaseOwner (C+9) 0;" in report.checks[0].message
+    assert "LeaseOwner (C+9 = 9) = 0;" in report.checks[0].message
     assert ours == []
 
 
@@ -675,7 +677,7 @@ async def test_a_second_tool_started_during_the_firsts_chk03_is_refused(stub: St
     report = await first
     assert second.exit_code == 3
     assert second.result == "REFUSED"
-    assert "LeaseOwner (C+9) 65535" in second.checks[0].message
+    assert "LeaseOwner (C+9 = 9) = 65535" in second.checks[0].message
     assert second.cleanup == []
     assert report.exit_code == 0
     assert stub.regs[MAP.lease_owner] == 0

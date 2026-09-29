@@ -707,5 +707,28 @@ public sealed class CheckerAgainstSimulatorTests
         }
     }
 
+    /// <summary>
+    /// GA-I-62 (review #39): the motion budgets are the ones the checks use. A drive that starts every move late
+    /// (MotionStartDelay, set just before the check) makes CHK-13 overrun 2 × |target − start| ÷ velocity + 5 s, and
+    /// CHK-16 overrun its 2 s to first motion; a longer budget would wait it out and PASS.
+    /// </summary>
+    [Theory]
+    [InlineData("CHK-13", 8.0, "Machine/MotionFailed: not arrived within 5.4 s (2 × |target − start| ÷ velocity + 5 s).")]
+    [InlineData("CHK-16", 3.0, "Machine/MotionFailed: the jog never moved within 2 s of the ack.")]
+    public async Task GA_I_62_ACheckFailsAtItsOwnMotionBudget(string id, double delaySeconds, string message)
+    {
+        using var sim = new LiveSimulator();
+        var report = await Check(sim, allowMotion: true, progress: r =>
+        {
+            if (r.Running == id && sim.Host.Faults.MotionStartDelay == TimeSpan.Zero)
+                sim.Host.Faults = new SimFaults { MotionStartDelay = TimeSpan.FromSeconds(delaySeconds) };
+        });
+
+        var check = Get(report, id);
+        check.Result.Should().Be(CheckResultKind.Fail, check.Message);
+        check.Message.Should().StartWith(message);
+        check.DurationMs.Should().BeLessThan((long)(delaySeconds * 1000), "the check gave up at its budget, before the late drive moved");
+    }
+
     private volatile bool _chk14Running;
 }

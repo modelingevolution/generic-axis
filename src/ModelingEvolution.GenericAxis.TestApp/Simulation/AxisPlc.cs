@@ -45,6 +45,7 @@ public sealed class AxisPlc
     private bool _homingBackOff;
 
     private TimeSpan _clock;
+    private TimeSpan _motionAcceptedAt;
     private ushort _lastBeat;
     private TimeSpan _lastBeatAt;
     private bool _armed;
@@ -381,6 +382,7 @@ public sealed class AxisPlc
         _moveStart = Published;
         _followingErrorArmed = _faults.FollowingErrorAtHalfway;
         _inPosition = false;
+        _motionAcceptedAt = _clock;
         SetState(SimAxisState.DiscreteMotion, $"MoveAbsolute to {target} {_o.Unit} at {_vcmd} {_o.Unit}/s, a {_accel}");
         return true;
     }
@@ -401,6 +403,7 @@ public sealed class AxisPlc
         _vcmd = velocity;
         _accel = accel > 0 ? accel : _o.DefaultAcceleration;
         _inPosition = false;
+        _motionAcceptedAt = _clock;
         SetState(SimAxisState.ContinuousMotion, $"MoveVelocity {_vcmd} {_o.Unit}/s, a {_accel}");
         return true;
     }
@@ -438,6 +441,10 @@ public sealed class AxisPlc
     {
         double targetVelocity;
         var accel = _accel;
+
+        // Injected: the drive starts a move only MotionStartDelay after the PLC accepted it (a slow drive).
+        if (_state is SimAxisState.DiscreteMotion or SimAxisState.ContinuousMotion && _clock - _motionAcceptedAt < _faults.MotionStartDelay)
+            return;
 
         switch (_state)
         {

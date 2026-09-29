@@ -162,8 +162,9 @@ async def preflight(client: PlcClient, registers: RegisterMap) -> Preflight:
     if len(beats) > 1:
         seen = " → ".join(str(b) for b in beats)
         return Preflight(
-            f"pre-flight: another commander is live: Heartbeat (C+8) changed {seen} within {watched_s:.1f} s, "
-            f"LeaseOwner (C+9) {owner}; stop it first"
+            # Review #28: rule 1's register shape; no "pre-flight:" label (the Markdown line adds "Pre-flight: ").
+            f"another commander is live: Heartbeat (C+8 = {registers.heartbeat}) = {seen} within {watched_s:.1f} s, "
+            f"{owner_at}; stop it first"
         )
     if owner == 0:
         return Preflight()
@@ -174,7 +175,7 @@ async def preflight(client: PlcClient, registers: RegisterMap) -> Preflight:
         )
         return Preflight(note=note, foreign_trip=True)
     return Preflight(
-        f"pre-flight: {owner_at} is held and {fault_at}: no beat and no trip within {watched_s:.1f} s — "
+        f"{owner_at} is held and {fault_at}: no beat and no trip within {watched_s:.1f} s — "
         "a live commander, or a PLC without a working watchdog; release LeaseOwner by hand only if no commander runs"
     )
 
@@ -395,7 +396,7 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
         if live is not None:
             refused = True
             abort = live
-            say(abort)
+            say(f"pre-flight: {abort}")
         elif proven_free and not ctx.foreign_trip:
             await hold_from_preflight(ctx)
 
