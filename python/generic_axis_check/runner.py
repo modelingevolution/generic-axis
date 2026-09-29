@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from .beat import BEAT_PERIOD_S, Beater
 from .checks import CHECKS, FAIL, OBSERVED, PASS, RETRIES_KEY, SKIPPED, Check, Outcome
 from .client import PlcClient, PlcError
-from .context import ACK_TIMEOUT_S, AckTimeout, CheckContext, Options
+from .context import ACK_TIMEOUT_S, AckTimeout, CheckContext, LastRead, Options
 from .errors import (
     COMMUNICATION_LOST,
     NOT_ACKNOWLEDGED,
@@ -28,10 +28,8 @@ from .errors import (
 from .lease import LeaseHeld
 from .poll import ms, wait_for
 from .registers import (
-    COMMAND_LENGTH,
     EDGE_BITS,
     MOVING_STATES,
-    STATUS_LENGTH,
     AxisState,
     Command,
     FaultCode,
@@ -48,14 +46,6 @@ FIRST_LEASED_CHECK = "CHK-06"
 """protocol.md "Lease and beat between checks": from CHK-06 onwards the checker holds the lease and beats."""
 
 log = logging.getLogger(__name__)
-
-
-@dataclass(slots=True)
-class LastRead:
-    """Raw C+0…C+11 and S+0…S+14; ``None`` for a register never read (protocol.md § Report schema, ``lastRead``)."""
-
-    command: list[int | None]
-    status: list[int | None]
 
 
 @dataclass(slots=True)
@@ -303,7 +293,7 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
                     preflight_failure.message,
                     observed,
                     ErrorClass.TRANSPORT,
-                    await capture(ctx),
+                    await ctx.capture(),
                 )
                 continue
             if abort is not None:
@@ -323,15 +313,18 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
             retries_before = 0 if check.id == "CHK-01" else client.retries
             last_read: LastRead | None = None
             try:
+                ctx.evidence = None
                 outcome = await _run_one(check, ctx)
                 if outcome.result == FAIL:
-                    last_read = await capture(ctx)
+                    # § Error class of a FAIL, "lastRead": the read the check took at detection, before any write
+                    # of its own undid the evidence (an edge clear, CHK-11's recovery); else a fresh read now.
+                    last_read = ctx.evidence or await ctx.capture()
                 if check.id >= FIRST_LEASED_CHECK:
                     why = await _restore(ctx)
                     if why is not None:
                         if outcome.result != FAIL:
                             outcome = why
-                            last_read = ctx_last_read(ctx)
+                            last_read = ctx.shadow()
                         else:
                             outcome.message += f" Restore failed: {why.message}"
                         abort = f"restore after {check.id} failed"
@@ -427,26 +420,6 @@ async def _run_one(check: Check, ctx: CheckContext) -> Outcome:
         return exception_outcome(exc, ctx.registers)
     finally:
         ctx.client.guard = None  # evidence, restore and cleanup must still reach the PLC
-
-
-def ctx_last_read(ctx: CheckContext) -> LastRead:
-    """The last value read from each register, ``None`` where none was read."""
-    shadow = ctx.client.last_read
-    base_c, base_s = ctx.registers.command_base, ctx.registers.status_base
-    return LastRead(
-        [shadow.get(base_c + i) for i in range(COMMAND_LENGTH)],
-        [shadow.get(base_s + i) for i in range(STATUS_LENGTH)],
-    )
-
-
-async def capture(ctx: CheckContext) -> LastRead:
-    """Evidence for a FAIL (rule 5): read both blocks now, before any restore write; if that read fails, fall back
-    to the last values read."""
-    if ctx.client.connected:
-        with contextlib.suppress(PlcError):
-            await ctx.client.read(ctx.registers.command_base, COMMAND_LENGTH)
-            await ctx.client.read(ctx.registers.status_base, STATUS_LENGTH)
-    return ctx_last_read(ctx)
 
 
 async def _restore(ctx: CheckContext) -> Outcome | None:

@@ -3,14 +3,25 @@ the cleanup journal (design.md § Conformance checker, Python)."""
 
 from __future__ import annotations
 
+import contextlib
 import time
 from dataclasses import dataclass, field
 
 from .beat import Beater
-from .client import PlcClient
+from .client import PlcClient, PlcError
 from .lease import acquire
 from .poll import PollResult, wait_for
-from .registers import EDGE_BITS, AxisState, Command, RegisterMap, StatusBlock, next_nonzero, to_words
+from .registers import (
+    COMMAND_LENGTH,
+    EDGE_BITS,
+    STATUS_LENGTH,
+    AxisState,
+    Command,
+    RegisterMap,
+    StatusBlock,
+    next_nonzero,
+    to_words,
+)
 
 ACK_TIMEOUT_S = 0.5
 """protocol.md § Command semantics, "Acknowledge": the driver waits ≤ 500 ms for ``CommandAck``."""
@@ -71,6 +82,14 @@ class AckTimeout(Exception):  # noqa: N818 — the protocol's name for the condi
 
 
 @dataclass(slots=True)
+class LastRead:
+    """Raw C+0…C+11 and S+0…S+14; ``None`` for a register never read (protocol.md § Report schema, ``lastRead``)."""
+
+    command: list[int | None]
+    status: list[int | None]
+
+
+@dataclass(slots=True)
 class Ack:
     seq: int
     poll: PollResult
@@ -93,6 +112,31 @@ class CheckContext:
     caused_trip: bool = False
     connect_ms: int | None = None
     """How long the run's TCP connect took (CHK-01 ``connectMs``)."""
+    evidence: LastRead | None = None
+    """``lastRead`` a check took at detection because its next write would change what the FAIL is about."""
+
+    # --- evidence (protocol.md § Error class of a FAIL, "lastRead") ---
+
+    def shadow(self) -> LastRead:
+        """The last value read from each register, ``None`` where none was read."""
+        last = self.client.last_read
+        base_c, base_s = self.registers.command_base, self.registers.status_base
+        return LastRead(
+            [last.get(base_c + i) for i in range(COMMAND_LENGTH)],
+            [last.get(base_s + i) for i in range(STATUS_LENGTH)],
+        )
+
+    async def capture(self) -> LastRead:
+        """A fresh read of both blocks (rule 5); if that read fails, the last values read."""
+        if self.client.connected:
+            with contextlib.suppress(PlcError):
+                await self.client.read(self.registers.command_base, COMMAND_LENGTH)
+                await self.client.read(self.registers.status_base, STATUS_LENGTH)
+        return self.shadow()
+
+    async def keep_evidence(self) -> None:
+        """Capture ``lastRead`` now, before a write that would undo what the failure shows (review #2 c)."""
+        self.evidence = await self.capture()
 
     # --- the command handshake (protocol.md § Command semantics, "Handshake") ---
 
@@ -122,10 +166,13 @@ class CheckContext:
         poll = await wait_for(
             self.client, self.registers, lambda s: s.command_ack == seq, ACK_TIMEOUT_S, since=written_at
         )
+        if not poll.met:
+            await self.keep_evidence()  # C+0 still shows the edge that was not acknowledged
+            if word & EDGE_BITS:
+                await self.clear_edges()
+            raise AckTimeout(word, seq, poll.status, poll.elapsed_ms)
         if word & EDGE_BITS:
             await self.clear_edges()
-        if not poll.met:
-            raise AckTimeout(word, seq, poll.status, poll.elapsed_ms)
         return Ack(seq, poll, written_at)
 
     async def clear_edges(self) -> None:

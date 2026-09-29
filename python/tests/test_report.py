@@ -8,7 +8,8 @@ from datetime import UTC, datetime
 from generic_axis_check.context import Options
 from generic_axis_check.errors import ErrorClass
 from generic_axis_check.report import to_json, to_json_text, to_markdown
-from generic_axis_check.runner import CheckResult, LastRead, Report
+from generic_axis_check.context import LastRead
+from generic_axis_check.runner import CheckResult, Report
 
 TOP_KEYS = {
     "schema",

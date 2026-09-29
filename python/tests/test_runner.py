@@ -375,3 +375,23 @@ async def test_cleanup_journals_a_stop_that_was_not_acknowledged() -> None:
         report.cleanup[1],
     ), report.cleanup
     assert "C+9 = 0 (release lease)" in report.cleanup
+
+
+async def test_an_unacknowledged_edge_is_in_last_read_before_the_edge_is_cleared() -> None:
+    # GA-U-77.py (review #2 c): "lastRead is a fresh read … taken when the failure is detected and before any restore
+    # write". The clear of an unacknowledged edge is such a write: C+0 in lastRead still shows the Reset edge.
+    async def reset_without_ack(ctx: CheckContext) -> Outcome:
+        await ctx.command(Command.RESET)
+        return Outcome(PASS, "unreachable: the stub never acknowledges")
+
+    check = dataclasses.replace(CHECKS[0], run=reset_without_ack)
+    async with StubPlc() as plc:
+        plc.o.suppress_ack = True
+        report = await run(options(plc), checks=(check,))
+        cleared = plc.regs[MAP.command]
+    chk01 = report.checks[0]
+    assert (chk01.result, chk01.error_class) == (FAIL, "Protocol")
+    assert chk01.message.startswith("Protocol/NotAcknowledged: Reset not accepted. CommandSeq 1 written, CommandAck 0")
+    assert chk01.last_read is not None
+    assert chk01.last_read.command[:2] == [int(Command.RESET), 1]
+    assert cleared == 0  # the edge was cleared after the evidence was taken

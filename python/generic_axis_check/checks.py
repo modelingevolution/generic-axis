@@ -549,6 +549,7 @@ async def chk11(ctx: CheckContext) -> Outcome:
         fault, _ = await ctx.watchdog()
         if fault:
             ctx.caused_trip = True
+            await ctx.keep_evidence()  # a FAIL of (b)/(c) cites the axis before this recovery wrote to it
             await ctx.recover()
         if not ctx.session_lease and ctx.holds_lease:
             await ctx.release_lease()
