@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 import signal
+import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -12,8 +16,12 @@ import pytest
 from generic_axis_check import __main__ as cli
 from generic_axis_check import report as report_module
 from generic_axis_check.__main__ import UsageError, main, parse
+from generic_axis_check.client import PlcClient
 from generic_axis_check.context import Options
 from generic_axis_check.runner import Report
+
+from .conftest import PYTHON_DIR
+from .simproc import free_port, wait_for_port
 
 
 def test_parse_host_only_takes_the_protocol_defaults() -> None:
@@ -108,3 +116,64 @@ def test_a_ctrl_c_while_the_report_is_written_keeps_the_report_and_its_exit_code
         signal.signal(signal.SIGINT, handler)
     assert code == 0
     assert (tmp_path / "r.md").read_text(encoding="utf-8").endswith("RESULT: PASS\n")
+
+
+def start_stub(port: int) -> subprocess.Popen[bytes]:
+    """The stub PLC as its own process (the CLI's signals must reach only the checker)."""
+    return subprocess.Popen(
+        [sys.executable, "tests/stub_plc.py", "--headless", "--port", str(port)],
+        cwd=PYTHON_DIR,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def start_checker(port: int, report: Path) -> subprocess.Popen[str]:
+    return subprocess.Popen(
+        [sys.executable, "-m", "generic_axis_check", f"127.0.0.1:{port}", "--allow-motion", "--report", str(report)],
+        cwd=PYTHON_DIR,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+@pytest.mark.timeout(120)
+async def test_a_second_ctrl_c_does_not_abort_the_cleanup(tmp_path: Path) -> None:
+    # GA-U-124.py (review #26): two SIGINTs 20 ms apart while CHK-12 homes. The cleanup still completes: Stop, clear
+    # the edge, Enable 0, release the lease; the report is written; exit 4.
+    port = free_port()
+    stub = start_stub(port)
+    try:
+        wait_for_port(port, stub, 30)
+        report = tmp_path / "r.md"
+        checker = start_checker(port, report)
+        assert checker.stderr is not None
+        for line in checker.stderr:
+            if line.startswith("CHK-12 "):
+                break
+        await asyncio.sleep(0.3)  # homing is under way (State 2)
+        checker.send_signal(signal.SIGINT)
+        await asyncio.sleep(0.02)
+        checker.send_signal(signal.SIGINT)
+        _out, err = checker.communicate(timeout=60)
+        client = PlcClient("127.0.0.1", port, 1)
+        await client.connect()
+        try:
+            command = await client.read(0, 2)
+            (lease,) = await client.read(9, 1)
+        finally:
+            client.close()
+    finally:
+        stub.terminate()
+        stub.wait(timeout=10)
+    assert checker.returncode == 4, err
+    doc = json.loads(report.with_suffix(".json").read_text(encoding="utf-8"))
+    assert doc["summary"]["result"] == "INTERRUPTED"
+    cleanup = doc["cleanup"]
+    assert cleanup[0].endswith("(Stop)")
+    assert "C+0 = 0x0001 (clear edge bits)" in cleanup
+    assert any(entry.endswith("(Enable 0)") for entry in cleanup)
+    assert cleanup[-1] == "C+9 = 0 (release lease)"
+    assert command[0] == 0  # neither Stop nor Enable left set
+    assert lease == 0

@@ -101,6 +101,8 @@ class StubPlc:
         self.axis = Axis(p=float(self.o.initial_position), state=DISABLED)
         self._server: asyncio.Server | None = None
         self._scan: asyncio.Task[None] | None = None
+        self._connections: set[asyncio.StreamWriter] = set()
+        """Open client connections, closed on exit: a client the code under test leaked must not hang the teardown."""
         self.port = self.o.port
         self.writes: list[tuple[int, list[int]]] = []
         self.accepted: list[int] = []
@@ -127,10 +129,13 @@ class StubPlc:
                 await self._scan
         if self._server is not None:
             self._server.close()
+            for writer in list(self._connections):
+                writer.close()
             await self._server.wait_closed()
 
     # ----------------------------------------------------------------------------------------- Modbus TCP
     async def _serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        self._connections.add(writer)
         try:
             while True:
                 header = await reader.readexactly(7)
@@ -150,6 +155,7 @@ class StubPlc:
         except (asyncio.IncompleteReadError, ConnectionError):
             pass
         finally:
+            self._connections.discard(writer)
             writer.close()
 
     def _handle(self, pdu: bytes) -> bytes:

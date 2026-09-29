@@ -7,7 +7,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -177,6 +177,20 @@ async def preflight(client: PlcClient, registers: RegisterMap) -> Preflight:
         f"pre-flight: {owner_at} is held and {fault_at}: no beat and no trip within {watched_s:.1f} s — "
         "a live commander, or a PLC without a working watchdog; release LeaseOwner by hand only if no commander runs"
     )
+
+
+async def to_completion(step: Coroutine[object, object, None]) -> None:
+    """Run ``step`` to its end even if this task is cancelled meanwhile (review #26: cleanup must complete under a
+    repeated Ctrl-C; a half-done cleanup can leave Enable | Stop in C+0 and the lease held)."""
+    inner = asyncio.ensure_future(step)
+    while not inner.done():
+        try:
+            await asyncio.shield(inner)
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if current is not None:
+                current.uncancel()
+    inner.result()
 
 
 async def hold_from_preflight(ctx: CheckContext) -> None:
@@ -489,7 +503,7 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
             results.setdefault(check.id, _skip(check, f"interrupted by the operator during {running}"))
     finally:
         if client.connected and proven_free:
-            await cleanup(ctx)
+            await to_completion(cleanup(ctx))
         with contextlib.suppress(PlcError):
             await ctx.beater.stop()  # already stopped by cleanup unless the connection was lost
         client.close()

@@ -159,7 +159,28 @@ def main(argv: list[str] | None = None) -> int:
     produced: list[Report] = []
 
     async def checklist() -> None:
-        produced.append(await run(invocation.options, progress=lambda line: print(line, file=sys.stderr, flush=True)))
+        # Review #26: the first Ctrl-C cancels the run (its cleanup still runs); any further Ctrl-C only says so.
+        # asyncio.run's own handler raises KeyboardInterrupt on the second one, which aborted cleanup mid-way.
+        loop = asyncio.get_running_loop()
+        task = asyncio.current_task()
+        interrupts = 0
+
+        def on_sigint() -> None:
+            nonlocal interrupts
+            interrupts += 1
+            if interrupts == 1 and task is not None:
+                task.cancel()
+            else:
+                print("Ctrl-C again: the cleanup is still running and will finish; the report follows", file=sys.stderr)
+
+        loop.add_signal_handler(signal.SIGINT, on_sigint)
+        try:
+            produced.append(
+                await run(invocation.options, progress=lambda line: print(line, file=sys.stderr, flush=True))
+            )
+        finally:
+            loop.remove_signal_handler(signal.SIGINT)
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
 
     try:
         asyncio.run(checklist())

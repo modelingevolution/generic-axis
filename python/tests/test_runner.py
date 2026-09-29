@@ -702,3 +702,28 @@ async def test_a_commander_still_beating_after_a_trip_is_refused_not_declared_de
     assert "another commander is live" in report.checks[0].message
     assert ours == []
     assert report.cleanup == []
+
+
+@pytest.mark.timeout(60)
+async def test_a_cancel_during_cleanup_does_not_abort_it(stub: StubPlc) -> None:
+    # GA-U-125.py (review #26): the run is cancelled mid-move, then cancelled again while cleanup waits its 500 ms
+    # for a Stop ack that never comes. Cleanup runs to its end: Stop, "no CommandAck", clear edges, Enable 0,
+    # release; the register file ends with C+0 = 0 and LeaseOwner 0.
+    task = asyncio.create_task(run(options(stub, motion=True), checks=TO_THE_FIRST_MOVE))
+    while stub.axis.state != 3:  # noqa: ASYNC110 — polls the stub's scan state; there is no event to await
+        await asyncio.sleep(0.005)
+    stub.o.suppress_ack = True
+    task.cancel()
+    await asyncio.sleep(0.2)  # inside cleanup's 500 ms Stop-ack wait
+    task.cancel()
+    done, _ = await asyncio.wait({task}, timeout=10)
+    assert task in done
+    assert not task.cancelled(), "the second cancel aborted the cleanup"
+    report = task.result()
+    assert report.exit_code == 4
+    assert report.cleanup[0].endswith("(Stop)")
+    assert report.cleanup[1].startswith("Stop: no CommandAck within 500 ms")
+    assert report.cleanup[-1] == "C+9 = 0 (release lease)"
+    await asyncio.sleep(0.5)
+    assert stub.regs[MAP.command] == 0
+    assert stub.regs[MAP.lease_owner] == 0
