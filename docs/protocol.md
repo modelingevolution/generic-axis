@@ -245,7 +245,9 @@ the operator (Ctrl-C / SIGINT) before the list finished.
 - **Order.** Checks run in id order. A check whose prerequisite FAILED or was SKIPPED is SKIPPED, and its message names
   the prerequisite.
 - **Timing.** Timing checks poll the status block every **20 ms**. Every duration is measured from the completion of
-  the triggering write to the first read that shows the effect, and is reported in ms.
+  the triggering write to the first read that shows the effect, and is reported in ms. A window's bounds are judged at
+  that read cadence: an effect happened between the last read without it and the first read with it, so it is early
+  only if the first read with it is before the window, and late only if the last read without it is already after it.
 - **Units.** All positions and velocities are raw register values ÷ 1000, in the PLC's axis unit (mm or °).
 - **Cleanup, always, even after a FAIL or Ctrl-C:** Stop edge if State is 2, 3 or 4 · clear edge bits · Enable 0 ·
   `WatchdogFault = 0` if the checker caused a trip · `LeaseOwner = 0` if it holds the checker's id. Each cleanup

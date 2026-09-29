@@ -11,10 +11,21 @@ import re
 import pytest
 
 from generic_axis_check.beat import Beater
-from generic_axis_check.checks import CHECKS, FAIL, OBSERVED, PASS, SKIPPED, Check, Outcome, beat_for
+from generic_axis_check.checks import (
+    CHECKS,
+    FAIL,
+    OBSERVED,
+    PASS,
+    SKIPPED,
+    Check,
+    Outcome,
+    TripWatch,
+    beat_for,
+    judge_trip,
+)
 from generic_axis_check.client import PlcClient
 from generic_axis_check.context import CheckContext, Options
-from generic_axis_check.registers import Command, RegisterMap
+from generic_axis_check.registers import Command, RegisterMap, StatusBlock
 from generic_axis_check.report import to_json, to_markdown
 from generic_axis_check.runner import Report, normalize_observed, run
 
@@ -160,9 +171,11 @@ async def test_run_catches_a_plc_without_the_watchdog() -> None:
         report = await run(options(plc), checks=upto("CHK-10"))
     results = by_id(report)
     assert results["CHK-08"][0] == FAIL
-    assert results["CHK-08"][1].startswith(
-        "Protocol/ProtocolMismatch: stalled beat: no trip within 1.5 s of the last beat. Read State (S+0 = 100) = 0, "
-    )
+    assert re.match(
+        r"Protocol/ProtocolMismatch: stalled beat: no trip within 1\.5 s of the last beat \(last read 15\d\d ms\)\. "
+        r"Read State \(S\+0 = 100\) = 0, ",
+        results["CHK-08"][1],
+    ), results["CHK-08"][1]
     assert results["CHK-09"][0] == SKIPPED
     assert results["CHK-10"][0] == SKIPPED
 
@@ -785,3 +798,45 @@ async def test_stopping_the_beat_during_a_write_keeps_that_write_as_the_last_bea
         client.close()
     heartbeat_applied = [t for (address, _), t in zip(stub.writes, stub.write_times, strict=True) if address == 8]
     assert last_beat >= heartbeat_applied[-1], last_beat - heartbeat_applied[-1]
+
+
+def _trip(after_ms: int, before_ms: int, *, met: bool = True) -> TripWatch:
+    status = StatusBlock.parse([7, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 1])
+    return TripWatch(met, after_ms, before_ms, status, 1, 1, 0.0)
+
+
+def test_a_trip_window_is_judged_at_the_read_cadence() -> None:
+    # GA-U-129.py (review #31, protocol.md § Rules "Timing"): the trip happened between the last read without it and
+    # the first read with it; early only if that first read is before 1.0 s, late only if that last read is after 1.5 s.
+    client = PlcClient("127.0.0.1", 1, 1)
+    ctx = CheckContext(client, MAP, Options(host="127.0.0.1"), Beater(client, MAP))
+    assert judge_trip(ctx, _trip(1514, 1494), "stalled beat") is None  # crossed 1.5 s between two reads
+    assert judge_trip(ctx, _trip(1012, 992), "stalled beat") is None  # crossed 1.0 s between two reads
+    late = judge_trip(ctx, _trip(1530, 1510), "stalled beat")
+    assert late is not None
+    assert late.message.startswith(
+        "Protocol/ProtocolMismatch: stalled beat: tripped between 1510 and 1530 ms after the last beat, after the 1.5 s "
+        "bound."
+    )
+    early = judge_trip(ctx, _trip(990, 970), "stalled beat")
+    assert early is not None
+    assert "tripped between 970 and 990 ms after the last beat, before the 1 s stall window" in early.message
+    missing = judge_trip(ctx, _trip(1512, 1492, met=False), "stalled beat")
+    assert missing is not None
+    assert "no trip within 1.5 s of the last beat (last read 1512 ms)" in missing.message
+
+
+@pytest.mark.timeout(60)
+async def test_chk11_waits_at_most_1_6_s_for_an_incumbent_trip_that_never_comes() -> None:
+    # GA-U-130.py (review #49 bound, pinned after a 4.0 s mutant survived): with the PLC's watchdog off no trip ever
+    # lands, so CHK-11 waits until 1.6 s after the incumbent's last beat, then goes on (here: releases its lease).
+    wanted = {"CHK-01", "CHK-02", "CHK-11"}
+    async with StubPlc(stub_options(watchdog_disabled=True)) as plc:
+        report = await run(options(plc), checks=tuple(c for c in CHECKS if c.id in wanted))
+        timeline = list(zip(plc.writes, plc.write_times, strict=True))
+    assert by_id(report)["CHK-11"][0] == PASS, by_id(report)["CHK-11"]
+    incumbent = max(i for i, ((address, values), _) in enumerate(timeline) if (address, values) == (9, [65534]))
+    takeover = next(i for i in range(incumbent, len(timeline)) if timeline[i][0] == (9, [65535]))
+    last_beat = max(t for (address, _), t in timeline[incumbent:takeover] if address == 8)
+    released = next(t for (address, values), t in timeline[takeover:] if (address, values) == (9, [0]))
+    assert 1.55 <= released - last_beat <= 1.9, released - last_beat

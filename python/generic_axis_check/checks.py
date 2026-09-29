@@ -204,6 +204,9 @@ class TripWatch:
     met: bool
     after_ms: int
     """From the last beat to the first read that showed the whole trip (or to the last read)."""
+    before_ms: int
+    """From the last beat to the last read that did not show it (0: the last beat itself). The trip happened in
+    ``before_ms``…``after_ms`` (protocol.md § Rules, "Timing": bounds are judged at the read cadence, #31)."""
     status: StatusBlock
     watchdog_fault: int
     trips: int
@@ -217,6 +220,7 @@ async def watch_trip(ctx: CheckContext, last_beat: float, trips_before: int, *, 
     ``WatchdogTrips`` + 1 (CHK-08/09). CHK-16 asks for ``FaultCode 4`` and ``State 7`` only.
     """
     deadline = last_beat + TRIP_WINDOW_MS[1] / 1000
+    before_ms = 0
     while True:
         status = await ctx.status()
         fault, trips = await ctx.watchdog()
@@ -227,7 +231,8 @@ async def watch_trip(ctx: CheckContext, last_beat: float, trips_before: int, *, 
         if tripped or fault == 1:
             ctx.caused_trip = True
         if tripped or stamp >= deadline:
-            return TripWatch(tripped, ms(stamp - last_beat), status, fault, trips, stamp)
+            return TripWatch(tripped, ms(stamp - last_beat), before_ms, status, fault, trips, stamp)
+        before_ms = ms(stamp - last_beat)
         await asyncio.sleep(POLL_PERIOD_S)
 
 
@@ -240,12 +245,23 @@ def judge_trip(ctx: CheckContext, watch: TripWatch, label: str, **observed: int 
         Read("WatchdogTrips", watch.trips),
     )
     if not watch.met:
-        what = f"{label}: no trip within {TRIP_WINDOW_MS[1] / 1000:g} s of the last beat"
+        what = (
+            f"{label}: no trip within {TRIP_WINDOW_MS[1] / 1000:g} s of the last beat (last read {watch.after_ms} ms)"
+        )
         return mismatch(ctx, what, *reads, **observed)
+    # Review #31, protocol.md § Rules "Timing": the trip happened between the last read without it and the first read
+    # with it; it is early only if that first read is before 1.0 s, late only if that last read is already after 1.5 s.
     if watch.after_ms < TRIP_WINDOW_MS[0]:
-        what = f"{label}: tripped {watch.after_ms} ms after the last beat, before the 1 s stall window"
+        what = f"{label}: tripped {trip_interval(watch)}, before the 1 s stall window"
+        return mismatch(ctx, what, *reads, **observed)
+    if watch.before_ms > TRIP_WINDOW_MS[1]:
+        what = f"{label}: tripped {trip_interval(watch)}, after the 1.5 s bound"
         return mismatch(ctx, what, *reads, **observed)
     return None
+
+
+def trip_interval(watch: TripWatch) -> str:
+    return f"between {watch.before_ms} and {watch.after_ms} ms after the last beat"
 
 
 async def beat_for(ctx: CheckContext, seconds: float) -> None:
@@ -455,7 +471,7 @@ async def chk08(ctx: CheckContext) -> Outcome:
     problem = judge_trip(ctx, watch, "stalled beat", **observed)
     if problem:
         return problem
-    return passed(f"trip after {watch.after_ms / 1000:.2f} s", **observed)
+    return passed(f"tripped {trip_interval(watch)}", **observed)
 
 
 async def chk09(ctx: CheckContext) -> Outcome:
@@ -496,9 +512,7 @@ async def chk09(ctx: CheckContext) -> Outcome:
     problem = judge_trip(ctx, second, "after clear", **observed)
     if problem:
         return problem
-    return passed(
-        f"disarmed while latched; re-armed on clear, second trip after {second.after_ms / 1000:.2f} s", **observed
-    )
+    return passed(f"disarmed while latched; re-armed on clear, second trip {trip_interval(second)}", **observed)
 
 
 async def chk10(ctx: CheckContext) -> Outcome:
@@ -808,9 +822,7 @@ async def chk16(ctx: CheckContext) -> Outcome:
         return motion_failed(ctx, what, Read("ActualVelocity", halt.status.actual_velocity, 0), **observed)
     if not halt.status.homed:
         return mismatch(ctx, "the watchdog trip cleared Homed", Read("Flags", int(halt.status.flags)), **observed)
-    return passed(
-        f"trip after {watch.after_ms / 1000:.2f} s, halted {halt.elapsed_ms} ms later, still homed", **observed
-    )
+    return passed(f"tripped {trip_interval(watch)}, halted {halt.elapsed_ms} ms later, still homed", **observed)
 
 
 CHECKS: tuple[Check, ...] = (
