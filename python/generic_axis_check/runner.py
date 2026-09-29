@@ -38,6 +38,7 @@ from .registers import (
 )
 
 INTERRUPTED = "INTERRUPTED"
+REFUSED = "REFUSED"
 
 PREFLIGHT_WATCH_S = 1.0
 """protocol.md "Pre-flight": read ``LeaseOwner`` and watch ``Heartbeat`` for 1 s."""
@@ -79,8 +80,10 @@ class Report:
 
     @property
     def result(self) -> str:
-        """protocol.md § Report schema: ``INTERRUPTED`` if the operator interrupted the run, otherwise ``FAIL`` if
-        any check failed, otherwise ``PASS``."""
+        """protocol.md § Report schema: ``REFUSED`` if pre-flight refused to start, otherwise ``INTERRUPTED`` if the
+        operator interrupted the run, otherwise ``FAIL`` if any check failed, otherwise ``PASS`` (review #22)."""
+        if self.refused:
+            return REFUSED
         if self.interrupted:
             return INTERRUPTED
         return FAIL if self.failed else PASS

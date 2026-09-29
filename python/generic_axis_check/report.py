@@ -87,7 +87,7 @@ def _cell(text: str) -> str:
 
 def to_markdown(report: Report) -> str:
     """Heading (tool, target, UTC time) · table ``Id | Title | Result | Observed | Protocol section`` · cleanup ·
-    ``RESULT: PASS|FAIL`` as the last line."""
+    ``RESULT: PASS|FAIL|INTERRUPTED|REFUSED`` as the last line."""
     o = report.options
     lines = [
         f"# {TOOL_NAME} ({LANGUAGE} {tool_version()}) — {o.host}:{o.port} unit {o.unit} "

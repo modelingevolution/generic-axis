@@ -14,6 +14,7 @@ from generic_axis_check.checks import CHECKS, FAIL, OBSERVED, PASS, SKIPPED, Che
 from generic_axis_check.client import PlcClient
 from generic_axis_check.context import CheckContext, Options
 from generic_axis_check.registers import Command, RegisterMap
+from generic_axis_check.report import to_json, to_markdown
 from generic_axis_check.runner import Report, run
 
 from .stub_plc import StubPlc
@@ -94,6 +95,10 @@ async def test_run_refuses_a_live_foreign_commander_with_exit_3_and_writes_nothi
         commander.close()
     assert report.refused
     assert report.exit_code == 3
+    # Review #22: a refused run never reports PASS (protocol.md § Report schema).
+    assert report.result == "REFUSED"
+    assert to_markdown(report).endswith("\nRESULT: REFUSED\n")
+    assert to_json(report)["summary"] == {"result": "REFUSED", "pass": 0, "fail": 0, "skipped": 16}
     message = report.checks[0].message
     assert re.fullmatch(
         r"pre-flight: another commander is live: Heartbeat \(C\+8\) changed \d+( → \d+)+ within 1 s, "

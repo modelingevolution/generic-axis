@@ -50,7 +50,7 @@ read.` The report attaches the dump of the last read of both blocks to each FAIL
 units, default 0.1).
 
 Exit codes: 0 no FAIL · 1 at least one FAIL · 2 usage error · 3 refused to start, because another commander (rw2, a
-station, or a second tool) is beating. Stop it first · 4 interrupted. Ctrl-C stops the run, stops the axis, drops
+station, or a second tool) is beating. Stop it first; the report says `RESULT: REFUSED` · 4 interrupted. Ctrl-C stops the run, stops the axis, drops
 Enable and releases the lease; the running check and the rest are reported SKIPPED.
 
 ## The same checklist as pytest tests

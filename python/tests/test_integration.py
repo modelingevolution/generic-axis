@@ -174,6 +174,8 @@ async def test_ga_i_37_the_checker_never_fights_a_live_commander(simulator: STAR
         commander.close()
     doc = json.loads(report.with_suffix(".json").read_text(encoding="utf-8"))
     assert process.returncode == 3
+    assert doc["summary"]["result"] == "REFUSED"
+    assert report.read_text(encoding="utf-8").endswith("\nRESULT: REFUSED\n")
     assert all(c["result"] == "SKIPPED" for c in doc["checks"])
     assert "another commander is live" in doc["checks"][0]["message"]
     assert "LeaseOwner (C+9) 1" in doc["checks"][0]["message"]
