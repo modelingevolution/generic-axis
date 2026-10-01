@@ -111,8 +111,9 @@ public class LeaseAndHeartbeatTests
         var ops = plc.Ops;
         ops.Should().HaveCount(3);
         ops[0].Should().Match<ChannelOp>(o => o.IsWrite && o.Address == 8 && o.Values.Length == 1 && o.Values[0] != 0);
-        ops[1].Should().Match<ChannelOp>(o => !o.IsWrite && o.Address == 9 && o.Count == 3);
-        ops[2].Should().Match<ChannelOp>(o => !o.IsWrite && o.Address == 100 && o.Count == 15);
+        ops[1].Should().Match<ChannelOp>(o => o.IsHoldingRead && o.Address == 9 && o.Count == 3, "FC03 read C+9…C+11");
+        ops[2].Should().Match<ChannelOp>(o => o.IsInputRead && o.Address == RegisterMap.Default.Status && o.Count == 15,
+            "FC04 read S+0…S+14 (ADR-36)");
         ops.Should().OnlyContain(o => o.Lane == ChannelPriority.Heartbeat);
         raised.Should().Be(snapshot);
         snapshot.LeaseOwner.Should().Be(7);

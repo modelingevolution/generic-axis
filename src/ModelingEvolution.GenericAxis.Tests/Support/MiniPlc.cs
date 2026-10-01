@@ -55,9 +55,9 @@ internal sealed record PlcTruth(
 ///
 /// <para>
 /// One scan every <see cref="MiniPlcOptions.ScanInterval"/> on its own thread, under the server's lock (requests are
-/// served between scans, never inside one): read the command block, run the FR-11
+/// served between scans, never inside one): read the command block (holding registers), run the FR-11
 /// watchdog, accept a new CommandSeq and ack it in the same scan that enters the state, integrate the motion, and
-/// publish the status block from that one image.
+/// publish the status block (input registers, FC04, ADR-36) from that one image.
 /// </para>
 /// </summary>
 internal sealed class MiniPlc : IAsyncDisposable
@@ -264,6 +264,16 @@ internal sealed class MiniPlc : IAsyncDisposable
         _server.GetHoldingRegisters(Unit)[address] = (short)BinaryPrimitives.ReverseEndianness(value);
 
     private int GetInt(int address) => (int)((uint)Get(address) | ((uint)Get(address + 1) << 16));
+
+    // The status block is input registers (protocol § Transport, ADR-36): FC04 only, so no client can write it.
+    private void SetInput(int address, ushort value) =>
+        _server.GetInputRegisters(Unit)[address] = (short)BinaryPrimitives.ReverseEndianness(value);
+
+    private void SetInputInt(int address, int value)
+    {
+        SetInput(address, (ushort)((uint)value & 0xFFFF));
+        SetInput(address + 1, (ushort)((uint)value >> 16));
+    }
 
     private void SetInt(int address, int value)
     {
@@ -525,16 +535,16 @@ internal sealed class MiniPlc : IAsyncDisposable
 
         var raw = (int)Math.Round(_p * 1000, MidpointRounding.AwayFromZero);
         {
-            Set(S(0), _state);
-            Set(S(1), (ushort)flags);
-            SetInt(S(2), raw);
-            SetInt(S(4), (int)Math.Round(_v * 1000, MidpointRounding.AwayFromZero));
-            Set(S(6), _fault);
-            Set(S(7), _ack);
-            SetInt(S(8), Options.PublishLimits ? (int)Math.Round(Options.TravelMin * 1000) : 0);
-            SetInt(S(10), Options.PublishLimits ? (int)Math.Round(Options.TravelMax * 1000) : 0);
-            SetInt(S(12), Options.PublishLimits ? (int)Math.Round(Options.MaxVelocity * 1000) : 0);
-            Set(S(14), Options.MapVersion);
+            SetInput(S(0), _state);
+            SetInput(S(1), (ushort)flags);
+            SetInputInt(S(2), raw);
+            SetInputInt(S(4), (int)Math.Round(_v * 1000, MidpointRounding.AwayFromZero));
+            SetInput(S(6), _fault);
+            SetInput(S(7), _ack);
+            SetInputInt(S(8), Options.PublishLimits ? (int)Math.Round(Options.TravelMin * 1000) : 0);
+            SetInputInt(S(10), Options.PublishLimits ? (int)Math.Round(Options.TravelMax * 1000) : 0);
+            SetInputInt(S(12), Options.PublishLimits ? (int)Math.Round(Options.MaxVelocity * 1000) : 0);
+            SetInput(S(14), Options.MapVersion);
             Set(C(11), _trips);
         }
 

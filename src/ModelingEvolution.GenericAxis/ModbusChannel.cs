@@ -278,6 +278,12 @@ internal sealed class ModbusChannel : IModbusChannel
             Range("FC03 read", RegisterSpace.Holding, address, count), priority, ct, unit);
 
     /// <inheritdoc/>
+    public Task<ushort[]> ReadInputAsync(byte unit, ushort address, ushort count, string what,
+        ChannelPriority priority = ChannelPriority.Move, CancellationToken ct = default)
+        => ExecuteAsync(async c => (await c.ReadInputRegistersAsync<ushort>(unit, address, count).ConfigureAwait(false)).ToArray(), what,
+            Range("FC04 read", RegisterSpace.Input, address, count), priority, ct, unit);
+
+    /// <inheritdoc/>
     public Task WriteRegisterAsync(byte unit, ushort address, ushort value, string what,
         ChannelPriority priority = ChannelPriority.Move, CancellationToken ct = default)
         => ExecuteAsync<object?>(async c => { await c.WriteSingleRegisterAsync(unit, address, value).ConfigureAwait(false); return null; },

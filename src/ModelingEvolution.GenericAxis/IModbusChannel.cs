@@ -1,7 +1,8 @@
 namespace ModelingEvolution.GenericAxis;
 
 /// <summary>
-/// One serialised Modbus TCP session to the PLC, holding registers only (protocol § Transport: no coils).
+/// One serialised Modbus TCP session to the PLC: holding registers for the command block and input registers for the
+/// status block (protocol § Transport, ADR-36; no coils).
 /// An interface so the axis logic — guards, handshake, lease — is tested against a register bank rather than a
 /// socket (design § Tests, <c>FakePlcChannel</c>).
 /// </summary>
@@ -25,6 +26,10 @@ internal interface IModbusChannel : IDisposable
 
     /// <summary>FC03: reads <paramref name="count"/> holding registers.</summary>
     Task<ushort[]> ReadHoldingAsync(byte unit, ushort address, ushort count, string what,
+        ChannelPriority priority = ChannelPriority.Move, CancellationToken ct = default);
+
+    /// <summary>FC04: reads <paramref name="count"/> input registers — the status block (ADR-36).</summary>
+    Task<ushort[]> ReadInputAsync(byte unit, ushort address, ushort count, string what,
         ChannelPriority priority = ChannelPriority.Move, CancellationToken ct = default);
 
     /// <summary>FC06: writes one holding register.</summary>

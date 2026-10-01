@@ -3,11 +3,19 @@ using RocketWelder.SDK.Devices.Motion;
 namespace ModelingEvolution.GenericAxis.Tests.Support;
 
 /// <summary>One transaction the driver sent, as the fake PLC saw it.</summary>
+/// <param name="Space">Holding (FC03/FC06/FC16) or input (FC04).</param>
 internal sealed record ChannelOp(bool IsWrite, ushort Address, ushort[] Values, int Count, ChannelPriority Lane,
-    string What)
+    string What, RegisterSpace Space = RegisterSpace.Holding)
 {
+    /// <summary>A read of input registers (FC04).</summary>
+    public bool IsInputRead => !IsWrite && Space == RegisterSpace.Input;
+
+    /// <summary>A read of holding registers (FC03).</summary>
+    public bool IsHoldingRead => !IsWrite && Space == RegisterSpace.Holding;
+
     public override string ToString() =>
-        IsWrite ? $"W {Address} [{string.Join(", ", Values)}] {Lane} ({What})" : $"R {Address} x{Count} {Lane} ({What})";
+        IsWrite ? $"W {Address} [{string.Join(", ", Values)}] {Lane} ({What})"
+            : $"R{(Space == RegisterSpace.Input ? "I" : "H")} {Address} x{Count} {Lane} ({What})";
 }
 
 /// <summary>
@@ -150,12 +158,20 @@ internal sealed class FakePlcChannel : IModbusChannel
     }
 
     public Task<ushort[]> ReadHoldingAsync(byte unit, ushort address, ushort count, string what,
-        ChannelPriority priority = ChannelPriority.Move, CancellationToken ct = default)
+        ChannelPriority priority = ChannelPriority.Move, CancellationToken ct = default) =>
+        Read(RegisterSpace.Holding, address, count, what, priority, ct);
+
+    public Task<ushort[]> ReadInputAsync(byte unit, ushort address, ushort count, string what,
+        ChannelPriority priority = ChannelPriority.Move, CancellationToken ct = default) =>
+        Read(RegisterSpace.Input, address, count, what, priority, ct);
+
+    private Task<ushort[]> Read(RegisterSpace space, ushort address, ushort count, string what,
+        ChannelPriority priority, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         lock (_sync)
         {
-            var op = new ChannelOp(false, address, [], count, priority, what);
+            var op = new ChannelOp(false, address, [], count, priority, what, space);
             _ops.Add(op);
             if (FailWhen?.Invoke(op) == true)
                 return Task.FromException<ushort[]>(new MotionException(MotionError.CommunicationLost,
