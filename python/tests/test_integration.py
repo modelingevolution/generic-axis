@@ -322,8 +322,13 @@ async def test_ga_i_40_dump_reads_without_touching(simulator: START) -> None:
     once = dump_process(sim.port)
     out, err = once.communicate(timeout=30)
     assert once.returncode == 0, err
-    assert "C+0    holding 0     Command" in out
-    assert "S+14   input 14      MapVersion             0x0001  1" in out
+    assert "C+0 = holding 0    Command" in out
+    assert "S+14 = input 14    MapVersion             0x0001  1" in out
+    # Two tables: the holding command block, then the input status block.
+    command_title = out.index("Command block: holding registers (FC03 read, FC06/FC16 write), C = 0")
+    assert (
+        out.index("Status block: input registers (FC04 read), S = 0") > out.index("C+11 = holding 11") > command_title
+    )
 
     watch = dump_process(sim.port, "--watch")
     assert watch.stdout is not None
@@ -363,7 +368,7 @@ async def test_ga_i_41_a_fail_carries_class_and_evidence(simulator: START, tmp_p
     markdown = (tmp_path / "report.md").read_text(encoding="utf-8")
     failures = markdown.split("\nFailures:\n", 1)[1]
     assert "CHK-06 Enable handshake (level): Protocol/NotAcknowledged: Enable 1 not accepted." in failures
-    assert "S+0    input 0       State                  0x0000  0 Disabled" in failures
+    assert "S+0 = input 0      State                  0x0000  0 Disabled" in failures
 
 
 async def test_ga_i_43_a_second_tool_with_the_same_owner_id_is_refused(simulator: START, tmp_path: Path) -> None:

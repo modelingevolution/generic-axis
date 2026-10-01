@@ -103,8 +103,8 @@ def test_markdown_has_the_table_columns_cleanup_and_ends_with_the_result() -> No
     failures = lines.index("Failures:")
     assert failures < lines.index("Cleanup:")
     assert lines[failures + 2].startswith("CHK-02 Map version: Protocol/ProtocolMismatch: MapVersion not 1.")
-    assert "S+14   input 14      MapVersion             0x0002  2" in lines
-    assert "C+0    holding 0     Command                —       not read" in lines
+    assert "S+14 = input 14    MapVersion             0x0002  2" in lines
+    assert "C+0 = holding 0    Command                —       not read" in lines
     assert lines[-1] == "RESULT: FAIL"
 
 

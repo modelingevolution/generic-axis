@@ -1,7 +1,7 @@
 """``--dump [--watch]``: the decoded register dump (protocol.md § Errors and debugging, rule 4).
 
 Two tables, one per block and register space (ADR-36): the command block in holding registers (FC03) and the status
-block in input registers (FC04). One row per register: block-relative offset, absolute address with its type, name,
+block in input registers (FC04). One row per register: its address in the protocol's notation (``S+14 = input 14``), name,
 raw hex, and the decoded value. ``State`` and ``FaultCode`` by name, ``Flags`` and ``Command`` bits by name, 32-bit
 values in engineering units on their low word.
 """
@@ -133,7 +133,7 @@ def render(registers: RegisterMap, command: Sequence[int | None], status: Sequen
         rows += [
             *([""] if rows else []),
             f"{title} = {base}",
-            f"{'Ref':<6} {'Address':<13} {'Register':<22} {'Raw':<7} Decoded",
+            f"{'Address':<18} {'Register':<22} {'Raw':<7} Decoded",
         ]
         rows += _rows(table, base, words)
     return "\n".join([*rows, UNIT_NOTE])
@@ -148,10 +148,9 @@ def _rows(table: str, base: int, words: dict[tuple[str, int], int | None]) -> li
         cells = [(offset, name)] + ([(offset + 1, f"{name} (high)")] if is_int32 else [])
         for index, (off, label) in enumerate(cells):
             raw = words[block, off]
-            ref = f"{block}+{off}"
-            address = f"{space} {base + off}"
+            address = f"{block}+{off} = {space} {base + off}"  # the protocol's notation, one column (review #35)
             if raw is None:
-                rows.append(f"{ref:<6} {address:<13} {label:<22} {'—':<7} not read")
+                rows.append(f"{address:<18} {label:<22} {'—':<7} not read")
                 continue
             if is_int32 and index == 0:
                 high = words[block, off + 1]
@@ -164,7 +163,7 @@ def _rows(table: str, base: int, words: dict[tuple[str, int], int | None]) -> li
                 decoded = "high word"
             else:
                 decoded = _decode(name, raw)
-            rows.append(f"{ref:<6} {address:<13} {label:<22} 0x{raw:04X}  {decoded}")
+            rows.append(f"{address:<18} {label:<22} 0x{raw:04X}  {decoded}")
     return rows
 
 
