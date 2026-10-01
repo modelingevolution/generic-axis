@@ -105,6 +105,14 @@ public class ModbusRefusalTests
             .Contain("FC04 read S+0…S+14 = input 0…14 refused: Modbus exception 02 (illegal data address)");
         rig.Logs.GetSnapshot().Should().NotContain(r => r.Message.Contains("CommunicationLost"));
 
+        // Rule 3 end to end (#60): the REAL channel marks its refusal, so the tick loop warns once and then drops to
+        // Debug. An unmarked refusal (same text) would warn on every tick.
+        var snapshot = rig.Logs.GetSnapshot();
+        snapshot.Where(r => r.Level == LogLevel.Warning && r.Message.Contains("heartbeat tick failed"))
+            .Should().ContainSingle("a refusal identical to the previous tick's logs at Warning once");
+        snapshot.Count(r => r.Level == LogLevel.Debug && r.Message.Contains("heartbeat tick refused again"))
+            .Should().BeGreaterThanOrEqualTo(5, "the repeats over 1.5 s of 100 ms ticks log at Debug");
+
         // Still refused: Reset is refused too.
         await track.Carriage.Awaiting(c => c.ResetAsync().WaitAsync(LiveRig.T))
             .Should().ThrowAsync<MotionException>().Where(e => e.Error == MotionError.ProtocolMismatch);
