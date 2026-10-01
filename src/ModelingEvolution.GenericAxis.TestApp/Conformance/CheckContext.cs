@@ -112,11 +112,11 @@ internal sealed class CheckContext : IAsyncDisposable
         }
     }
 
-    /// <summary><c>C+9 = holding 9</c> — a command-block register in the protocol's form (rule 1), by the driver's map.</summary>
-    public string Where(ushort address) => Map.DescribeRange(RegisterSpace.Holding, address, 1);
-
-    /// <summary><c>S+14 = input 14</c> — a status-block register in the protocol's form (rule 1), by the driver's map.</summary>
-    public string WhereInput(ushort address) => Map.DescribeRange(RegisterSpace.Input, address, 1);
+    /// <summary>
+    /// A register in the protocol's form (rule 1), <c>C+9 = holding 9</c> / <c>S+14 = input 14</c>, by the driver's map.
+    /// The field carries its own space, so a status register cannot be rendered as holding by a wrong pick (#56).
+    /// </summary>
+    public string At(RegisterField field) => Map.Describe(field);
 
     /// <summary>FC03 of command-block (holding) registers.</summary>
     public async Task<ushort[]> ReadAsync(ushort address, ushort count, CancellationToken ct, ChannelPriority lane = ChannelPriority.Move)
@@ -145,7 +145,7 @@ internal sealed class CheckContext : IAsyncDisposable
         if (HoldsLease && Beater.IsRunning && view.LeaseOwner != Options.OwnerId)
         {
             // Lead ruling 2026-09-29 (#33): the register does not hold what the beating checker wrote.
-            LeaseLost ??= $"the lease did not hold. Read LeaseOwner ({Where(Map.LeaseOwner)}) = {view.LeaseOwner}, expected {Options.OwnerId}.";
+            LeaseLost ??= $"the lease did not hold. Read LeaseOwner ({At(RegisterField.LeaseOwner)}) = {view.LeaseOwner}, expected {Options.OwnerId}.";
             throw new MotionException(MotionError.ProtocolMismatch, LeaseLost);
         }
 

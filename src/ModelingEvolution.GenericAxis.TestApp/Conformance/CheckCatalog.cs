@@ -59,15 +59,15 @@ internal static class CheckCatalog
         return version == RegisterMap.Version
             ? CheckOutcome.Pass($"MapVersion {version}", ("mapVersion", version))
             : CheckOutcome.Fail(Failure.Protocol(
-                    $"wrong map version. Read MapVersion ({ctx.WhereInput(ctx.Map.MapVersion)}) = {version}, expected {RegisterMap.Version}."),
+                    $"wrong map version. Read MapVersion ({ctx.At(RegisterField.MapVersion)}) = {version}, expected {RegisterMap.Version}."),
                 ("mapVersion", version));
     }
 
     private static async Task<CheckOutcome> Chk03(CheckContext ctx, CancellationToken ct)
     {
         var s = await ctx.ReadStatusAsync(ct);
-        var read = $"Read TravelMin ({ctx.WhereInput(ctx.Map.TravelMin)}) = {s.TravelMin}, TravelMax ({ctx.WhereInput(ctx.Map.TravelMax)}) = {s.TravelMax}, "
-                   + $"MaxVelocity ({ctx.WhereInput(ctx.Map.MaxVelocity)}) = {s.MaxVelocity}";
+        var read = $"Read TravelMin ({ctx.At(RegisterField.TravelMin)}) = {s.TravelMin}, TravelMax ({ctx.At(RegisterField.TravelMax)}) = {s.TravelMax}, "
+                   + $"MaxVelocity ({ctx.At(RegisterField.MaxVelocity)}) = {s.MaxVelocity}";
         var failures = new List<Failure>();
         if (!s.LimitsPublished) failures.Add(Failure.Protocol($"limits not published (all 0). {read}, expected TravelMin < TravelMax and MaxVelocity > 0."));
         else if (!s.LimitsValid) failures.Add(Failure.Protocol($"limits not sane. {read}, expected TravelMin < TravelMax and MaxVelocity > 0."));
@@ -107,7 +107,7 @@ internal static class CheckCatalog
 
         var failures = new List<Failure>();
         if (answered < reads) failures.Add(Failure.Transport($"{reads - answered} of {reads} status reads failed: {errors.First()}"));
-        if (invalid.Count > 0) failures.Add(Failure.InvalidState(invalid[0].State, invalid[0].Fault, ctx.WhereInput(ctx.Map.State)));
+        if (invalid.Count > 0) failures.Add(Failure.InvalidState(invalid[0].State, invalid[0].Fault, ctx.At(RegisterField.State)));
         if (slowest > 100) failures.Add(Failure.Protocol($"status mirror too slow: slowest round trip {slowest} ms, expected ≤ 100 ms."));
         return CheckOutcome.Judge(failures, $"{answered}/{reads} reads, slowest {slowest} ms",
             ("reads", answered), ("slowestMs", slowest), ("invalidStates", invalid.Count));
@@ -116,7 +116,7 @@ internal static class CheckCatalog
     private static async Task<CheckOutcome> Chk05(CheckContext ctx, CancellationToken ct)
     {
         var address = ctx.Map.TargetPosition;
-        var where = ctx.Map.DescribeRange(RegisterSpace.Holding, address, 2);
+        var where = ctx.Map.DescribeRange(RegisterField.TargetPosition.Space, address, 2); // the int32 pair C+2…C+3
         async Task<(int Value, ushort[] Words)> ReadBackAsync()
         {
             var words = await ctx.ReadAsync(address, 2, ct);
@@ -158,8 +158,8 @@ internal static class CheckCatalog
         var disabled = await ctx.WaitForAsync(v => v.State == Disabled, StateTimeout, off.WrittenAt, ct);
 
         var failures = new List<Failure>();
-        if (!standstill.Met) failures.Add(Failure.Machine("DriveFault", $"no Standstill 5 s after Enable 1. Read State ({ctx.WhereInput(ctx.Map.State)}) = {standstill.View.State}, expected 1."));
-        if (!disabled.Met) failures.Add(Failure.Machine("DriveFault", $"no Disabled 5 s after Enable 0. Read State ({ctx.WhereInput(ctx.Map.State)}) = {disabled.View.State}, expected 0."));
+        if (!standstill.Met) failures.Add(Failure.Machine("DriveFault", $"no Standstill 5 s after Enable 1. Read State ({ctx.At(RegisterField.State)}) = {standstill.View.State}, expected 1."));
+        if (!disabled.Met) failures.Add(Failure.Machine("DriveFault", $"no Disabled 5 s after Enable 0. Read State ({ctx.At(RegisterField.State)}) = {disabled.View.State}, expected 0."));
         return CheckOutcome.Judge(failures,
             $"Enable 1 ack {on.AckMs} ms, State 1 at {standstill.ElapsedMs} ms; Enable 0 ack {off.AckMs} ms, State 0 at {disabled.ElapsedMs} ms",
             ("enableAckMs", on.AckMs), ("enableStateMs", standstill.Met ? standstill.ElapsedMs : null),
@@ -177,8 +177,8 @@ internal static class CheckCatalog
 
         var failures = new List<Failure>();
         if (changed)
-            failures.Add(Failure.Protocol($"Reset outside ErrorStop changed the axis. Read State ({ctx.WhereInput(ctx.Map.State)}) = {view.State}, "
-                                          + $"FaultCode ({ctx.WhereInput(ctx.Map.FaultCode)}) = {view.Status.FaultCode}, expected 0 and 0."));
+            failures.Add(Failure.Protocol($"Reset outside ErrorStop changed the axis. Read State ({ctx.At(RegisterField.State)}) = {view.State}, "
+                                          + $"FaultCode ({ctx.At(RegisterField.FaultCode)}) = {view.Status.FaultCode}, expected 0 and 0."));
         return CheckOutcome.Judge(failures, $"ack {reset.AckMs} ms, no-op as required",
             ("ackMs", reset.AckMs), ("state", view.State), ("faultCode", view.Status.FaultCode));
     }
@@ -210,12 +210,12 @@ internal static class CheckCatalog
         var second = await StopBeatAndAwaitTripAsync(ctx, trips, ct);
 
         var failures = new List<Failure>();
-        var tripsAt = ctx.Where(ctx.Map.WatchdogTrips);
+        var tripsAt = ctx.At(RegisterField.WatchdogTrips);
         if (tripWhileLatched) failures.Add(Failure.Protocol($"a trip was counted while WatchdogFault was latched. Read WatchdogTrips ({tripsAt}) = {latchedView.WatchdogTrips}, expected {setup.View.WatchdogTrips}."));
         if (!reset.Acked) failures.Add(Failure.NotAcknowledged("Reset", reset.Seq, reset.View.Status.CommandAck, reset.View.State));
         if (tripWhileBeating)
             failures.Add(Failure.Protocol($"tripped while beating after the clear. Read WatchdogTrips ({tripsAt}) = {beatingView.WatchdogTrips}, "
-                                          + $"WatchdogFault ({ctx.Where(ctx.Map.WatchdogFault)}) = {beatingView.WatchdogFault}, expected {trips} and 0."));
+                                          + $"WatchdogFault ({ctx.At(RegisterField.WatchdogFault)}) = {beatingView.WatchdogFault}, expected {trips} and 0."));
         failures.AddRange(second.Failures(ctx));
         return CheckOutcome.Judge(failures, $"no trip while latched or beating; second trip {TripInterval(second.BeforeMs, second.AfterMs)}",
             ("setupTripAfterMs", setup.AfterMs), ("tripsWhileLatched", tripsWhileLatched), ("tripsWhileBeating", tripsWhileBeating),
@@ -236,8 +236,8 @@ internal static class CheckCatalog
 
         var delta = Delta(view.WatchdogTrips, trips);
         return tripped
-            ? CheckOutcome.Fail(Failure.Protocol($"tripped after a clean release (LeaseOwner = 0). Read WatchdogFault ({ctx.Where(ctx.Map.WatchdogFault)}) = "
-                                                 + $"{view.WatchdogFault}, WatchdogTrips ({ctx.Where(ctx.Map.WatchdogTrips)}) = {view.WatchdogTrips}, expected 0 and {trips}."),
+            ? CheckOutcome.Fail(Failure.Protocol($"tripped after a clean release (LeaseOwner = 0). Read WatchdogFault ({ctx.At(RegisterField.WatchdogFault)}) = "
+                                                 + $"{view.WatchdogFault}, WatchdogTrips ({ctx.At(RegisterField.WatchdogTrips)}) = {view.WatchdogTrips}, expected 0 and {trips}."),
                 ("tripsAfterRelease", delta), ("watchdogFault", view.WatchdogFault))
             : CheckOutcome.Pass("no trip 2 s after LeaseOwner = 0", ("tripsAfterRelease", delta), ("watchdogFault", view.WatchdogFault));
     }
@@ -246,7 +246,7 @@ internal static class CheckCatalog
     {
         var failures = new List<Failure>();
         var interval = Beater.Period;
-        var ownerAt = ctx.Where(ctx.Map.LeaseOwner);
+        var ownerAt = ctx.At(RegisterField.LeaseOwner);
 
         // (a) Unowned → the driver's lease client takes it, then releases.
         await ctx.Beater.StopAsync();
@@ -263,7 +263,7 @@ internal static class CheckCatalog
             // must not impersonate over it, and nothing more is written to it (as for a lost lease).
             var seen = await ctx.ReadAsync(ctx.Map.Heartbeat, 2, ct);
             var lost = $"(a) another commander took the lease after its release. Read LeaseOwner ({ownerAt}) = {seen[1]}, "
-                       + $"Heartbeat ({ctx.Where(ctx.Map.Heartbeat)}) = {seen[0]}, expected 0 before the lease client took it.";
+                       + $"Heartbeat ({ctx.At(RegisterField.Heartbeat)}) = {seen[0]}, expected 0 before the lease client took it.";
             ctx.LoseLease(lost);
             return CheckOutcome.Fail(Failure.Protocol(lost),
                 ("ownIdReadBack", null), ("refusedAfterMs", null), ("leaseOwnerAfterRefusal", null), ("takenAfterMs", null));
@@ -315,7 +315,7 @@ internal static class CheckCatalog
         {
             var v = await ctx.ReadViewAsync(ct);
             failures.Add(Failure.Protocol($"(c) the lease was not taken within 6 s of the incumbent's last beat (Heartbeat still changing?). "
-                                          + $"Read Heartbeat ({ctx.Where(ctx.Map.Heartbeat)}) = {v.Heartbeat}, LeaseOwner ({ownerAt}) = {v.LeaseOwner}, expected {ctx.Options.OwnerId}."));
+                                          + $"Read Heartbeat ({ctx.At(RegisterField.Heartbeat)}) = {v.Heartbeat}, LeaseOwner ({ownerAt}) = {v.LeaseOwner}, expected {ctx.Options.OwnerId}."));
         }
 
         // The incumbent's death may still trip the PLC (1.0–1.5 s after its last beat) and nobody beats until the
@@ -342,7 +342,7 @@ internal static class CheckCatalog
 
         var failures = new List<Failure>();
         if (home.View.State != Homing) failures.Add(AckWithoutState(ctx, "Home", home, Homing));
-        if (!done.Met) failures.Add(Failure.Machine("HomeLatchFailed", $"not homed within 120 s. Read State ({ctx.WhereInput(ctx.Map.State)}) = {s.State}, Flags.Homed = {(s.Homed ? 1 : 0)}, expected 1 and 1."));
+        if (!done.Met) failures.Add(Failure.Machine("HomeLatchFailed", $"not homed within 120 s. Read State ({ctx.At(RegisterField.State)}) = {s.State}, Flags.Homed = {(s.Homed ? 1 : 0)}, expected 1 and 1."));
         return CheckOutcome.Judge(failures, $"homed in {done.ElapsedMs} ms, ActualPosition {Words.FromRaw(s.ActualPosition)}",
             ("ackMs", home.AckMs), ("homedAfterMs", done.Met && s.Homed && s.State == Standstill ? done.ElapsedMs : null), ("faultCode", s.FaultCode));
     }
@@ -377,10 +377,10 @@ internal static class CheckCatalog
         var failures = new List<Failure>();
         if (move.View.State != Discrete) failures.Add(AckWithoutState(ctx, "MoveAbsolute", move, Discrete));
         if (!done.Met)
-            failures.Add(Failure.Machine("MotionFailed", $"not arrived within {budget.TotalSeconds:0.0} s (2 × |target − start| ÷ velocity + 5 s). Read State ({ctx.WhereInput(ctx.Map.State)}) = {s.State}, "
-                                                         + $"Flags.InPosition = {(s.InPosition ? 1 : 0)}, ActualPosition ({ctx.WhereInput(ctx.Map.ActualPosition)}) = {s.ActualPosition}, expected 1, 1, {target}."));
+            failures.Add(Failure.Machine("MotionFailed", $"not arrived within {budget.TotalSeconds:0.0} s (2 × |target − start| ÷ velocity + 5 s). Read State ({ctx.At(RegisterField.State)}) = {s.State}, "
+                                                         + $"Flags.InPosition = {(s.InPosition ? 1 : 0)}, ActualPosition ({ctx.At(RegisterField.ActualPosition)}) = {s.ActualPosition}, expected 1, 1, {target}."));
         else if (s.State == Standstill && error > tolerance)
-            failures.Add(Failure.Machine("MotionFailed", $"stopped outside --tolerance {ctx.Options.Tolerance}. Read ActualPosition ({ctx.WhereInput(ctx.Map.ActualPosition)}) = {s.ActualPosition}, expected {target} ± {tolerance}."));
+            failures.Add(Failure.Machine("MotionFailed", $"stopped outside --tolerance {ctx.Options.Tolerance}. Read ActualPosition ({ctx.At(RegisterField.ActualPosition)}) = {s.ActualPosition}, expected {target} ± {tolerance}."));
         return CheckOutcome.Judge(failures, $"arrived in {done.ElapsedMs} ms, error {Words.FromRaw((int)error)}",
             ("target", target), ("ackMs", move.AckMs), ("arrivedAfterMs", done.Met && s.State == Standstill ? done.ElapsedMs : null),
             ("position", done.Met && s.State == Standstill ? s.ActualPosition : null), ("positionError", done.Met && s.State == Standstill ? error : null));
@@ -409,8 +409,8 @@ internal static class CheckCatalog
         var failures = new List<Failure>();
         if (move.View.State != Discrete) failures.Add(AckWithoutState(ctx, "MoveAbsolute", move, Discrete));
         if (!halt.Met || halt.ElapsedMs > HaltBudgetMs)
-            failures.Add(Failure.Machine("MotionFailed", $"still moving {halt.ElapsedMs} ms after Stop. Read ActualVelocity ({ctx.WhereInput(ctx.Map.ActualVelocity)}) = "
-                                                         + $"{halt.View.Status.ActualVelocity}, State ({ctx.WhereInput(ctx.Map.State)}) = {halt.View.State}, expected 0 and 1 within 200 ms."));
+            failures.Add(Failure.Machine("MotionFailed", $"still moving {halt.ElapsedMs} ms after Stop. Read ActualVelocity ({ctx.At(RegisterField.ActualVelocity)}) = "
+                                                         + $"{halt.View.Status.ActualVelocity}, State ({ctx.At(RegisterField.State)}) = {halt.View.State}, expected 0 and 1 within 200 ms."));
         return CheckOutcome.Judge(failures, $"Stop ack {stop.AckMs} ms, halted {halt.ElapsedMs} ms after the write",
             ("commandedVelocity", speed), ("velocityAtStop", velocityAtStop), ("ackMs", stop.AckMs), ("haltMs", halt.Met ? halt.ElapsedMs : null));
     }
@@ -436,10 +436,10 @@ internal static class CheckCatalog
         var halt = await ctx.WaitForAsync(v => v.State == Standstill, TimeSpan.FromSeconds(1), stop.WrittenAt, ct);
 
         var failures = new List<Failure>();
-        var stateAt = ctx.WhereInput(ctx.Map.State);
+        var stateAt = ctx.At(RegisterField.State);
         if (jog.View.State != Continuous) failures.Add(AckWithoutState(ctx, "MoveVelocity", jog, Continuous));
         if (left.Met) failures.Add(Failure.Machine("MotionFailed", $"left ContinuousMotion during the 1 s run. Read State ({stateAt}) = {left.View.State}, expected 4."));
-        if (fastest <= 0) failures.Add(Failure.Machine("MotionFailed", $"no velocity during the run. Read ActualVelocity ({ctx.WhereInput(ctx.Map.ActualVelocity)}) ≤ 0 throughout, expected > 0."));
+        if (fastest <= 0) failures.Add(Failure.Machine("MotionFailed", $"no velocity during the run. Read ActualVelocity ({ctx.At(RegisterField.ActualVelocity)}) ≤ 0 throughout, expected > 0."));
         if (!halt.Met || halt.ElapsedMs > HaltBudgetMs)
             failures.Add(Failure.Machine("MotionFailed", $"no Standstill {halt.ElapsedMs} ms after Stop. Read State ({stateAt}) = {halt.View.State}, expected 1 within 200 ms."));
         return CheckOutcome.Judge(failures, $"ran at up to {Words.FromRaw(fastest)}, stopped in {halt.ElapsedMs} ms",
@@ -459,7 +459,7 @@ internal static class CheckCatalog
         if (!jog.Acked) return NotAcked("MoveVelocity", jog, ("commandedVelocity", speed));
         var moving = await ctx.WaitForAsync(v => v.Status.ActualVelocity > 0, Chk16MovingBudget, jog.WrittenAt, ct);
         if (!moving.Met)
-            return CheckOutcome.Fail(Failure.Machine("MotionFailed", $"the jog never moved within {Chk16MovingBudget.TotalSeconds:0} s of the ack. Read ActualVelocity ({ctx.WhereInput(ctx.Map.ActualVelocity)}) = "
+            return CheckOutcome.Fail(Failure.Machine("MotionFailed", $"the jog never moved within {Chk16MovingBudget.TotalSeconds:0} s of the ack. Read ActualVelocity ({ctx.At(RegisterField.ActualVelocity)}) = "
                                                                      + $"{moving.View.Status.ActualVelocity}, State = {moving.View.State}, expected > 0 and 4."), ("commandedVelocity", speed));
 
         // The commander dies: the beat stops, the connection stays open, polling continues.
@@ -474,16 +474,16 @@ internal static class CheckCatalog
         var homed = trip.View.Status.Homed;
 
         var failures = new List<Failure>();
-        var faultAt = ctx.WhereInput(ctx.Map.FaultCode);
+        var faultAt = ctx.At(RegisterField.FaultCode);
         if (jog.View.State != Continuous) failures.Add(AckWithoutState(ctx, "MoveVelocity", jog, Continuous));
         if (!trip.Met)
             failures.Add(Failure.Protocol($"no trip within 1.5 s of the last beat. Read FaultCode ({faultAt}) = {trip.View.Status.FaultCode}, "
-                                          + $"State ({ctx.WhereInput(ctx.Map.State)}) = {trip.View.State} after 3 s, expected 4 and 7."));
+                                          + $"State ({ctx.At(RegisterField.State)}) = {trip.View.State} after 3 s, expected 4 and 7."));
         else if (TripWindow(trip.LastWithoutStartMs ?? 0, trip.ElapsedMs) is { } off)
             failures.Add(Failure.Protocol($"{off}. Read FaultCode ({faultAt}) = 4."));
         if (trip.Met && (!halt.Met || halt.ElapsedMs > HaltBudgetMs))
-            failures.Add(Failure.Machine("MotionFailed", $"still moving {halt.ElapsedMs} ms after the trip. Read ActualVelocity ({ctx.WhereInput(ctx.Map.ActualVelocity)}) = {halt.View.Status.ActualVelocity}, expected 0 within 200 ms."));
-        if (trip.Met && !homed) failures.Add(Failure.Protocol($"the trip cleared Homed. Read Flags ({ctx.WhereInput(ctx.Map.Flags)}) = 0x{(ushort)trip.View.Status.Flags:X4}, expected bit 0 set."));
+            failures.Add(Failure.Machine("MotionFailed", $"still moving {halt.ElapsedMs} ms after the trip. Read ActualVelocity ({ctx.At(RegisterField.ActualVelocity)}) = {halt.View.Status.ActualVelocity}, expected 0 within 200 ms."));
+        if (trip.Met && !homed) failures.Add(Failure.Protocol($"the trip cleared Homed. Read Flags ({ctx.At(RegisterField.Flags)}) = 0x{(ushort)trip.View.Status.Flags:X4}, expected bit 0 set."));
         return CheckOutcome.Judge(failures, $"tripped {TripInterval(trip.LastWithoutStartMs ?? 0, trip.ElapsedMs)}, halted {halt.ElapsedMs} ms later, Homed kept",
             ("commandedVelocity", speed), ("tripAfterMs", trip.Met ? trip.ElapsedMs : null), ("haltAfterTripMs", trip.Met && halt.Met ? halt.ElapsedMs : null),
             ("homedAfterTrip", trip.Met ? (homed ? 1 : 0) : null));
@@ -499,7 +499,7 @@ internal static class CheckCatalog
 
     private static Failure AckWithoutState(CheckContext ctx, string what, Ack ack, ushort expected) =>
         Failure.Protocol($"{what} was acknowledged without entering its state (the ack must land in the scan that enters it). "
-                         + $"Read CommandAck ({ctx.WhereInput(ctx.Map.CommandAck)}) = {ack.Seq}, State ({ctx.WhereInput(ctx.Map.State)}) = {ack.View.State}, expected {expected}.");
+                         + $"Read CommandAck ({ctx.At(RegisterField.CommandAck)}) = {ack.Seq}, State ({ctx.At(RegisterField.State)}) = {ack.View.State}, expected {expected}.");
 
     /// <summary>
     /// protocol § Rules, "Each check restores": a precondition FAIL is a failure to restore. The axis was not as the
@@ -509,8 +509,8 @@ internal static class CheckCatalog
     {
         ctx.NotRestorable = true;
         return CheckOutcome.Fail(s.State == ErrorStop && s.FaultCode != 0
-            ? Failure.Fault(s.FaultCode, ctx.WhereInput(ctx.Map.FaultCode))
-            : Failure.Machine("MotionFailed", $"precondition: the axis is not at rest. Read State ({ctx.WhereInput(ctx.Map.State)}) = {s.State}, expected {expected}."));
+            ? Failure.Fault(s.FaultCode, ctx.At(RegisterField.FaultCode))
+            : Failure.Machine("MotionFailed", $"precondition: the axis is not at rest. Read State ({ctx.At(RegisterField.State)}) = {s.State}, expected {expected}."));
     }
 
     private static long Delta(ushort now, ushort before) => (ushort)(now - before);
@@ -524,7 +524,7 @@ internal static class CheckCatalog
         var on = await ctx.Commands.SendAsync(CommandBits.Enable, ct);
         if (!on.Acked) return Failure.NotAcknowledged("Enable 1", on.Seq, on.View.Status.CommandAck, on.View.State);
         var w = await ctx.WaitForAsync(v => v.State == Standstill, StateTimeout, on.WrittenAt, ct);
-        return w.Met ? null : Failure.Machine("DriveFault", $"no Standstill 5 s after Enable 1. Read State ({ctx.WhereInput(ctx.Map.State)}) = {w.View.State}, expected 1.");
+        return w.Met ? null : Failure.Machine("DriveFault", $"no Standstill 5 s after Enable 1. Read State ({ctx.At(RegisterField.State)}) = {w.View.State}, expected 1.");
     }
 
     /// <summary>Hold the lease, WatchdogFault = 0, beat 2 s, stop beating, watch for the trip (CHK-08, and CHK-09's setup).</summary>
@@ -571,8 +571,8 @@ internal static class CheckCatalog
     private readonly record struct Trip(bool Tripped, long BeforeMs, long AfterMs, PlcView View, ushort TripsBefore)
     {
         public string Read(CheckContext ctx) =>
-            $"Read WatchdogFault ({ctx.Where(ctx.Map.WatchdogFault)}) = {View.WatchdogFault}, WatchdogTrips ({ctx.Where(ctx.Map.WatchdogTrips)}) = {View.WatchdogTrips}, "
-            + $"State ({ctx.WhereInput(ctx.Map.State)}) = {View.State}, FaultCode ({ctx.WhereInput(ctx.Map.FaultCode)}) = {View.Status.FaultCode}, "
+            $"Read WatchdogFault ({ctx.At(RegisterField.WatchdogFault)}) = {View.WatchdogFault}, WatchdogTrips ({ctx.At(RegisterField.WatchdogTrips)}) = {View.WatchdogTrips}, "
+            + $"State ({ctx.At(RegisterField.State)}) = {View.State}, FaultCode ({ctx.At(RegisterField.FaultCode)}) = {View.Status.FaultCode}, "
             + $"expected 1, {(ushort)(TripsBefore + 1)}, 7, 4.";
 
         public IEnumerable<Failure> Failures(CheckContext ctx)
