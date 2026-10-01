@@ -159,3 +159,78 @@ async def test_a_cancel_during_a_request_leaves_the_next_request_answered_at_onc
     assert next_read_s < 0.05, next_read_s
     assert client.retries == 0
     assert 0.15 <= cancel_s <= 0.5, cancel_s  # bounded by the frame's own answer or its 0.5 s timeout
+
+
+# --- GA-U-134.py (ADR-36): the status block is input registers, read by FC04 with the same transport rules ---
+
+
+async def test_read_input_reads_the_input_space_not_the_holding_space(stub: StubPlc) -> None:
+    # Holding 0…14 and input 0…14 are different registers: FC04 answers the input array, FC03 the holding one, and
+    # the fallback evidence of each is kept apart.
+    stub.inputs[0:15] = range(100, 115)
+    stub.regs[0:15] = range(200, 215)
+    client = PlcClient("127.0.0.1", stub.port, 1)
+    await client.connect()
+    try:
+        assert await client.read_input(0, 15) == list(range(100, 115))
+        assert await client.read(0, 15) == list(range(200, 215))
+    finally:
+        client.close()
+    assert client.last_input == {a: 100 + a for a in range(15)}
+    assert client.last_read == {a: 200 + a for a in range(15)}
+
+
+async def test_read_input_from_a_silent_unit_names_fc04_and_the_input_range(stub: StubPlc) -> None:
+    client = PlcClient("127.0.0.1", stub.port, 9)
+    await client.connect()
+    started = time.monotonic()
+    try:
+        with pytest.raises(PlcError, match=r"FC04 read S\+0…S\+14 = input 0…14 on 127\.0\.0\.1:\d+ unit 9 failed: "):
+            await client.read_input(0, 15)
+    finally:
+        client.close()
+    elapsed = time.monotonic() - started
+    assert client.retries == 1  # the one reconnect-and-retry, then Transport
+    assert 0.9 <= elapsed <= 1.6, elapsed  # two 0.5 s request timeouts (review #19)
+
+
+async def test_read_input_retries_a_lost_answer_once_at_warning_and_counts_it(
+    stub: StubPlc, caplog: pytest.LogCaptureFixture
+) -> None:
+    stub.inputs[14] = 1
+    client = PlcClient("127.0.0.1", stub.port, 1)
+    await client.connect()
+    try:
+        stub.drop_next = 1
+        with caplog.at_level(logging.WARNING, logger="generic_axis_check.client"):
+            assert await client.read_input(14, 1) == [1]
+    finally:
+        client.close()
+    assert client.retries == 1
+    warnings = [r.getMessage() for r in caplog.records if r.name == "generic_axis_check.client"]
+    assert len(warnings) == 1
+    assert warnings[0].startswith("FC04 read S+14 = input 14 on 127.0.0.1:")
+    assert warnings[0].endswith("; reconnecting and retrying once")
+
+
+async def test_read_input_cancelled_in_flight_leaves_the_next_request_answered_at_once(stub: StubPlc) -> None:
+    # The #32 shield on FC04: the held reply completes before the cancellation takes effect.
+    client = PlcClient("127.0.0.1", stub.port, 1)
+    await client.connect()
+    try:
+        stub.reply_delay_if = lambda pdu: 0.2 if pdu[0] == 4 else 0.0
+        in_flight = asyncio.create_task(client.read_input(0, 15))
+        async with asyncio.timeout(2):  # an FC04 the stub never holds fails here, not at the suite's timeout
+            while not stub.replying_late:  # noqa: ASYNC110 — waits for the stub to hold the reply; no event to await
+                await asyncio.sleep(0.001)
+        in_flight.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await in_flight
+        stub.reply_delay_if = None
+        started = time.monotonic()
+        await client.read_input(0, 15)
+        next_read_s = time.monotonic() - started
+    finally:
+        client.close()
+    assert next_read_s < 0.05, next_read_s
+    assert client.retries == 0

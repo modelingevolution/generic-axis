@@ -84,7 +84,8 @@ async def _complete_on_the_wire(pending: Awaitable[ModbusPDU]) -> ModbusPDU:
 
 
 class PlcClient:
-    """Holding-register access to one unit. FC03 reads, FC06 for one register, FC16 for several (protocol.md)."""
+    """Register access to one unit (protocol.md § Transport, "Register type"; ADR-36): the command block is holding
+    registers (FC03 reads, FC06 for one register, FC16 for several), the status block input registers (FC04 reads)."""
 
     def __init__(self, host: str, port: int, unit: int, registers: RegisterMap | None = None) -> None:
         self.host = host
@@ -94,7 +95,9 @@ class PlcClient:
         """Only for naming register ranges in error messages (protocol.md § Errors and debugging, rule 1)."""
         self._client: AsyncModbusTcpClient | None = None
         self.last_read: dict[int, int] = {}
-        """The last value read from each register: the fallback ``lastRead`` evidence when a fresh read fails."""
+        """The last value read from each holding register: the fallback ``lastRead`` evidence when a fresh read fails."""
+        self.last_input: dict[int, int] = {}
+        """The same for each input register. A separate map: holding 0 and input 0 are different registers."""
         self.retries = 0
         """Reconnect-and-retries performed so far; each check reports its own delta (§ Observed values)."""
         self._generation = 0
@@ -201,15 +204,28 @@ class PlcClient:
                     raise PlcError(f"{failure}; reconnect failed: {again}") from exc
 
     async def read(self, address: int, count: int) -> list[int]:
+        """FC03: holding registers (the command block)."""
         where = self._where("FC03 read", Space.HOLDING, address, count)
         response = await self._transact(
             where, lambda c: c.read_holding_registers(address, count=count, device_id=self.unit), retry=True
         )
+        return self._answered(where, response, count, self.last_read, address)
+
+    async def read_input(self, address: int, count: int) -> list[int]:
+        """FC04: input registers (the status block, ADR-36), with the same shield, timeout and one retry as ``read``."""
+        where = self._where("FC04 read", Space.INPUT, address, count)
+        response = await self._transact(
+            where, lambda c: c.read_input_registers(address, count=count, device_id=self.unit), retry=True
+        )
+        return self._answered(where, response, count, self.last_input, address)
+
+    @staticmethod
+    def _answered(where: str, response: ModbusPDU, count: int, last: dict[int, int], address: int) -> list[int]:
         registers = list(response.registers)
         if len(registers) != count:
             raise PlcError(f"{where} failed: answered {len(registers)} registers")
         for offset, value in enumerate(registers):
-            self.last_read[address + offset] = value
+            last[address + offset] = value
         return registers
 
     async def write(self, address: int, values: list[int], *, retry: bool = True) -> None:
