@@ -45,20 +45,58 @@ public sealed class SimulatorHostTests
     }
 
     [Fact]
-    public async Task WritesToPlcOwnedRegistersAreIgnored()
+    public async Task AWriteToHoldingC11IsIgnored()
     {
         using var sim = new LiveSimulator();
-        using var client = new FluentModbus.ModbusTcpClient();
-        client.Connect(new IPEndPoint(IPAddress.Loopback, sim.Port), FluentModbus.ModbusEndianness.BigEndian);
+        using var client = Connect(sim.Port);
 
-        client.WriteMultipleRegisters(1, 100, new ushort[] { 7, 0xFFFF });
         client.WriteSingleRegister(1, 11, 99);
-        var status = client.ReadHoldingRegisters<ushort>(1, 100, 15).ToArray();
         var trips = client.ReadHoldingRegisters<ushort>(1, 11, 1)[0];
 
-        status[0].Should().Be(0, "State is PLC-owned");
-        status[14].Should().Be(1, "MapVersion is PLC-owned");
-        trips.Should().Be(0, "WatchdogTrips is PLC-owned");
-        (await sim.SettledAsync()).State.Should().Be(SimAxisState.Disabled);
+        trips.Should().Be(0, "WatchdogTrips (C+11 = holding 11) is PLC-owned");
+        (await sim.SettledAsync()).WatchdogTrips.Should().Be(0);
+    }
+
+    /// <summary>
+    /// GA-I-68 (ADR-36): at the default bases the command block (holding 0…11) and the status block (input 0…14) share
+    /// addresses but not data. A holding write to 0…14 lands in the command block, where the PLC acts on it, and the
+    /// status block read by FC04 still carries what the PLC published.
+    /// </summary>
+    [Fact]
+    public async Task GA_I_68_HoldingAndInputAreIndependentSpacesAtTheDefaultBases()
+    {
+        using var sim = new LiveSimulator();
+        sim.Host.Options.CommandBase.Should().Be(0);
+        sim.Host.Options.StatusBase.Should().Be(0);
+        using var client = Connect(sim.Port);
+
+        // Command 0, CommandSeq 5, Target 0x5678_1234, Velocity 0, Acceleration hi 0x4242 at holding 7 (S+7 is
+        // CommandAck), Heartbeat 0x0A0A, LeaseOwner 0, WatchdogFault 0, C+11 99 (ignored), holding 12…14 beyond the
+        // command block (holding 14 = 2 where input 14 is MapVersion).
+        ushort[] written = [0, 5, 0x1234, 0x5678, 0, 0, 0, 0x4242, 0x0A0A, 0, 0, 99, 0xAAAA, 0xBBBB, 2];
+        client.WriteMultipleRegisters(1, 0, written);
+        var settled = await sim.SettledAsync();
+
+        var holding = client.ReadHoldingRegisters<ushort>(1, 0, 15).ToArray();
+        var input = client.ReadInputRegisters<ushort>(1, 0, 15).ToArray();
+
+        holding.Should().Equal([0, 5, 0x1234, 0x5678, 0, 0, 0, 0x4242, 0x0A0A, 0, 0, 0, 0xAAAA, 0xBBBB, 2],
+            "every holding word reads back as written, except C+11 which the PLC owns");
+        settled.CommandBlock.Should().Equal(holding[..12], "the PLC's command block is the holding array");
+        settled.CommandSeq.Should().Be(5);
+        input[7].Should().Be(5, "the PLC accepted CommandSeq 5 from holding 1 and published the ack in input 7 (S+7)");
+        input[0].Should().Be((ushort)SimAxisState.Disabled, "Command 0 is Enable 0");
+        input[14].Should().Be(1, "MapVersion (S+14 = input 14) is the PLC's, not holding 14");
+        input[2..4].Should().Equal([0xA120, 0x0007], "ActualPosition 500.000 low word first, not the written target");
+        input[8..14].Should().Equal([0, 0, 0x9680, 0x0098, 0xA120, 0x0007],
+            "the limits 0 / 10 000 / 500 the PLC publishes, untouched by holding 8…13");
+        settled.StatusBlock.Should().Equal(input, "the PLC's status block is the input array");
+    }
+
+    private static FluentModbus.ModbusTcpClient Connect(int port)
+    {
+        var client = new FluentModbus.ModbusTcpClient();
+        client.Connect(new IPEndPoint(IPAddress.Loopback, port), FluentModbus.ModbusEndianness.BigEndian);
+        return client;
     }
 }

@@ -448,7 +448,7 @@ public sealed class CheckerAgainstSimulatorTests
         // It runs once the served write releases the scan lock, and re-opens the port at once.
         sim.Host.OnClientWrite = addresses =>
         {
-            if (!armed || !addresses.Contains(SimRegisters.TargetPosition) || sim.Host.Registers.Read(SimRegisters.TargetPosition) != 0xFFFE) return;
+            if (!armed || !addresses.Contains(SimRegisters.TargetPosition) || sim.Host.Registers.Holding.Read(SimRegisters.TargetPosition) != 0xFFFE) return;
             armed = false;
             drop = Task.Run(() =>
             {
@@ -596,7 +596,7 @@ public sealed class CheckerAgainstSimulatorTests
         var journal = new System.Collections.Concurrent.ConcurrentQueue<string>();
         sim.Host.OnClientWrite = addresses =>
         {
-            foreach (var a in addresses) journal.Enqueue($"C+{a} = {sim.Host.Registers.Read(a)}");
+            foreach (var a in addresses) journal.Enqueue($"C+{a} = {sim.Host.Registers.Holding.Read(a)}");
         };
 
         var first = await Check(sim, allowMotion: false, progress: r =>
@@ -797,10 +797,10 @@ public sealed class CheckerAgainstSimulatorTests
         // FC16), so the intrusion precedes the checker's next request deterministically.
         sim.Host.OnClientWrite = addresses =>
         {
-            if (!armed || !addresses.Contains(SimRegisters.Command) || (sim.Host.Registers.Read(SimRegisters.Command) & 1) == 0) return;
+            if (!armed || !addresses.Contains(SimRegisters.Command) || (sim.Host.Registers.Holding.Read(SimRegisters.Command) & 1) == 0) return;
             armed = false;
-            seqAtIntrusion = sim.Host.Registers.Read(SimRegisters.CommandSeq);
-            sim.Host.Registers.Write(SimRegisters.LeaseOwner, 1);
+            seqAtIntrusion = sim.Host.Registers.Holding.Read(SimRegisters.CommandSeq);
+            sim.Host.Registers.Holding.Write(SimRegisters.LeaseOwner, 1);
         };
 
         var report = await Check(sim, allowMotion: false, progress: r =>
@@ -833,9 +833,9 @@ public sealed class CheckerAgainstSimulatorTests
         Task? beating = null;
         sim.Host.OnClientWrite = addresses =>
         {
-            if (!armed || !addresses.Contains(SimRegisters.LeaseOwner) || sim.Host.Registers.Read(SimRegisters.LeaseOwner) != 0) return;
+            if (!armed || !addresses.Contains(SimRegisters.LeaseOwner) || sim.Host.Registers.Holding.Read(SimRegisters.LeaseOwner) != 0) return;
             armed = false;
-            sim.Host.Registers.Write(SimRegisters.LeaseOwner, 1); // the release is answered by another commander
+            sim.Host.Registers.Holding.Write(SimRegisters.LeaseOwner, 1); // the release is answered by another commander
         };
 
         var report = await Check(sim, allowMotion: false, progress: r =>

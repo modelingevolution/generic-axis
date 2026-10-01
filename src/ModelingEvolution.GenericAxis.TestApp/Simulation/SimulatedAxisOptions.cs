@@ -19,8 +19,10 @@ public sealed record SimulatedAxisOptions
     public int Port { get; init; } = 5020;
 
     public byte UnitId { get; init; } = 1;
+    /// <summary>Holding-register base C of the command block (protocol § Transport).</summary>
     public int CommandBase { get; init; } = 0;
-    public int StatusBase { get; init; } = 100;
+    /// <summary>Input-register base S of the status block, in its own address space (ADR-36).</summary>
+    public int StatusBase { get; init; } = 0;
     public SimAxisKind Kind { get; init; } = SimAxisKind.Linear;
     public double TravelMin { get; init; } = 0;
     public double TravelMax { get; init; } = 10_000;
@@ -55,8 +57,6 @@ public sealed record SimulatedAxisOptions
             throw new ArgumentException($"{nameof(CommandBase)} {CommandBase} puts the command block past 65535", nameof(CommandBase));
         if (StatusBase < 0 || StatusBase + SimRegisters.StatusLength > 65536)
             throw new ArgumentException($"{nameof(StatusBase)} {StatusBase} puts the status block past 65535", nameof(StatusBase));
-        if (CommandBase < StatusBase + SimRegisters.StatusLength && StatusBase < CommandBase + SimRegisters.CommandLength)
-            throw new ArgumentException($"Command block {CommandBase} and status block {StatusBase} overlap", nameof(StatusBase));
         if (TravelMin >= TravelMax) throw new ArgumentException($"{nameof(TravelMin)} {TravelMin} must be below {nameof(TravelMax)} {TravelMax}", nameof(TravelMin));
         if (MaxVelocity <= 0) throw new ArgumentException($"{nameof(MaxVelocity)} must be > 0", nameof(MaxVelocity));
         if (DefaultAcceleration <= 0) throw new ArgumentException($"{nameof(DefaultAcceleration)} must be > 0", nameof(DefaultAcceleration));

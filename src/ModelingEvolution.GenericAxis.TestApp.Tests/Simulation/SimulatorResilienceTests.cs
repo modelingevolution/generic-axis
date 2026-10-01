@@ -77,13 +77,13 @@ public sealed class SimulatorResilienceTests
         }
     }
 
-    /// <summary>One FC03 of S+0…S+14, then an RST (linger 0) before the answer can be read.</summary>
+    /// <summary>One FC04 of S+0…S+14 (input 0…14), then an RST (linger 0) before the answer can be read.</summary>
     private static async Task ResetWithRequestInFlightAsync(int port)
     {
         using var raw = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
         await raw.ConnectAsync(IPAddress.Loopback, port);
-        byte[] fc03 = [0x00, 0x01, 0x00, 0x00, 0x00, 0x06, 0x01, 0x03, 0x00, 100, 0x00, 15];
-        await raw.SendAsync(fc03);
+        byte[] fc04 = [0x00, 0x01, 0x00, 0x00, 0x00, 0x06, 0x01, 0x04, 0x00, 0x00, 0x00, 15];
+        await raw.SendAsync(fc04);
         raw.LingerState = new LingerOption(true, 0);
         raw.Close();
         await Task.Delay(30); // at least one scan, so a synchronous server would try to answer the dead peer
@@ -118,5 +118,5 @@ public sealed class SimulatorResilienceTests
     }
 
     private static ushort[] ReadStatus(FluentModbus.ModbusTcpClient client) =>
-        client.ReadHoldingRegisters<ushort>(1, 100, 15).ToArray();
+        client.ReadInputRegisters<ushort>(1, 0, 15).ToArray();
 }

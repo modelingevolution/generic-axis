@@ -46,7 +46,7 @@ public sealed partial class HeadlessCadenceLineTests
         try
         {
             using var client = await ConnectWhenListeningAsync(port, process);
-            client.ReadHoldingRegisters<ushort>(1, 100, 15).ToArray().Should().HaveCount(15);
+            client.ReadInputRegisters<ushort>(1, 0, 15).ToArray().Should().HaveCount(15);
             await accepted.Task.WaitAsync(TimeSpan.FromSeconds(30)); // the child has counted the client
 
             using (var kill = Process.Start("kill", ["-TERM", process.Id.ToString(System.Globalization.CultureInfo.InvariantCulture)])!) kill.WaitForExit();
@@ -169,7 +169,7 @@ public sealed class SimulatorServiceCadenceTests
 
         using var client = new FluentModbus.ModbusTcpClient();
         client.Connect(new IPEndPoint(IPAddress.Loopback, host.Port), FluentModbus.ModbusEndianness.BigEndian);
-        client.ReadHoldingRegisters<ushort>(1, 100, 15).ToArray();
+        client.ReadInputRegisters<ushort>(1, 0, 15).ToArray();
         await ModelingEvolution.GenericAxis.TestApp.Tests.Conformance.CheckerAgainstSimulatorTests.Until(
             () => service.MaxScanGapSinceFirstClient > TimeSpan.Zero, "a gap measured since the client connected");
 

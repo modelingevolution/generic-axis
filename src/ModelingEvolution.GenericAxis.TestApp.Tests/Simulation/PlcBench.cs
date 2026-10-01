@@ -35,14 +35,14 @@ internal sealed class PlcBench : IDisposable
     private int S => Options.StatusBase;
 
     public SimSnapshot Snap => Plc.Snapshot(false);
-    public ushort State => Registers.Read(S + SimRegisters.State);
-    public SimStatusFlags Flags => (SimStatusFlags)Registers.Read(S + SimRegisters.Flags);
-    public ushort FaultCode => Registers.Read(S + SimRegisters.FaultCode);
-    public ushort Ack => Registers.Read(S + SimRegisters.CommandAck);
-    public int ActualPositionRaw => Registers.ReadInt32(S + SimRegisters.ActualPosition);
-    public int ActualVelocityRaw => Registers.ReadInt32(S + SimRegisters.ActualVelocity);
-    public ushort WatchdogFault => Registers.Read(C + SimRegisters.WatchdogFault);
-    public ushort WatchdogTrips => Registers.Read(C + SimRegisters.WatchdogTrips);
+    public ushort State => Registers.Input.Read(S + SimRegisters.State);
+    public SimStatusFlags Flags => (SimStatusFlags)Registers.Input.Read(S + SimRegisters.Flags);
+    public ushort FaultCode => Registers.Input.Read(S + SimRegisters.FaultCode);
+    public ushort Ack => Registers.Input.Read(S + SimRegisters.CommandAck);
+    public int ActualPositionRaw => Registers.Input.ReadInt32(S + SimRegisters.ActualPosition);
+    public int ActualVelocityRaw => Registers.Input.ReadInt32(S + SimRegisters.ActualVelocity);
+    public ushort WatchdogFault => Registers.Holding.Read(C + SimRegisters.WatchdogFault);
+    public ushort WatchdogTrips => Registers.Holding.Read(C + SimRegisters.WatchdogTrips);
 
     public void Tick(int scans = 1)
     {
@@ -68,30 +68,30 @@ internal sealed class PlcBench : IDisposable
     /// <summary>Parameters (C+2…C+7), each int32 low word first, in axis units.</summary>
     public void Parameters(double target, double velocity, double acceleration = 0)
     {
-        Registers.WriteInt32(C + SimRegisters.TargetPosition, (int)Math.Round(target * 1000));
-        Registers.WriteInt32(C + SimRegisters.Velocity, (int)Math.Round(velocity * 1000));
-        Registers.WriteInt32(C + SimRegisters.Acceleration, (int)Math.Round(acceleration * 1000));
+        Registers.Holding.WriteInt32(C + SimRegisters.TargetPosition, (int)Math.Round(target * 1000));
+        Registers.Holding.WriteInt32(C + SimRegisters.Velocity, (int)Math.Round(velocity * 1000));
+        Registers.Holding.WriteInt32(C + SimRegisters.Acceleration, (int)Math.Round(acceleration * 1000));
     }
 
     /// <summary>A command write: <c>Command</c> and a fresh <c>CommandSeq</c>.</summary>
     public ushort Command(SimCommandBits bits)
     {
         _seq = _seq == ushort.MaxValue ? (ushort)1 : (ushort)(_seq + 1);
-        Registers.Write(C + SimRegisters.Command, (ushort)bits);
-        Registers.Write(C + SimRegisters.CommandSeq, _seq);
+        Registers.Holding.Write(C + SimRegisters.Command, (ushort)bits);
+        Registers.Holding.Write(C + SimRegisters.CommandSeq, _seq);
         return _seq;
     }
 
     /// <summary>The write that clears edge bits after an ack: same sequence.</summary>
-    public void ClearEdges(SimCommandBits level) => Registers.Write(C + SimRegisters.Command, (ushort)level);
+    public void ClearEdges(SimCommandBits level) => Registers.Holding.Write(C + SimRegisters.Command, (ushort)level);
 
-    public void Lease(ushort owner) => Registers.Write(C + SimRegisters.LeaseOwner, owner);
-    public void ClearWatchdogFault() => Registers.Write(C + SimRegisters.WatchdogFault, 0);
+    public void Lease(ushort owner) => Registers.Holding.Write(C + SimRegisters.LeaseOwner, owner);
+    public void ClearWatchdogFault() => Registers.Holding.Write(C + SimRegisters.WatchdogFault, 0);
 
     public void Beat()
     {
         _beat = _beat == ushort.MaxValue ? (ushort)1 : (ushort)(_beat + 1);
-        Registers.Write(C + SimRegisters.Heartbeat, _beat);
+        Registers.Holding.Write(C + SimRegisters.Heartbeat, _beat);
     }
 
     /// <summary>Beats every 100 ms of simulated time for <paramref name="duration"/>.</summary>

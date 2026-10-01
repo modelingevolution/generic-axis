@@ -104,8 +104,8 @@ public sealed class AxisPlc
         _clock += dt;
 
         // 1. Read the command block.
-        var command = (SimCommandBits)_r.Read(_c + SimRegisters.Command);
-        var seq = _r.Read(_c + SimRegisters.CommandSeq);
+        var command = (SimCommandBits)_r.Holding.Read(_c + SimRegisters.Command);
+        var seq = _r.Holding.Read(_c + SimRegisters.CommandSeq);
 
         Watchdog();                 // 2.
         Accept(command, seq, dt);   // 3.
@@ -132,7 +132,7 @@ public sealed class AxisPlc
     /// </summary>
     public void PowerCycle()
     {
-        for (var i = 0; i < SimRegisters.CommandLength; i++) _r.Write(_c + i, 0);
+        for (var i = 0; i < SimRegisters.CommandLength; i++) _r.Holding.Write(_c + i, 0);
         _ack = 0;
         _v = 0;
         _energised = false;
@@ -156,8 +156,10 @@ public sealed class AxisPlc
     }
 
     /// <summary>
-    /// Rewrites every PLC-owned register (C+11, S+0…S+14) from the PLC's state. Called after a client write lands on
-    /// one of them: the protocol says the PLC ignores such writes, and a read in the same batch must not see them.
+    /// Rewrites every PLC-owned register from the PLC's state: the status block (input S+0…S+14) and holding C+11.
+    /// Also called after a client write lands on C+11: the protocol says the PLC ignores such writes, and a read in the
+    /// same batch must not see them. The status block needs no such guard: it is input registers, which no client can
+    /// write (ADR-36).
     /// </summary>
     public void Publish()
     {
@@ -171,17 +173,17 @@ public sealed class AxisPlc
         if (_energised && _state != SimAxisState.ErrorStop) flags |= SimStatusFlags.DriveReady;
         if (_v != 0) flags |= SimStatusFlags.Moving;
 
-        _r.Write(_s + SimRegisters.State, (ushort)_state);
-        _r.Write(_s + SimRegisters.Flags, (ushort)flags);
-        _r.WriteInt32(_s + SimRegisters.ActualPosition, ToRaw(Published), swapped);
-        _r.WriteInt32(_s + SimRegisters.ActualVelocity, ToRaw(_v), swapped);
-        _r.Write(_s + SimRegisters.FaultCode, (ushort)_fault);
-        _r.Write(_s + SimRegisters.CommandAck, _ack);
-        _r.WriteInt32(_s + SimRegisters.TravelMin, PublishLimits ? ToRaw(_o.TravelMin) : 0, swapped);
-        _r.WriteInt32(_s + SimRegisters.TravelMax, PublishLimits ? ToRaw(_o.TravelMax) : 0, swapped);
-        _r.WriteInt32(_s + SimRegisters.MaxVelocity, PublishLimits ? ToRaw(_o.MaxVelocity) : 0, swapped);
-        _r.Write(_s + SimRegisters.MapVersion, MapVersion);
-        _r.Write(_c + SimRegisters.WatchdogTrips, _trips);
+        _r.Input.Write(_s + SimRegisters.State, (ushort)_state);
+        _r.Input.Write(_s + SimRegisters.Flags, (ushort)flags);
+        _r.Input.WriteInt32(_s + SimRegisters.ActualPosition, ToRaw(Published), swapped);
+        _r.Input.WriteInt32(_s + SimRegisters.ActualVelocity, ToRaw(_v), swapped);
+        _r.Input.Write(_s + SimRegisters.FaultCode, (ushort)_fault);
+        _r.Input.Write(_s + SimRegisters.CommandAck, _ack);
+        _r.Input.WriteInt32(_s + SimRegisters.TravelMin, PublishLimits ? ToRaw(_o.TravelMin) : 0, swapped);
+        _r.Input.WriteInt32(_s + SimRegisters.TravelMax, PublishLimits ? ToRaw(_o.TravelMax) : 0, swapped);
+        _r.Input.WriteInt32(_s + SimRegisters.MaxVelocity, PublishLimits ? ToRaw(_o.MaxVelocity) : 0, swapped);
+        _r.Input.Write(_s + SimRegisters.MapVersion, MapVersion);
+        _r.Holding.Write(_c + SimRegisters.WatchdogTrips, _trips);
     }
 
     /// <summary>The PLC's state for the UI and tests.</summary>
@@ -192,34 +194,34 @@ public sealed class AxisPlc
         PublishedPosition = Published,
         Velocity = _v,
         State = _state,
-        Flags = (SimStatusFlags)_r.Read(_s + SimRegisters.Flags),
+        Flags = (SimStatusFlags)_r.Input.Read(_s + SimRegisters.Flags),
         FaultCode = _fault,
         Homed = _homed,
         Energised = _energised,
-        CommandWord = _r.Read(_c + SimRegisters.Command),
-        CommandSeq = _r.Read(_c + SimRegisters.CommandSeq),
+        CommandWord = _r.Holding.Read(_c + SimRegisters.Command),
+        CommandSeq = _r.Holding.Read(_c + SimRegisters.CommandSeq),
         CommandAck = _ack,
-        Heartbeat = _r.Read(_c + SimRegisters.Heartbeat),
+        Heartbeat = _r.Holding.Read(_c + SimRegisters.Heartbeat),
         HeartbeatAge = _clock - _lastBeatAt,
         WatchdogArmed = _armed,
-        WatchdogFault = _r.Read(_c + SimRegisters.WatchdogFault),
+        WatchdogFault = _r.Holding.Read(_c + SimRegisters.WatchdogFault),
         WatchdogTrips = _trips,
-        LeaseOwner = _r.Read(_c + SimRegisters.LeaseOwner),
+        LeaseOwner = _r.Holding.Read(_c + SimRegisters.LeaseOwner),
         Faults = _faults,
         PublishLimits = PublishLimits,
         MapVersion = MapVersion,
         Listening = listening,
-        CommandBlock = [.. _r.ReadBlock(_c, SimRegisters.CommandLength)],
-        StatusBlock = [.. _r.ReadBlock(_s, SimRegisters.StatusLength)],
+        CommandBlock = [.. _r.Holding.ReadBlock(_c, SimRegisters.CommandLength)],
+        StatusBlock = [.. _r.Input.ReadBlock(_s, SimRegisters.StatusLength)],
     };
 
     // ---- 2. Watchdog (protocol § FR-11) ------------------------------------------------------------------------
 
     private void Watchdog()
     {
-        var beat = _r.Read(_c + SimRegisters.Heartbeat);
-        var lease = _r.Read(_c + SimRegisters.LeaseOwner);
-        var latched = _r.Read(_c + SimRegisters.WatchdogFault);
+        var beat = _r.Holding.Read(_c + SimRegisters.Heartbeat);
+        var lease = _r.Holding.Read(_c + SimRegisters.LeaseOwner);
+        var latched = _r.Holding.Read(_c + SimRegisters.WatchdogFault);
 
         if (beat != _lastBeat)
         {
@@ -256,7 +258,7 @@ public sealed class AxisPlc
         {
             _trips++;
             _armed = false;
-            _r.Write(_c + SimRegisters.WatchdogFault, 1);
+            _r.Holding.Write(_c + SimRegisters.WatchdogFault, 1);
             EnterErrorStop(SimFaultCode.Watchdog,
                 $"watchdog tripped: Heartbeat {beat} unchanged for {(_clock - _lastBeatAt).TotalMilliseconds:F0} ms, owner {lease}, trips {_trips}");
         }
@@ -365,9 +367,9 @@ public sealed class AxisPlc
             return Ignored(command, $"MoveAbsolute not accepted in {_state}");
 
         var swapped = _faults.SwappedWordOrder;
-        var target = _r.ReadInt32(_c + SimRegisters.TargetPosition, swapped) / SimRegisters.Scale;
-        var speed = Math.Abs(_r.ReadInt32(_c + SimRegisters.Velocity, swapped) / SimRegisters.Scale);
-        var accel = _r.ReadInt32(_c + SimRegisters.Acceleration, swapped) / SimRegisters.Scale;
+        var target = _r.Holding.ReadInt32(_c + SimRegisters.TargetPosition, swapped) / SimRegisters.Scale;
+        var speed = Math.Abs(_r.Holding.ReadInt32(_c + SimRegisters.Velocity, swapped) / SimRegisters.Scale);
+        var accel = _r.Holding.ReadInt32(_c + SimRegisters.Acceleration, swapped) / SimRegisters.Scale;
 
         if (target < _o.TravelMin || target > _o.TravelMax)
             return Ignored(command,
@@ -393,8 +395,8 @@ public sealed class AxisPlc
             return Ignored(command, $"MoveVelocity not accepted in {_state}");
 
         var swapped = _faults.SwappedWordOrder;
-        var velocity = _r.ReadInt32(_c + SimRegisters.Velocity, swapped) / SimRegisters.Scale;
-        var accel = _r.ReadInt32(_c + SimRegisters.Acceleration, swapped) / SimRegisters.Scale;
+        var velocity = _r.Holding.ReadInt32(_c + SimRegisters.Velocity, swapped) / SimRegisters.Scale;
+        var accel = _r.Holding.ReadInt32(_c + SimRegisters.Acceleration, swapped) / SimRegisters.Scale;
 
         if (velocity == 0) return Ignored(command, "Velocity 0");
         if (Math.Abs(velocity) > _o.MaxVelocity) return OverMaxVelocity(command, velocity);

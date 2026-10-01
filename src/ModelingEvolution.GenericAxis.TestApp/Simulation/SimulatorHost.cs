@@ -57,7 +57,7 @@ public sealed class SimulatorHost : IDisposable
 
     public SimulatedAxisOptions Options { get; }
 
-    /// <summary>The unit's holding registers (absolute addresses).</summary>
+    /// <summary>The unit's registers: holding (command block) and input (status block), absolute addresses.</summary>
     public PlcRegisterFile Registers { get; }
 
     /// <summary>Raised after every accepted Modbus TCP connection (e.g. to start measuring cadence at the first client).</summary>
@@ -140,7 +140,7 @@ public sealed class SimulatorHost : IDisposable
             _server.Start(_provider, leaveOpen: true);
             ApplyGate();
             _log.LogInformation(
-                "Simulated {Kind} axis on Modbus TCP port {Port}, unit {Unit}, command block {C}, status block {S}, faults {Faults}",
+                "Simulated {Kind} axis on Modbus TCP port {Port}, unit {Unit}, command block at holding {C}, status block at input {S}, faults {Faults}",
                 Options.Kind, Port, Options.UnitId, _commandBase, _statusBase, _plc.Faults);
             Refresh();
         }
@@ -182,18 +182,15 @@ public sealed class SimulatorHost : IDisposable
 
     private void OnRegistersChanged(object? sender, RegistersChangedEventArgs e)
     {
-        // Raised while FluentModbus serves a write, under ModbusServer.Lock (= _sync). The PLC ignores writes to the registers it owns (protocol checklist
-        // item 1): put them back at once, so a read later in the same batch cannot see the client's value.
+        // Raised while FluentModbus serves a holding-register write, under ModbusServer.Lock (= _sync). The PLC ignores
+        // writes to holding C+11, the one PLC-owned holding register (protocol checklist item 1): put it back at once,
+        // so a read later in the same batch cannot see the client's value. The status block is input registers, which
+        // no function code can write (ADR-36), so it needs no guard here.
         OnClientWrite?.Invoke(e.Registers);
-        foreach (var address in e.Registers)
-        {
-            var plcOwned = address == _commandBase + SimRegisters.WatchdogTrips
-                           || (address >= _statusBase && address < _statusBase + SimRegisters.StatusLength);
-            if (!plcOwned) continue;
-            _log.LogDebug("Client wrote PLC-owned register {Address}; ignored", address);
-            _plc.Publish();
-            return;
-        }
+        var trips = _commandBase + SimRegisters.WatchdogTrips;
+        if (!e.Registers.Contains(trips)) return;
+        _log.LogDebug("Client wrote PLC-owned holding register {Address} (C+{Offset}); ignored", trips, SimRegisters.WatchdogTrips);
+        _plc.Publish();
     }
 
     /// <summary>

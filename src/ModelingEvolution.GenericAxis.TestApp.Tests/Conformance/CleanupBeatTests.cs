@@ -55,7 +55,7 @@ public sealed class CleanupBeatTests
         var armed = false;
         sim.Host.OnClientWrite = addresses =>
         {
-            if (!armed || !addresses.Contains(SimRegisters.Command) || (sim.Host.Registers.Read(SimRegisters.Command) & (ushort)SimCommandBits.Stop) == 0) return;
+            if (!armed || !addresses.Contains(SimRegisters.Command) || (sim.Host.Registers.Holding.Read(SimRegisters.Command) & (ushort)SimCommandBits.Stop) == 0) return;
             armed = false;
             sim.Host.Faults = sim.Host.Faults with { SuppressAck = true }; // the Stop is held unacknowledged…
             release = Task.Run(async () =>

@@ -293,8 +293,8 @@ public sealed class AxisPlcTests
         using var bench = new PlcBench(new SimulatedAxisOptions { PublishLimits = false });
         bench.Tick();
 
-        bench.Registers.ReadBlock(bench.Options.StatusBase + SimRegisters.TravelMin, 6).Should().OnlyContain(w => w == 0);
-        bench.Registers.Read(bench.Options.StatusBase + SimRegisters.MapVersion).Should().Be(1);
+        bench.Registers.Input.ReadBlock(bench.Options.StatusBase + SimRegisters.TravelMin, 6).Should().OnlyContain(w => w == 0);
+        bench.Registers.Input.Read(bench.Options.StatusBase + SimRegisters.MapVersion).Should().Be(1);
     }
 
     [Fact]
@@ -304,12 +304,12 @@ public sealed class AxisPlcTests
         bench.Tick();
         var s = bench.Options.StatusBase;
         // −2 500 000 = 0xFFD9DA60 → [0xDA60, 0xFFD9] (GA-U-01's vector, read from the PLC side).
-        bench.Registers.ReadBlock(s + SimRegisters.TravelMin, 2).Should().Equal(0xDA60, 0xFFD9);
-        bench.Registers.ReadBlock(s + SimRegisters.MaxVelocity, 2).Should().Equal(0xA120, 0x0007);
+        bench.Registers.Input.ReadBlock(s + SimRegisters.TravelMin, 2).Should().Equal(0xDA60, 0xFFD9);
+        bench.Registers.Input.ReadBlock(s + SimRegisters.MaxVelocity, 2).Should().Equal(0xA120, 0x0007);
 
         bench.Plc.Faults = new SimFaults { SwappedWordOrder = true };
         bench.Tick();
-        bench.Registers.ReadBlock(s + SimRegisters.TravelMin, 2).Should().Equal(0xFFD9, 0xDA60);
+        bench.Registers.Input.ReadBlock(s + SimRegisters.TravelMin, 2).Should().Equal(0xFFD9, 0xDA60);
     }
 
     [Fact]

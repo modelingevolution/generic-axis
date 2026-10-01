@@ -13,7 +13,7 @@
 <h1 class="mud-typography mud-typography-h5 mb-1">Simulated PLC</h1>
 <MudText Typo="Typo.body2" Class="mud-text-secondary mb-4">
     @o.Kind axis &middot; Modbus TCP port <span class="register-value">@Host.Port</span> &middot; unit @o.UnitId &middot;
-    command block @o.CommandBase, status block @o.StatusBase &middot;
+    command block at holding @o.CommandBase, status block at input @o.StatusBase &middot;
     @(s.Listening ? "listening" : "NOT listening (communication down)")
 </MudText>
 
