@@ -33,6 +33,7 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
     private long _ticks;
     private volatile bool _leaseHeld;
     private ushort _lastWatchdogFault;
+    private string? _lastRefusal; // tick loop only
 
     public AxisHeartbeat(string axis, IModbusChannel channel, byte unit, RegisterMap map, ushort ownerId,
         TimeSpan interval, ILogger? logger = null, TimeProvider? time = null)
@@ -180,10 +181,19 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
                 try
                 {
                     await TickOnceAsync(ct).ConfigureAwait(false);
+                    _lastRefusal = null; // the link recovered: the next refusal is news again
                 }
                 catch (MotionException ex)
                 {
-                    _logger?.LogWarning(ex, "{Axis}: heartbeat tick failed. {Message}", _axis, ex.Message);
+                    // Protocol rule 3 (ADR-37): a refusal is never retried, so a refusing PLC fails every tick. A
+                    // refusal identical to the previous tick's logs at Debug; the first one, a changed one, and the
+                    // first after a good tick log at Warning. Every other tick failure logs at Warning.
+                    var repeated = ModbusChannel.IsRefusal(ex) && ex.Message == _lastRefusal;
+                    _lastRefusal = ModbusChannel.IsRefusal(ex) ? ex.Message : null;
+                    if (repeated)
+                        _logger?.LogDebug("{Axis}: heartbeat tick refused again. {Message}", _axis, ex.Message);
+                    else
+                        _logger?.LogWarning(ex, "{Axis}: heartbeat tick failed. {Message}", _axis, ex.Message);
                     Raise(TickFailed, ex);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)

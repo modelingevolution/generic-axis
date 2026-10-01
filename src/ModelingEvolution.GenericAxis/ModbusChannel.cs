@@ -184,7 +184,7 @@ internal sealed class ModbusChannel : IModbusChannel
                     // ADR-37: the PLC answered, and refused the request as not served (01/02/03). That is the PLC
                     // answering outside the map — Protocol, never a link fault — and a retry would be refused again.
                     // The connection is healthy (an exception response is a complete frame), so it is kept.
-                    throw Refused(what, range, ex.ExceptionCode, unit);
+                    throw Refusal(_label, what, range, ex.ExceptionCode, Host, Port, unit);
                 }
                 catch (Exception ex) when (IsTransport(ex))
                 {
@@ -244,12 +244,27 @@ internal sealed class ModbusChannel : IModbusChannel
         code is ModbusExceptionCode.IllegalFunction or ModbusExceptionCode.IllegalDataAddress
             or ModbusExceptionCode.IllegalDataValue;
 
-    private MotionException Refused(string what, string? range, ModbusExceptionCode code, byte unit) =>
-        // Protocol § Errors and debugging example (ADR-37): "FC04 read S+0…S+14 = input 0…14 refused: Modbus exception 02
-        // (illegal data address) — the PLC does not serve the status block as input registers", then the endpoint.
-        AxisErrors.Create(_label, MotionError.ProtocolMismatch,
+    /// <summary>The <see cref="Exception.Data"/> key that marks a refusal (the Modbus exception code, an int).</summary>
+    internal const string RefusalKey = "GenericAxis.ModbusRefusal";
+
+    /// <summary>Whether <paramref name="ex"/> is a PLC refusal (ADR-37) rather than another ProtocolMismatch.</summary>
+    internal static bool IsRefusal(Exception ex) => ex.Data.Contains(RefusalKey);
+
+    /// <summary>
+    /// The refusal in the protocol's words (§ Errors and debugging example, ADR-37): "FC04 read S+0…S+14 = input 0…14
+    /// refused: Modbus exception 02 (illegal data address) — the PLC does not serve the status block as input
+    /// registers", then the endpoint. Marked with <see cref="RefusalKey"/> so the heartbeat can tell a repeated refusal
+    /// (protocol rule 3: Warning once, then Debug).
+    /// </summary>
+    internal static MotionException Refusal(string label, string what, string? range, ModbusExceptionCode code,
+        string host, int port, byte unit)
+    {
+        var ex = AxisErrors.Create(label, MotionError.ProtocolMismatch,
             $"{what}: {(range is null ? "request" : range.Trim('(', ')'))} refused: Modbus exception {(int)code:D2} "
-            + $"({CodeName(code)}){RefusalHint(range, code)} ({Host}:{Port} unit {unit})");
+            + $"({CodeName(code)}){RefusalHint(range, code)} ({host}:{port} unit {unit})");
+        ex.Data[RefusalKey] = (int)code;
+        return ex;
+    }
 
     private static string CodeName(ModbusExceptionCode code) => code switch
     {
