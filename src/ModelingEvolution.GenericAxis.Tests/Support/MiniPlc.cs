@@ -11,7 +11,7 @@ namespace ModelingEvolution.GenericAxis.Tests.Support;
 internal sealed record MiniPlcOptions
 {
     public int CommandBase { get; init; }
-    public int StatusBase { get; init; } = 100;
+    public int StatusBase { get; init; }
     public double TravelMin { get; init; }
     public double TravelMax { get; init; } = 10_000;
     public double MaxVelocity { get; init; } = 500;

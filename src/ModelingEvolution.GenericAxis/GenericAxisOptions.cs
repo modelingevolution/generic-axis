@@ -60,7 +60,7 @@ public sealed record GenericAxisOptions
     /// <summary>Modbus unit id, 0–255.</summary>
     public int UnitId { get; init; } = DefaultUnitId;
 
-    /// <summary>Block bases; <see cref="RegisterMap.Default"/> is 0 / 100.</summary>
+    /// <summary>Block bases: holding C, input S; <see cref="RegisterMap.Default"/> is 0 / 0 (ADR-36).</summary>
     public RegisterMap Map { get; init; } = RegisterMap.Default;
 
     /// <summary>Heartbeat tick period, 20–200 ms.</summary>

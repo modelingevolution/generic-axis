@@ -33,14 +33,14 @@ public class ProtocolMismatchTests
         ex.Error.Should().Be(MotionError.ProtocolMismatch);
         MotionErrorClasses.Of(ex.Error).Should().Be(ErrorClass.Protocol);
         ex.Message.Should().StartWith("carriage: ProtocolMismatch: the PLC changed its map version mid-run")
-            .And.EndWith("Read MapVersion (S+14 = input 114) = 2, expected 1.");
+            .And.EndWith("Read MapVersion (S+14 = input 14) = 2, expected 1.");
         rig.Axis.State.Should().Be(AxisState.ErrorStop);
         rig.Axis.Status.Error.Should().Be(MotionError.ProtocolMismatch);
 
         await rig.TickAsync(3);
         Errors(rig).Where(m => m.Contains("ProtocolMismatch")).Should().ContainSingle(
             "the overlay is logged once at Error, not once per tick").Which.Should()
-            .Contain("Read MapVersion (S+14 = input 114) = 2, expected 1");
+            .Contain("Read MapVersion (S+14 = input 14) = 2, expected 1");
 
         // G1: nothing new is commanded while the overlay stands.
         var from = rig.Plc.OpCount;
@@ -52,7 +52,7 @@ public class ProtocolMismatchTests
         var refused = (await rig.Axis.Awaiting(a => a.ResetAsync().WaitAsync(DriverRig.RealTimeout))
             .Should().ThrowAsync<MotionException>()).Which;
         refused.Error.Should().Be(MotionError.ProtocolMismatch);
-        refused.Message.Should().Contain("ResetAsync refused").And.Contain("MapVersion (S+14 = input 114) = 2");
+        refused.Message.Should().Contain("ResetAsync refused").And.Contain("MapVersion (S+14 = input 14) = 2");
         rig.Axis.Status.Error.Should().Be(MotionError.ProtocolMismatch);
 
         // A fresh tick with a sane block lets Reset clear it.
@@ -78,7 +78,7 @@ public class ProtocolMismatchTests
         rig.Device.Limits.Source.Should().Be(LimitSource.None, "no garbage limit is ever used");
         Errors(rig).Should().ContainSingle(m => m.Contains("ProtocolMismatch")).Which.Should()
             .Contain("carriage: ProtocolMismatch: the PLC's limit publication became partial or not sane mid-run")
-            .And.Contain("Read TravelMin (S+8 = input 108) = 0, TravelMax (S+10 = input 110) = 0, MaxVelocity (S+12 = input 112) = 500000, "
+            .And.Contain("Read TravelMin (S+8 = input 8) = 0, TravelMax (S+10 = input 10) = 0, MaxVelocity (S+12 = input 12) = 500000, "
                          + "expected all three 0, or TravelMin < TravelMax and MaxVelocity > 0.");
 
         rig.LogsAt(LogLevel.Warning).Should().NotContain(r => r.Message.Contains("invalid limit set"),

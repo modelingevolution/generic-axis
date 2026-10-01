@@ -163,7 +163,7 @@ public abstract class ModbusAxisDevice : IMotionDevice, IAsyncDisposable
         _connected = true;
         var limits = _engine.Limits;
         _logger?.LogInformation(
-            "{Axis}: attached as owner {Owner}: {Name}@{Host}:{Port}/{Unit} (C {CommandBase}, S {StatusBase}), limits "
+            "{Axis}: attached as owner {Owner}: {Name}@{Host}:{Port}/{Unit} (holding C {CommandBase}, input S {StatusBase}), limits "
             + "{Min}..{Max}, max velocity {MaxVelocity} ({Source})",
             o.Name, OwnerId, o.Name, o.Host, o.Port, o.UnitId, o.Map.CommandBase, o.Map.StatusBase,
             limits.TravelMin, limits.TravelMax, limits.MaxVelocity, limits.SourceText);

@@ -47,7 +47,7 @@ public class OptionsAndHygieneTests
     {
         Valid.Port.Should().Be(502);
         Valid.UnitId.Should().Be(1);
-        Valid.Map.Should().Be(new RegisterMap(0, 100));
+        Valid.Map.Should().Be(new RegisterMap(0, 0));
         Valid.HeartbeatInterval.Should().Be(TimeSpan.FromMilliseconds(100));
         Valid.LeaseTimeout.Should().BeNull();
         Valid.ConfiguredTravelMin.Should().BeNull("a machine limit is never defaulted");
@@ -97,7 +97,7 @@ public class OptionsAndHygieneTests
         info.Select(r => r.Message).Should().SatisfyRespectively(
             m => m.Should().Contain("Standstill → DiscreteMotion"),
             m => m.Should().Contain("DiscreteMotion → Standstill"),
-            m => m.Should().Contain("Standstill → ErrorStop").And.Contain("FaultCode (S+6 = input 106) = 4"));
+            m => m.Should().Contain("Standstill → ErrorStop").And.Contain("FaultCode (S+6 = input 6) = 4"));
         rig.LogsAt(LogLevel.Error).Should().ContainSingle(r => r.Message.StartsWith("carriage: WatchdogTripped: "),
             "the PLC's own fault is logged once, in the protocol's shape");
         rig.LogsAt(LogLevel.Trace).Should().Contain(r => r.Message.Contains("Heartbeat (C+8 = holding 8) ="));

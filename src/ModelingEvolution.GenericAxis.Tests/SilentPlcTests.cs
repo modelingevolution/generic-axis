@@ -70,7 +70,7 @@ public class SilentPlcTests(ITestOutputHelper output)
         var warningAt = TimeSpan.Zero;
         var sw = Stopwatch.StartNew();
         var call = operation == "read"
-            ? channel.ReadInputAsync(1, 100, 15, "read status block", ChannelPriority.Heartbeat)
+            ? channel.ReadInputAsync(1, RegisterMap.Default.Status, RegisterMap.StatusLength, "read status block", ChannelPriority.Heartbeat)
             : channel.WriteRegistersAsync(1, 0, [1, 7], "Stop", ChannelPriority.Stop);
         var watch = Task.Run(async () =>
         {

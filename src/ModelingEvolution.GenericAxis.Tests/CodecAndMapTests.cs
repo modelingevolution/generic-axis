@@ -71,6 +71,9 @@ public class CodecAndMapTests
         map.Describe(RegisterField.MapVersion).Should().Be("S+14 = input 314");
         map.Invoking(m => m.Validate()).Should().NotThrow();
 
+        RegisterMap.Default.Should().Be(new RegisterMap(0, 0), "protocol defaults: holding base 0, input base 0 (ADR-36)");
+        RegisterMap.Default.Validate();
+
         // ADR-36: holding and input registers are separate spaces — equal or interleaved bases are not an overlap.
         new RegisterMap(0, 0).Invoking(m => m.Validate()).Should().NotThrow("the blocks are in separate address spaces");
         new RegisterMap(95, 100).Invoking(m => m.Validate()).Should().NotThrow();

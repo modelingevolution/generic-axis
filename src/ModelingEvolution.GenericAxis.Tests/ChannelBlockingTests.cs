@@ -22,7 +22,7 @@ public class ChannelBlockingTests(ITestOutputHelper output)
     {
         await using var plc = new MiniPlc();
         using var channel = new ModbusChannel("127.0.0.1", plc.Port, NullLogger.Instance, null, "carriage", RegisterMap.Default);
-        await channel.ReadInputAsync(MiniPlc.Unit, 100, 15, "connect", ChannelPriority.Move).WaitAsync(LiveRig.T);
+        await channel.ReadInputAsync(MiniPlc.Unit, RegisterMap.Default.Status, RegisterMap.StatusLength, "connect", ChannelPriority.Move).WaitAsync(LiveRig.T);
 
         Task call;
         TimeSpan returnedAfter;
@@ -31,7 +31,7 @@ public class ChannelBlockingTests(ITestOutputHelper output)
             var sw = Stopwatch.StartNew();
             call = operation switch
             {
-                "read" => channel.ReadInputAsync(MiniPlc.Unit, 100, 15, "read status block", ChannelPriority.Heartbeat),
+                "read" => channel.ReadInputAsync(MiniPlc.Unit, RegisterMap.Default.Status, RegisterMap.StatusLength, "read status block", ChannelPriority.Heartbeat),
                 "write one" => channel.WriteRegisterAsync(MiniPlc.Unit, 8, 7, "heartbeat", ChannelPriority.Heartbeat),
                 _ => channel.WriteRegistersAsync(MiniPlc.Unit, 2, [0, 0, 0, 0, 0, 0], "parameters", ChannelPriority.Move),
             };
@@ -51,7 +51,7 @@ public class ChannelBlockingTests(ITestOutputHelper output)
     {
         await using var plc = new MiniPlc();
         using var channel = new ModbusChannel("127.0.0.1", plc.Port, NullLogger.Instance, null, "carriage", RegisterMap.Default);
-        await channel.ReadInputAsync(MiniPlc.Unit, 100, 15, "connect", ChannelPriority.Move).WaitAsync(LiveRig.T);
+        await channel.ReadInputAsync(MiniPlc.Unit, RegisterMap.Default.Status, RegisterMap.StatusLength, "connect", ChannelPriority.Move).WaitAsync(LiveRig.T);
         using var ui = new HoldableContext();
 
         // The frame starts on the "UI" thread, which stays busy 1.5 s in the SAME work item (review #47): no continuation

@@ -152,7 +152,7 @@ public sealed class GenericAxisPlugin : IPlugin
         var options = GenericAxisProperties.Bind(template, config) with { LeaseTimeout = ReadLeaseTimeout(config) };
 
         logger?.LogInformation(
-            "Building generic axis {Device} ({Kind} '{Axis}') at {Host}:{Port} unit {Unit}, bases {CommandBase}/{StatusBase}, as owner {Owner}",
+            "Building generic axis {Device} ({Kind} '{Axis}') at {Host}:{Port} unit {Unit}, bases holding C {CommandBase} / input S {StatusBase}, as owner {Owner}",
             id, options.Kind, options.Name, options.Host, options.Port, options.UnitId,
             options.Map.CommandBase, options.Map.StatusBase, ownerId);
 

@@ -25,11 +25,11 @@ public sealed class ConnectorTests
 
     // Driver messages carry the facts only; the class word is the connector's prefix (lead ruling).
     private const string MapVersionMessage =
-        "carriage: attach refused. Read MapVersion (S+14 = 114) = 2, expected 1.";
+        "carriage: attach refused. Read MapVersion (S+14 = input 14) = 2, expected 1.";
     private const string RefusedMessage =
-        "carriage: read S+0…S+14 on 192.168.58.20:502 unit 1 failed twice (reconnected once): Connection refused.";
+        "carriage: FC04 read S+0…S+14 = input 0…14 on 192.168.58.20:502 unit 1 failed twice (reconnected once): Connection refused.";
     private const string LeaseMessage =
-        "carriage: attach refused. Read LeaseOwner (C+9 = 9) = 3, Heartbeat changing.";
+        "carriage: attach refused. Read LeaseOwner (C+9 = holding 9) = 3, Heartbeat changing.";
 
     private readonly FakeTimeProvider _time = new();
     private readonly RecordingLogger _log = new();
@@ -196,7 +196,7 @@ public sealed class ConnectorTests
     [Fact]
     public async Task A_Machine_Fault_Keeps_Its_Class_And_Follows_The_Warn_Once_Rule()
     {
-        const string message = "carriage: Read FaultCode (S+6 = 106) = 1.";
+        const string message = "carriage: Read FaultCode (S+6 = input 6) = 1.";
         var ex = new MotionException(MotionError.DriveFault, message, "carriage");
 
         await Attach(ex);

@@ -470,9 +470,9 @@ internal sealed class AxisEngine : IDisposable
                     : null;
             case LimitSource.Configuration:
                 return () => _logger?.LogInformation(
-                    "{Axis}: the PLC publishes no limits (S+8…S+13 all 0); using the configured values TravelMin {Min} "
+                    "{Axis}: the PLC publishes no limits ({Registers} all 0); using the configured values TravelMin {Min} "
                     + "{Unit}, TravelMax {Max} {Unit}, MaxVelocity {MaxV} {Speed}",
-                    Name, Fmt(units.TravelMin), _unitSymbol, Fmt(units.TravelMax), _unitSymbol,
+                    Name, _map.DescribeRange(RegisterSpace.Input, _map.TravelMin, 6), Fmt(units.TravelMin), _unitSymbol, Fmt(units.TravelMax), _unitSymbol,
                     Fmt(units.MaxVelocity), _speedSymbol);
             default:
                 // An invalid publication is the ProtocolMismatch overlay, logged at Error by OnTick (review #7).
