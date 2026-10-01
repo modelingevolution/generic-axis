@@ -289,8 +289,10 @@ async def cleanup(ctx: CheckContext) -> None:
     commanded = ctx.seq is not None
 
     async def stop_if_moving() -> None:
+        if not commanded:
+            return  # rule 1, say what you saw (review #34): no read, so no "Stop: failed" for a write never attempted
         status = await ctx.status()
-        if commanded and status.state in MOVING_STATES:
+        if status.state in MOVING_STATES:
             seq = ctx.seq = next_nonzero(ctx.seq if ctx.seq is not None else status.command_ack)
             word = int(ctx.enabled | Command.STOP)
             await ctx.client.write(registers.command, [word, seq], retry=False)  # a command is never re-sent

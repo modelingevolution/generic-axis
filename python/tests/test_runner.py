@@ -917,3 +917,6 @@ async def test_chk01_fails_protocol_when_the_plc_refuses_fc04_with_exception_02(
     assert chk01.observed.get("retries") == 0, chk01.observed
     assert [c.result for c in report.checks[1:]] == [SKIPPED] * 15
     assert report.exit_code == 1
+    # Review #34: nothing was written, so cleanup journals nothing (no "Stop: failed" for a read it need not make).
+    assert report.cleanup == []
+    assert stub.writes == []
