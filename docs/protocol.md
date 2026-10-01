@@ -158,8 +158,8 @@ an error from one class into another.
 
 | Class | Meaning | SDK `MotionError` (2.30.0) | Who acts |
 |---|---|---|---|
-| **Transport** | The link failed: the TCP connect failed or was refused, the socket closed, a request got no answer within 500 ms, or the PLC returned a Modbus exception. | `CommunicationLost` | Network, IP, port, unit id. |
-| **Protocol** | The PLC answered, but not per this document. | `ProtocolMismatch`: `MapVersion ≠ 1` · limits partial or not sane · `State` is 5 or above 7 · `State = 7` with `FaultCode = 0` · the PLC changed a driver-owned register. `NotAcknowledged`: a command was written, and `CommandAck` did not echo `CommandSeq` within 500 ms. | PLC programmer. |
+| **Transport** | The link failed: the TCP connect failed or was refused, the socket closed, a request got no answer within 500 ms, or the PLC returned Modbus exception 04 (slave device failure), 06 (busy), 0A/0B (gateway) or any code other than 01–03. | `CommunicationLost` | Network, IP, port, unit id. |
+| **Protocol** | The PLC answered, but not per this document. | `ProtocolMismatch`: `MapVersion ≠ 1` · limits partial or not sane · `State` is 5 or above 7 · `State = 7` with `FaultCode = 0` · the PLC changed a driver-owned register · the PLC returned Modbus exception 01 (illegal function), 02 (illegal data address) or 03 (illegal data value), with no retry. `NotAcknowledged`: a command was written, and `CommandAck` did not echo `CommandSeq` within 500 ms. | PLC programmer. |
 | **Machine** | The PLC reports a fault, or the machine did not do what the PLC accepted. | `FaultCode` 1 → `DriveFault` · 2 → `LimitTripped` · 3 → `MotionFailed` · 4 → `WatchdogTripped` · 5 → `HomeLatchFailed` · 6 → `DriveFault` (drive link) · 7 → `SafetyStop` · ≥ 100 → `DriveFault` (vendor code in the message). An accepted command that misses the driver's budget: no Standstill after Enable → `DriveFault`; homing not finished → `HomeLatchFailed`; stopped outside the in-position window, or not arrived, or still moving after Stop → `MotionFailed`. | Maintenance or operator. |
 | **Commander** | The driver refused before writing anything. | `Busy`, `NotHomed`, `OutOfRange`, `UnreachableSpeed`, `UnsupportedSense`, `LeaseHeld`, `UnknownAxis`, `WrongAxisKind` (binding refusals) | The caller, or the other commander. |
 
@@ -176,13 +176,13 @@ table names its class.
 2. **One cause, one class.** A Protocol or Machine error is never reported as Transport. A Transport failure is never
    reported as a Machine fault. After a link loss the driver reports `CommunicationLost`. When the link returns, a
    watchdog trip the PLC reports is a separate `WatchdogTripped`, and the log carries both.
-3. **No silent recovery.** One retry of a failed transaction, after a reconnect, is the only retry. It logs at Warning
+3. **No silent recovery.** One retry of a Transport failure, after a reconnect, is the only retry; a Protocol refusal is never retried. It logs at Warning
    with the exception, and so does every failed heartbeat beat. A command is never re-sent, and an ack is waited for
    once.
 4. **A register dump comes first.** Both checkers take `--dump`. It reads holding C+0…C+11 and input S+0…S+14 once, or at 5 Hz
    with `--watch` until Ctrl-C. It prints one row per register: address, name, raw hex, and the decoded value in
    engineering units, with `State` and `FaultCode` names and `Flags` and `Command` bits by name. `--dump` writes
-   nothing and takes no lease. Its exit code is 0 when both blocks were read, and 1 on a Transport error.
+   nothing and takes no lease. Its exit code is 0 when both blocks were read, and 1 on a Transport or Protocol error.
 5. **Every FAIL carries evidence.** A FAIL in a report attaches the last read of both blocks, decoded as by `--dump`.
 
 Example messages:
@@ -192,6 +192,7 @@ carriage: Protocol/ProtocolMismatch: attach refused. Read MapVersion (S+14 = inp
 carriage: Protocol/NotAcknowledged: Home not accepted. CommandSeq 42 written, CommandAck 41 read after 500 ms, State 0 read.
 carriage: Machine/WatchdogTripped: Read FaultCode (S+6 = input 6) = 4, WatchdogFault (C+10 = holding 10) = 1, WatchdogTrips (C+11 = holding 11) = 3.
 carriage: Transport/CommunicationLost: FC04 read S+0…S+14 on 192.168.58.20:502 unit 1 failed twice (reconnected once): Connection refused.
+carriage: Protocol/ProtocolMismatch: FC04 read S+0…S+14 = input 0…14 refused: Modbus exception 02 (illegal data address) — the PLC does not serve the status block as input registers.
 CHK-06: Protocol/NotAcknowledged: Enable 1 not accepted. CommandSeq 7 written, CommandAck 6 read after 500 ms, State 0 read.
 ```
 
@@ -295,17 +296,17 @@ Every FAIL carries one class (a checker error carries none, § Report schema), d
 
 | Seen | Class / name |
 |---|---|
-| A request got no answer, the connect failed, the socket closed, or the PLC returned a Modbus exception (after the one retry) | Transport / `CommunicationLost` |
+| A request got no answer, the connect failed, the socket closed, or the PLC returned a Modbus exception other than 01–03 (after the one retry) | Transport / `CommunicationLost` |
 | A command was written and `CommandAck` did not echo `CommandSeq` within 500 ms | Protocol / `NotAcknowledged` |
 | `State` is 5 or above 7, or `State = 7` with `FaultCode = 0` | Protocol / `ProtocolMismatch` |
 | The PLC reports `State = 7` with a `FaultCode` ≠ 0 where the check did not expect a fault | Machine / the `FaultCode` map (for example 1 → `DriveFault`) |
-| The PLC answered, but against this document: CHK-02, 03, 04 (an invalid State, or the slowest round trip over 100 ms), 05, 07 (Reset changed the axis); any watchdog behaviour in CHK-08, 09, 10 and CHK-16's trip (no trip, early or late trip, a trip while latched or after release, `Homed` cleared by a trip); CHK-11 when a register does not hold what was written, or `Heartbeat` keeps changing after the incumbent stopped writing it; an ack read without the command's state (CHK-12…15, "ack in the scan that enters the state") | Protocol / `ProtocolMismatch` |
+| The PLC answered, but against this document: Modbus exception 01, 02 or 03 in any check (no retry); CHK-02, 03, 04 (an invalid State, or the slowest round trip over 100 ms), 05, 07 (Reset changed the axis); any watchdog behaviour in CHK-08, 09, 10 and CHK-16's trip (no trip, early or late trip, a trip while latched or after release, `Homed` cleared by a trip); CHK-11 when a register does not hold what was written, or `Heartbeat` keeps changing after the incumbent stopped writing it; an ack read without the command's state (CHK-12…15, "ack in the scan that enters the state") | Protocol / `ProtocolMismatch` |
 | An accepted command whose effect never came: no Standstill after Enable 1 or no Disabled after Enable 0 (CHK-06) → `DriveFault`; not homed within 120 s (CHK-12) → `HomeLatchFailed`; not arrived, outside `--tolerance`, left ContinuousMotion, no velocity, or a halt over 200 ms (CHK-13…16) → `MotionFailed` | Machine |
 
 There is no Commander class in a checker FAIL: the checker writes raw registers and refuses nothing.
 
 - **The one retry.** A checker performs the one reconnect-and-retry the driver performs, logs it at Warning, and
-  counts it in that check's `retries` (§ Observed values). A second failure is a Transport FAIL.
+  counts it in that check's `retries` (§ Observed values). A second failure is a Transport FAIL. A Protocol refusal is not retried.
 - **`lastRead`** is a fresh read of both blocks, taken when the failure is detected and before any restore write. If
   that read fails, it holds the last values read, with `null` for a register never read.
 - **Interruption** is not a FAIL. The running check and every later one are `SKIPPED`, with the message
