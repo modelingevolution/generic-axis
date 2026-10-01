@@ -2,22 +2,23 @@ namespace ModelingEvolution.GenericAxis;
 
 /// <summary>
 /// The register map of <c>docs/protocol.md</c>, map version 1: a <b>command block</b> of 12 holding registers at
-/// <see cref="CommandBase"/> (written by the driver) and a <b>status block</b> of 15 holding registers at
-/// <see cref="StatusBase"/> (written by the PLC). Offsets inside a block are fixed; only the two bases move, on
-/// both sides, for a PLC whose register file cannot start at 0/100 or that serves a second axis.
+/// <see cref="CommandBase"/> (written by the driver, FC03/FC06/FC16) and a <b>status block</b> of 15 input registers at
+/// <see cref="StatusBase"/> (written by the PLC, FC04) — ADR-36. Each block lives in its own address space, so both
+/// bases default to 0. Offsets inside a block are fixed; only the two bases move, on both sides, for a PLC whose
+/// arrays cannot start at 0 or that serves a second axis.
 /// </summary>
-/// <param name="CommandBase">Base <c>C</c> of the command block. Protocol default 0.</param>
-/// <param name="StatusBase">Base <c>S</c> of the status block. Protocol default 100.</param>
+/// <param name="CommandBase">Base <c>C</c> of the command block (holding registers). Protocol default 0.</param>
+/// <param name="StatusBase">Base <c>S</c> of the status block (input registers). Protocol default 0 (ADR-36; flipped with the fake's input bank).</param>
 public sealed record RegisterMap(int CommandBase = RegisterMap.DefaultCommandBase,
     int StatusBase = RegisterMap.DefaultStatusBase)
 {
-    /// <summary>The map version this driver speaks (register S+14). Protocol: "register 114 = 1 for this document".</summary>
+    /// <summary>The map version this driver speaks (register S+14). Protocol: "MapVersion (S+14) = 1 for this document".</summary>
     public const ushort Version = 1;
 
     /// <summary>Protocol default of the command block base.</summary>
     public const int DefaultCommandBase = 0;
 
-    /// <summary>Protocol default of the status block base.</summary>
+    /// <summary>Protocol default of the status block base (input registers, ADR-36).</summary>
     public const int DefaultStatusBase = 100;
 
     /// <summary>Registers in the command block, C+0 … C+11.</summary>
@@ -41,7 +42,7 @@ public sealed record RegisterMap(int CommandBase = RegisterMap.DefaultCommandBas
     /// <summary>Protocol FR-11: heartbeat deferral behind move traffic is bounded at 200 ms.</summary>
     public static readonly TimeSpan HeartbeatDeferralBound = TimeSpan.FromMilliseconds(200);
 
-    /// <summary>The protocol defaults, 0 / 100.</summary>
+    /// <summary>The default bases.</summary>
     public static RegisterMap Default { get; } = new();
 
     // ── command block ───────────────────────────────────────────
@@ -112,8 +113,8 @@ public sealed record RegisterMap(int CommandBase = RegisterMap.DefaultCommandBas
     public ushort MapVersion => S(14);
 
     /// <summary>
-    /// Refuses a map the protocol cannot serve: a negative base, a block that runs past register 65535, or two
-    /// blocks that overlap.
+    /// Refuses a map the protocol cannot serve: a negative base, or a block that runs past register 65535 of its own
+    /// address space. The blocks live in separate spaces (holding and input, ADR-36), so equal bases are valid.
     /// </summary>
     /// <exception cref="ArgumentException">The map is invalid; the message names the bases.</exception>
     public void Validate()
@@ -125,42 +126,106 @@ public sealed record RegisterMap(int CommandBase = RegisterMap.DefaultCommandBas
 
         if (CommandBase + CommandLength - 1 > ushort.MaxValue)
             throw new ArgumentException(
-                $"The command block C+0…C+{CommandLength - 1} at CommandBase {CommandBase} runs past register 65535",
+                $"The command block C+0…C+{CommandLength - 1} at holding CommandBase {CommandBase} runs past register 65535",
                 nameof(CommandBase));
 
         if (StatusBase + StatusLength - 1 > ushort.MaxValue)
             throw new ArgumentException(
-                $"The status block S+0…S+{StatusLength - 1} at StatusBase {StatusBase} runs past register 65535",
-                nameof(StatusBase));
-
-        var commandEnd = CommandBase + CommandLength;
-        var statusEnd = StatusBase + StatusLength;
-        if (CommandBase < statusEnd && StatusBase < commandEnd)
-            throw new ArgumentException(
-                $"The command block {CommandBase}…{commandEnd - 1} overlaps the status block {StatusBase}…{statusEnd - 1}",
+                $"The status block S+0…S+{StatusLength - 1} at input StatusBase {StatusBase} runs past register 65535",
                 nameof(StatusBase));
     }
 
-    /// <summary>"C+n = address" / "S+n = address" — the protocol's form in messages and logs, e.g. <c>S+14 = 114</c>.</summary>
-    public string Describe(ushort address) =>
-        address >= CommandBase && address < CommandBase + CommandLength
-            ? $"C+{address - CommandBase} = {address}"
-            : address >= StatusBase && address < StatusBase + StatusLength
-                ? $"S+{address - StatusBase} = {address}"
-                : address.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    /// <summary>The absolute address of a field under this map's bases.</summary>
+    public ushort Address(RegisterField field) =>
+        field.Space == RegisterSpace.Holding ? C(field.Offset) : S(field.Offset);
 
-    /// <summary>A register range in the protocol's form, e.g. <c>S+0…S+14 (100…114)</c>.</summary>
-    public string DescribeRange(ushort address, int count)
+    /// <summary>
+    /// A field's address in the protocol's form (§ Errors and debugging, rule 1): <c>C+n = holding a</c> or
+    /// <c>S+n = input a</c>, a = base + n.
+    /// </summary>
+    public string Describe(RegisterField field) => DescribeRange(field.Space, Address(field), 1);
+
+    /// <summary>
+    /// A register range in the protocol's form: <c>S+0…S+14 = input 0…14</c>, <c>C+9 = holding 9</c>. A range outside
+    /// the space's block names only the space and the absolute addresses (<c>holding 500…501</c>). The space must be
+    /// given: with both bases 0 an address alone does not say which block it is in.
+    /// </summary>
+    public string DescribeRange(RegisterSpace space, ushort address, int count)
     {
-        var last = address + count - 1;
-        string Offset(int a) =>
-            a >= CommandBase && a < CommandBase + CommandLength ? $"C+{a - CommandBase}"
-            : a >= StatusBase && a < StatusBase + StatusLength ? $"S+{a - StatusBase}"
-            : a.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        return count <= 1 ? $"{Offset(address)} ({address})" : $"{Offset(address)}…{Offset(last)} ({address}…{last})";
+        var (letter, @base, length, kind) = space == RegisterSpace.Holding
+            ? ("C", CommandBase, CommandLength, "holding")
+            : ("S", StatusBase, StatusLength, "input");
+        var last = address + Math.Max(count, 1) - 1;
+        var inBlock = address >= @base && last < @base + length;
+        string Abs(int a) => a.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        if (!inBlock)
+            return last == address ? $"{kind} {Abs(address)}" : $"{kind} {Abs(address)}…{Abs(last)}";
+        return last == address
+            ? $"{letter}+{address - @base} = {kind} {Abs(address)}"
+            : $"{letter}+{address - @base}…{letter}+{last - @base} = {kind} {Abs(address)}…{Abs(last)}";
     }
 
     private ushort C(int offset) => checked((ushort)(CommandBase + offset));
 
     private ushort S(int offset) => checked((ushort)(StatusBase + offset));
+}
+
+/// <summary>The Modbus address space a block lives in (protocol § Transport, ADR-36).</summary>
+public enum RegisterSpace
+{
+    /// <summary>Holding registers (FC03 read, FC06/FC16 write): the command block.</summary>
+    Holding,
+
+    /// <summary>Input registers (FC04 read): the status block.</summary>
+    Input,
+}
+
+/// <summary>
+/// One named register of map version 1: its protocol name, its address space and its offset in the block. Name, space
+/// and offset are declared once here, so a message can never pair a name with another register's address.
+/// </summary>
+/// <param name="Name">The protocol's register name.</param>
+/// <param name="Space">Holding (command block) or input (status block).</param>
+/// <param name="Offset">The offset n in <c>C+n</c> / <c>S+n</c>.</param>
+public readonly record struct RegisterField(string Name, RegisterSpace Space, int Offset)
+{
+    /// <summary>C+0.</summary>
+    public static readonly RegisterField Command = new("Command", RegisterSpace.Holding, 0);
+    /// <summary>C+1.</summary>
+    public static readonly RegisterField CommandSeq = new("CommandSeq", RegisterSpace.Holding, 1);
+    /// <summary>C+2…C+3.</summary>
+    public static readonly RegisterField TargetPosition = new("TargetPosition", RegisterSpace.Holding, 2);
+    /// <summary>C+4…C+5.</summary>
+    public static readonly RegisterField Velocity = new("Velocity", RegisterSpace.Holding, 4);
+    /// <summary>C+6…C+7.</summary>
+    public static readonly RegisterField Acceleration = new("Acceleration", RegisterSpace.Holding, 6);
+    /// <summary>C+8.</summary>
+    public static readonly RegisterField Heartbeat = new("Heartbeat", RegisterSpace.Holding, 8);
+    /// <summary>C+9.</summary>
+    public static readonly RegisterField LeaseOwner = new("LeaseOwner", RegisterSpace.Holding, 9);
+    /// <summary>C+10 (PLC-written holding register).</summary>
+    public static readonly RegisterField WatchdogFault = new("WatchdogFault", RegisterSpace.Holding, 10);
+    /// <summary>C+11 (PLC-written holding register).</summary>
+    public static readonly RegisterField WatchdogTrips = new("WatchdogTrips", RegisterSpace.Holding, 11);
+
+    /// <summary>S+0.</summary>
+    public static readonly RegisterField State = new("State", RegisterSpace.Input, 0);
+    /// <summary>S+1.</summary>
+    public static readonly RegisterField Flags = new("Flags", RegisterSpace.Input, 1);
+    /// <summary>S+2…S+3.</summary>
+    public static readonly RegisterField ActualPosition = new("ActualPosition", RegisterSpace.Input, 2);
+    /// <summary>S+4…S+5.</summary>
+    public static readonly RegisterField ActualVelocity = new("ActualVelocity", RegisterSpace.Input, 4);
+    /// <summary>S+6.</summary>
+    public static readonly RegisterField FaultCode = new("FaultCode", RegisterSpace.Input, 6);
+    /// <summary>S+7.</summary>
+    public static readonly RegisterField CommandAck = new("CommandAck", RegisterSpace.Input, 7);
+    /// <summary>S+8…S+9.</summary>
+    public static readonly RegisterField TravelMin = new("TravelMin", RegisterSpace.Input, 8);
+    /// <summary>S+10…S+11.</summary>
+    public static readonly RegisterField TravelMax = new("TravelMax", RegisterSpace.Input, 10);
+    /// <summary>S+12…S+13.</summary>
+    public static readonly RegisterField MaxVelocity = new("MaxVelocity", RegisterSpace.Input, 12);
+    /// <summary>S+14.</summary>
+    public static readonly RegisterField MapVersion = new("MapVersion", RegisterSpace.Input, 14);
 }

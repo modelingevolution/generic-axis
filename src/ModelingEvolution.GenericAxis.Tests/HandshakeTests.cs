@@ -39,7 +39,7 @@ public class HandshakeTests
 
         var info = rig.LogsAt(LogLevel.Information).Select(r => r.Message).ToArray();
         info.Should().Contain(m => m.Contains("TargetPosition") && m.Contains("2500000") && m.Contains("100000"));
-        info.Should().Contain(m => m.Contains("Command (C+0 = 0) = 0x0005") && m.Contains("CommandSeq (C+1 = 1) = 42"));
+        info.Should().Contain(m => m.Contains("Command (C+0 = holding 0) = 0x0005") && m.Contains("CommandSeq (C+1 = holding 1) = 42"));
         info.Should().Contain(m => m.Contains("clear edge") && m.Contains("0x0001") && m.Contains("= 42"));
     }
 

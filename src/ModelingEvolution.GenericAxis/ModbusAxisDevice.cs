@@ -198,12 +198,12 @@ public abstract class ModbusAxisDevice : IMotionDevice, IAsyncDisposable
                     refusal = AxisErrors.Create(o.Name, MotionError.OutOfRange,
                         $"attach refused: configured ReadMin {Fmt(rmin)} is above TravelMin {Fmt(limits.TravelMin)} "
                         + $"({limits.SourceText}), expected ReadMin ≤ TravelMin",
-                        plc ? [AxisErrors.Read(m, "TravelMin", m.TravelMin, s.TravelMin)] : []);
+                        plc ? [AxisErrors.Read(m, RegisterField.TravelMin, s.TravelMin)] : []);
                 else if (o.ReadMax is { } rmax && rmax < limits.TravelMax)
                     refusal = AxisErrors.Create(o.Name, MotionError.OutOfRange,
                         $"attach refused: configured ReadMax {Fmt(rmax)} is below TravelMax {Fmt(limits.TravelMax)} "
                         + $"({limits.SourceText}), expected ReadMax ≥ TravelMax",
-                        plc ? [AxisErrors.Read(m, "TravelMax", m.TravelMax, s.TravelMax)] : []);
+                        plc ? [AxisErrors.Read(m, RegisterField.TravelMax, s.TravelMax)] : []);
             }
         }
 

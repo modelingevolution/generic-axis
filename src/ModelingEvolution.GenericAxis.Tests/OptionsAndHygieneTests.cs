@@ -17,7 +17,7 @@ public class OptionsAndHygieneTests
         { nameof(GenericAxisOptions.Port), o => o with { Port = 0 } },
         { nameof(GenericAxisOptions.Port), o => o with { Port = 65536 } },
         { nameof(GenericAxisOptions.UnitId), o => o with { UnitId = 256 } },
-        { nameof(GenericAxisOptions.Map), o => o with { Map = new RegisterMap(95, 100) } },
+        { nameof(GenericAxisOptions.Map), o => o with { Map = new RegisterMap(0, 65_530) } },
         { nameof(GenericAxisOptions.HeartbeatInterval), o => o with { HeartbeatInterval = TimeSpan.FromMilliseconds(250) } },
         { nameof(GenericAxisOptions.HeartbeatInterval), o => o with { HeartbeatInterval = TimeSpan.FromMilliseconds(10) } },
         { nameof(GenericAxisOptions.LeaseTimeout), o => o with { LeaseTimeout = TimeSpan.FromSeconds(-1) } },
@@ -97,10 +97,10 @@ public class OptionsAndHygieneTests
         info.Select(r => r.Message).Should().SatisfyRespectively(
             m => m.Should().Contain("Standstill → DiscreteMotion"),
             m => m.Should().Contain("DiscreteMotion → Standstill"),
-            m => m.Should().Contain("Standstill → ErrorStop").And.Contain("FaultCode (S+6 = 106) = 4"));
+            m => m.Should().Contain("Standstill → ErrorStop").And.Contain("FaultCode (S+6 = input 106) = 4"));
         rig.LogsAt(LogLevel.Error).Should().ContainSingle(r => r.Message.StartsWith("carriage: WatchdogTripped: "),
             "the PLC's own fault is logged once, in the protocol's shape");
-        rig.LogsAt(LogLevel.Trace).Should().Contain(r => r.Message.Contains("Heartbeat (C+8 = 8) ="));
+        rig.LogsAt(LogLevel.Trace).Should().Contain(r => r.Message.Contains("Heartbeat (C+8 = holding 8) ="));
         rig.Logs.GetSnapshot().Where(r => r.Message.Contains("Heartbeat (C+8"))
             .Should().OnlyContain(r => r.Level == LogLevel.Trace);
     }

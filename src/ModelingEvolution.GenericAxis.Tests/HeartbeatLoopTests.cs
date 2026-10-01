@@ -26,7 +26,7 @@ public class HeartbeatLoopTests
         failures.Should().HaveCount(3, "every malformed tick is reported").And
             .OnlyContain(e => e.Error == MotionError.ProtocolMismatch);
         failures[0].Message.Should().Be("carriage: ProtocolMismatch: the PLC answered a read of the status block with 14 "
-                                        + "registers. Read status block (S+0…S+14 (100…114)) = 14 registers, expected 15.");
+                                        + "registers. Read status block (S+0…S+14 = input 100…114) = 14 registers, expected 15.");
         rig.Axis.State.Should().Be(AxisState.ErrorStop);
         rig.Axis.Status.Error.Should().Be(MotionError.ProtocolMismatch, "the class is not rewritten to CommunicationLost");
         rig.LogsAt(LogLevel.Error).Should().ContainSingle(r => r.Message.Contains("overlay ProtocolMismatch"),
@@ -78,7 +78,7 @@ public class HeartbeatLoopTests
             .Should().ThrowAsync<MotionException>()).Which;
 
         ex.Error.Should().Be(MotionError.ProtocolMismatch);
-        ex.Message.Should().EndWith("Read status block (S+0…S+14 (100…114)) = 16 registers, expected 15.");
+        ex.Message.Should().EndWith("Read status block (S+0…S+14 = input 100…114) = 16 registers, expected 15.");
         rig.LogsAt(LogLevel.Error).Should().ContainSingle().Which.Message.Should().Contain(ex.Message);
         rig.Plc.Writes.Should().BeEmpty("a PLC that answers outside the protocol is never written to");
     }
