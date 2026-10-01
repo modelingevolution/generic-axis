@@ -75,6 +75,57 @@ public class ModbusRefusalTests
         ex.Message.Should().Contain("failed twice (reconnected once)").And.NotContain("Modbus exception");
         rig.Plc.WrittenRegisters.Should().BeEmpty();
     }
+
+    [Fact(DisplayName = "GA-I-30 A refusal mid-run latches ProtocolMismatch, keeps the connection and the beat; Reset clears it once FC04 is served")]
+    public async Task Tick_InputRegistersRefusedMidRun_OverlayLatched_ConnectionKept_ResetAfterRecovery()
+    {
+        await using var rig = new LiveRig();
+        var track = await rig.ConnectedTrack();
+        await Task.Delay(300); // a few ticks on the attached connection
+        var connections = rig.Plc.AcceptedConnections;
+        rig.Logs.Clear();
+
+        rig.Plc.Faults.RefuseInputRegisters = true;
+        var reads = rig.Plc.InputReads;
+        await WaitUntil(() => track.Carriage.Status.Error == MotionError.ProtocolMismatch, "the overlay latched");
+        track.Carriage.State.Should().Be(AxisState.ErrorStop);
+
+        // Keep refusing for longer than the PLC watchdog window: the beat must keep landing.
+        var beat = rig.Plc.Truth.Heartbeat;
+        await Task.Delay(1500);
+        rig.Plc.Truth.Heartbeat.Should().NotBe(beat, "the beat is written before the refused status read");
+        rig.Plc.Truth.WatchdogFault.Should().Be(0, "no trip: the commander is alive");
+        (rig.Plc.InputReads - reads).Should().BeGreaterThan(5, "anchor: ticks kept reading FC04 and were refused");
+        rig.Plc.AcceptedConnections.Should().Be(connections,
+            "an exception response is a complete frame: the connection is kept, never re-opened");
+
+        var errors = rig.Logs.GetSnapshot().Where(r => r.Level == LogLevel.Error && r.Message.Contains("ProtocolMismatch"))
+            .ToList();
+        errors.Should().ContainSingle("the latched overlay is logged once at Error").Which.Message.Should()
+            .Contain("FC04 read S+0…S+14 = input 0…14 refused: Modbus exception 02 (illegal data address)");
+        rig.Logs.GetSnapshot().Should().NotContain(r => r.Message.Contains("CommunicationLost"));
+
+        // Still refused: Reset is refused too.
+        await track.Carriage.Awaiting(c => c.ResetAsync().WaitAsync(LiveRig.T))
+            .Should().ThrowAsync<MotionException>().Where(e => e.Error == MotionError.ProtocolMismatch);
+
+        rig.Plc.Faults.RefuseInputRegisters = false;
+        var served = rig.Plc.InputReads;
+        await WaitUntil(() => rig.Plc.InputReads >= served + 2, "a tick was served FC04 again");
+        await track.Carriage.ResetAsync().WaitAsync(LiveRig.T);
+        track.Carriage.Status.Error.Should().BeNull();
+        rig.Plc.AcceptedConnections.Should().Be(connections);
+    }
+
+    private static async Task WaitUntil(Func<bool> condition, string because)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (!condition())
+        {
+            if (sw.Elapsed > LiveRig.T) throw new TimeoutException($"never: {because}");
+            await Task.Delay(10);
+        }
+    }
 }
 
 /// <summary>ADR-37: which Modbus exception codes are a refusal (Protocol) and which a transient fault (Transport).</summary>
