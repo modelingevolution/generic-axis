@@ -308,7 +308,7 @@ def percent_of(value: int, percent: int) -> int:
 
 
 async def chk01(ctx: CheckContext) -> Outcome:
-    """The run connected before pre-flight (a failed connect FAILs CHK-01 there); this times one status read."""
+    """The run connected before pre-flight (a failed connect FAILs CHK-01 there); this times one FC04 of S+0…S+14."""
     started = time.monotonic()
     await ctx.status()
     read_ms = ms(time.monotonic() - started)
@@ -320,7 +320,7 @@ async def chk01(ctx: CheckContext) -> Outcome:
 
 
 async def chk02(ctx: CheckContext) -> Outcome:
-    (version,) = await ctx.client.read(ctx.registers.map_version, 1)
+    (version,) = await ctx.client.read_input(ctx.registers.map_version, 1)  # CHK-02: read S+14 (FC04)
     if version != MAP_VERSION:
         return mismatch(ctx, "MapVersion not 1", Read("MapVersion", version, MAP_VERSION), mapVersion=version)
     return passed(f"MapVersion {version}", mapVersion=version)
@@ -381,7 +381,7 @@ async def chk05(ctx: CheckContext) -> Outcome:
     observed["secondReadBackAfter1s"] = from_words(*back)
     last_words = WORD_ORDER_VALUES[-1][1]
     if tuple(back) != last_words:
-        what = f"the PLC changed a driver-owned register within {OWNERSHIP_WAIT_S:g} s"
+        what = f"the PLC changed a driver-owned holding register within {OWNERSHIP_WAIT_S:g} s"
         return mismatch(ctx, what, Read("TargetPosition", from_words(*back), WORD_ORDER_VALUES[-1][0]), **observed)
     return passed("65538 and -2 read back exactly and stayed", **observed)
 

@@ -45,6 +45,8 @@ public sealed class FactoryTests
     [InlineData("DefaultSpeedPercent", "150")]
     [InlineData("Tolerance", "0")]
     [InlineData("HomingTimeoutSeconds", "99999999999")]
+    [InlineData("StatusBase", "65530")]   // S+14 past input register 65535
+    [InlineData("CommandBase", "65530")]  // C+11 past holding register 65535
     public void GA_U_44_Invalid_Axis_Values_Are_Refused_Naming_The_Key(string suffix, string value)
     {
         var config = PluginHarness.ConfigFor(PluginHarness.Track,
@@ -53,6 +55,22 @@ public sealed class FactoryTests
         var build = () => PluginHarness.Build(PluginHarness.Track, config);
 
         build.Should().Throw<ArgumentException>().WithMessage($"*'{PluginHarness.CarriageKey(suffix)}'*");
+    }
+
+    [Theory(DisplayName = "GA-U-141 Equal block bases build: holding and input are separate spaces (ADR-36)")]
+    [InlineData("0", "0")]
+    [InlineData("7", "7")]
+    [InlineData("100", "95")]
+    public void GA_U_141_Equal_Or_Interleaved_Bases_Build(string commandBase, string statusBase)
+    {
+        var config = PluginHarness.ConfigFor(PluginHarness.Track,
+            (PluginHarness.CarriageKey("Host"), UnreachableHost),
+            (PluginHarness.CarriageKey("CommandBase"), commandBase),
+            (PluginHarness.CarriageKey("StatusBase"), statusBase));
+
+        var build = () => PluginHarness.Build(PluginHarness.Track, config);
+
+        build.Should().NotThrow();
     }
 
     [Fact]
