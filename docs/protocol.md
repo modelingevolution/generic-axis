@@ -15,13 +15,13 @@ FR-11 dead-commander watchdog) and epic-065 feature-007 (Pamet track directly fr
 |---|---|
 | Transport | Modbus TCP, port 502 (configurable) |
 | Unit id | 1 (configurable) |
-| Register type | Holding registers only (FC03 read, FC06/FC16 write). No coils: one register file is simpler to map in every PLC. |
-| Block placement | Two blocks. **Command block** at base `C` (default **0**), **status block** at base `S` (default **100**). Offsets inside a block are fixed; only the two bases are configurable, on both sides, for a PLC whose register file cannot start at 0/100. The addresses below are written for the defaults. |
+| Register type | Command block: **holding** registers (FC03 read, FC06/FC16 write). Status block: **input** registers (FC04 read). No coils. Ownership is enforced by the function code, not by a promise: nobody can write where the PLC publishes. This is also how a CODESYS Modbus TCP slave maps its two register arrays, each from 0. |
+| Block placement | Two blocks, each in its own address space: the **command block** at holding base `C` (default **0**), the **status block** at input base `S` (default **0**). Offsets inside a block are fixed; only the two bases are configurable, on both sides, for a PLC whose arrays cannot start at 0. `C+n` is holding register C+n and `S+n` is input register S+n; the tables give the offset n. |
 | Word order for 32-bit values | **low word first** (register n = bits 0–15, register n+1 = bits 16–31), two's complement; each 16-bit register big-endian on the wire (Modbus standard) |
 | Position unit | 0.001 mm for a linear axis, 0.001° for a rotary axis (the driver's configured kind decides; the map is the same) |
 | Velocity unit | 0.001 unit/s; acceleration 0.001 unit/s² |
-| Consistency | The PLC answers one FC03 read of the whole status block (15 registers) from **one scan's image**, and applies one FC16 write before or after a scan, never in the middle of one. |
-| Map version | register 114 = **1** for this document |
+| Consistency | The PLC answers one FC04 read of the whole status block (15 registers) from **one scan's image**, and applies one FC16 write before or after a scan, never in the middle of one. |
+| Map version | `MapVersion` (S+14) = **1** for this document. Amended in place on 2026-10-01 (status block to input registers at 0) because no PLC implemented it yet. |
 
 ## Command block — written by the driver, read by the PLC (holding registers C+0 … C+11)
 
@@ -37,20 +37,20 @@ FR-11 dead-commander watchdog) and epic-065 feature-007 (Pamet track directly fr
 | 10 | `WatchdogFault` | uint16 | 0 healthy; 1 = the PLC tripped the watchdog. **Cleared only by the driver writing 0.** Written by the PLC on trip. |
 | 11 | `WatchdogTrips` | uint16 | Trip counter since PLC power-up. PLC-owned, read-only for the driver. |
 
-## Status block — written by the PLC, read by the driver (holding registers S+0 … S+14)
+## Status block — written by the PLC, read by the driver (input registers S+0 … S+14)
 
 | Addr | Name | Type | Meaning |
 |---|---|---|---|
-| 100 | `State` | uint16 | 0 Disabled · 1 Standstill · 2 Homing · 3 DiscreteMotion · 4 ContinuousMotion · 5 (reserved) · 6 Stopping · 7 ErrorStop — the numbers of the SDK `AxisState` enum. Any other value is a Protocol error (`ProtocolMismatch`). |
-| 101 | `Flags` | bitfield | bit 0 Homed · bit 1 InPosition · bit 2 LimitMin · bit 3 LimitMax · bit 4 HomeSensor · bit 5 DriveReady · bit 6 Moving |
-| 102–103 | `ActualPosition` | int32 | Position units. Valid only while `Homed` is set (an absolute encoder keeps it across power cycles; the map does not care which). |
-| 104–105 | `ActualVelocity` | int32 | Signed, 0.001 unit/s. |
-| 106 | `FaultCode` | uint16 | 0 none · 1 drive fault · 2 limit switch tripped · 3 following error · 4 watchdog · 5 homing failed · 6 communication to drive lost · 7 safety stop (E-stop chain, guard) · 100+ vendor-specific (documented per PLC). |
-| 107 | `CommandAck` | uint16 | Echo of the last accepted `CommandSeq`. |
-| 108–109 | `TravelMin` | int32 | Machine limit, published by the PLC. The driver refuses targets outside `TravelMin..TravelMax`; it never clamps. |
-| 110–111 | `TravelMax` | int32 | |
-| 112–113 | `MaxVelocity` | int32 | Machine limit, published by the PLC. The driver refuses faster speeds. |
-| 114 | `MapVersion` | uint16 | 1. The driver reads the status block before its first write and refuses to attach to any other value, writing nothing. |
+| 0 | `State` | uint16 | 0 Disabled · 1 Standstill · 2 Homing · 3 DiscreteMotion · 4 ContinuousMotion · 5 (reserved) · 6 Stopping · 7 ErrorStop — the numbers of the SDK `AxisState` enum. Any other value is a Protocol error (`ProtocolMismatch`). |
+| 1 | `Flags` | bitfield | bit 0 Homed · bit 1 InPosition · bit 2 LimitMin · bit 3 LimitMax · bit 4 HomeSensor · bit 5 DriveReady · bit 6 Moving |
+| 2–3 | `ActualPosition` | int32 | Position units. Valid only while `Homed` is set (an absolute encoder keeps it across power cycles; the map does not care which). |
+| 4–5 | `ActualVelocity` | int32 | Signed, 0.001 unit/s. |
+| 6 | `FaultCode` | uint16 | 0 none · 1 drive fault · 2 limit switch tripped · 3 following error · 4 watchdog · 5 homing failed · 6 communication to drive lost · 7 safety stop (E-stop chain, guard) · 100+ vendor-specific (documented per PLC). |
+| 7 | `CommandAck` | uint16 | Echo of the last accepted `CommandSeq`. |
+| 8–9 | `TravelMin` | int32 | Machine limit, published by the PLC. The driver refuses targets outside `TravelMin..TravelMax`; it never clamps. |
+| 10–11 | `TravelMax` | int32 | |
+| 12–13 | `MaxVelocity` | int32 | Machine limit, published by the PLC. The driver refuses faster speeds. |
+| 14 | `MapVersion` | uint16 | 1. The driver reads the status block before its first write and refuses to attach to any other value, writing nothing. |
 
 Limits come from the machine through this block. If a PLC cannot publish them (`TravelMin`, `TravelMax` and
 `MaxVelocity` all zero), the driver uses the values from its own configuration and logs that it did; it never
@@ -81,6 +81,8 @@ combination (a partial publication included) makes the driver refuse to attach.
   ErrorStop, `FaultCode = 5`.
 - **MoveAbsolute** (edge): requires `Homed`; PLC moves to `TargetPosition` at `Velocity`; State = DiscreteMotion,
   then Standstill with `InPosition`. Target outside travel → the driver refuses (SDK `OutOfRange`) and writes nothing.
+  There is deliberately no MoveRelative bit: the driver sends MoveAbsolute with `target = ActualPosition + Δ`, so the PLC
+  never sees a relative command; the axis must be at Standstill and `Homed`, and unhomed jogging is MoveVelocity.
 - **MoveVelocity** (edge): continuous motion at signed `Velocity` until Stop or a limit; State = ContinuousMotion.
   While `Homed`, reaching `TravelMin`/`TravelMax` is a controlled stop to Standstill (not a fault). A limit switch is
   always a fault: ErrorStop, `FaultCode = 2`.
@@ -121,15 +123,15 @@ dead commander is indistinguishable from an idle one. Therefore:
   predecessor, and leaving it latched would leave the network disarmed for the new commander. `FaultCode = 4` and
   ErrorStop stay until a Reset, so the trip remains visible and distinguishable from a drive fault.
 - Owner id is a station-unique non-zero 16-bit value from host configuration.
-- Each heartbeat tick is: write `Heartbeat`, read registers 10–11, read the status block. That tick is the status
-  cadence of the axis, moving or idle.
+- Each heartbeat tick is: write `Heartbeat`, read holding C+9…C+11, read the status block (one FC04 of S+0…S+14).
+  That tick is the status cadence of the axis, moving or idle.
 - Stop and cancellation take a **priority lane** on the channel that preempts queued move traffic (≤ 200 ms to a
   halted axis).
 
 ## What the PLC program must do (checklist for the ladder / structured-text author)
 
-1. Serve holding registers C+0…C+11 and S+0…S+14 on the configured unit id and port; refuse nothing, ignore writes
-   to PLC-owned registers (11, 100–114).
+1. Serve holding registers C+0…C+11 and input registers S+0…S+14 on the configured unit id and port; refuse
+   nothing, ignore writes to holding C+11. The status block is input registers and cannot be written.
 2. Publish `MapVersion = 1`, `TravelMin/Max`, `MaxVelocity` from the axis parameters at start-up.
 3. Mirror the drive: `State`, `Flags`, `ActualPosition`, `ActualVelocity`, `FaultCode` every PLC cycle; serve a
    status-block read from one scan's image.
@@ -168,6 +170,7 @@ table names its class.
 
 1. **Say what you saw.** Every error message and every FAIL line has this shape:
    `<axis or CHK-nn>: <Class>/<MotionError>: <what happened>. Read <Register> (<address>) = <value>[, expected <value>].`
+   `<address>` is the offset and the absolute register with its type: `C+n = holding a`, `S+n = input a` (a = base + n).
    A command error adds `CommandSeq <n> written, CommandAck <m> read, State <s> read`. A transport error adds the
    endpoint, the operation, the register range and the exception message. A bare "communication error" is a defect.
 2. **One cause, one class.** A Protocol or Machine error is never reported as Transport. A Transport failure is never
@@ -176,7 +179,7 @@ table names its class.
 3. **No silent recovery.** One retry of a failed transaction, after a reconnect, is the only retry. It logs at Warning
    with the exception, and so does every failed heartbeat beat. A command is never re-sent, and an ack is waited for
    once.
-4. **A register dump comes first.** Both checkers take `--dump`. It reads C+0…C+11 and S+0…S+14 once, or at 5 Hz
+4. **A register dump comes first.** Both checkers take `--dump`. It reads holding C+0…C+11 and input S+0…S+14 once, or at 5 Hz
    with `--watch` until Ctrl-C. It prints one row per register: address, name, raw hex, and the decoded value in
    engineering units, with `State` and `FaultCode` names and `Flags` and `Command` bits by name. `--dump` writes
    nothing and takes no lease. Its exit code is 0 when both blocks were read, and 1 on a Transport error.
@@ -185,10 +188,10 @@ table names its class.
 Example messages:
 
 ```
-carriage: Protocol/ProtocolMismatch: attach refused. Read MapVersion (S+14 = 114) = 2, expected 1.
+carriage: Protocol/ProtocolMismatch: attach refused. Read MapVersion (S+14 = input 14) = 2, expected 1.
 carriage: Protocol/NotAcknowledged: Home not accepted. CommandSeq 42 written, CommandAck 41 read after 500 ms, State 0 read.
-carriage: Machine/WatchdogTripped: Read FaultCode (S+6 = 106) = 4, WatchdogFault (C+10 = 10) = 1, WatchdogTrips (C+11 = 11) = 3.
-carriage: Transport/CommunicationLost: read S+0…S+14 on 192.168.58.20:502 unit 1 failed twice (reconnected once): Connection refused.
+carriage: Machine/WatchdogTripped: Read FaultCode (S+6 = input 6) = 4, WatchdogFault (C+10 = holding 10) = 1, WatchdogTrips (C+11 = holding 11) = 3.
+carriage: Transport/CommunicationLost: FC04 read S+0…S+14 on 192.168.58.20:502 unit 1 failed twice (reconnected once): Connection refused.
 CHK-06: Protocol/NotAcknowledged: Enable 1 not accepted. CommandSeq 7 written, CommandAck 6 read after 500 ms, State 0 read.
 ```
 
@@ -208,16 +211,15 @@ compares its ids with this table.
 |---|---|---|
 | `<host>[:port]` | port 502 | The PLC. |
 | `--unit N` | 1 | Unit id. |
-| `--command-base N`, `--status-base N` | 0, 100 | Block bases. |
+| `--command-base N`, `--status-base N` | 0, 0 | Block bases: holding `C`, input `S`. |
 | `--owner-id N` | 65535 | The checker's lease id. CHK-11 uses 65534 as the foreign id. Ids 65534–65535 are reserved for conformance tools; stations never use them. |
 | `--allow-motion` | off | Runs CHK-12…CHK-16. Without it they are SKIPPED. **Only with an operator at the machine and the travel clear.** |
 | `--tolerance X` | 0.1 | Position check threshold in axis units (CHK-13). This is a checker threshold, not a machine number. |
 | `--dump` [`--watch`] | off | Prints the decoded register dump (§ Errors and debugging, rule 4) and runs no checks. |
 | `--report PATH` | none | `*.md`: writes the Markdown report there and the JSON report next to it as `*.json`. `*.json`: writes the JSON report only. Any other extension is a usage error (exit 2). The Markdown report always goes to stdout. |
 
-Exit codes: 0 = no FAIL (SKIPPED allowed) · 1 = at least one FAIL · 2 = usage error · 3 = refused to start (another commander is beating
-— rw2, a station, or a second tool; see Pre-flight; stop it first) · 4 = interrupted by
-the operator (Ctrl-C / SIGINT) before the list finished.
+Exit codes: 0 = no FAIL (SKIPPED allowed) · 1 = at least one FAIL · 2 = usage error · 3 = refused to start (another commander
+is beating — rw2, a station, or a second tool; see Pre-flight; stop it first) · 4 = interrupted by the operator (Ctrl-C / SIGINT).
 
 ### Rules for every run
 
@@ -231,7 +233,7 @@ the operator (Ctrl-C / SIGINT) before the list finished.
   at least 1 s and up to 1.6 s (1.5 s plus one 100 ms read):
   - `Heartbeat` changes at any time: refused, as above. A beat after a trip is a live commander.
   - `WatchdogFault` reads 1 and `Heartbeat` did not change for the full 1 s watch: the lease holder is dead. The tool
-    proceeds, and the line after the Markdown heading says "Pre-flight: LeaseOwner (C+9 = 9) = n held with no beat and WatchdogFault (C+10 = 10) = 1:
+    proceeds, and the line after the Markdown heading says "Pre-flight: LeaseOwner (C+9 = holding 9) = n held with no beat and WatchdogFault (C+10 = holding 10) = 1:
     the previous commander is dead; its trip is left for its operator." The tool never clears that trip: a restore
     that finds it FAILs `Machine/WatchdogTripped`, and cleanup leaves it and the lease as they were.
   - Neither within 1.6 s: refused (exit 3, `REFUSED`), naming `LeaseOwner` and `WatchdogFault`: "a live commander,
@@ -257,7 +259,7 @@ the operator (Ctrl-C / SIGINT) before the list finished.
   and beats: it writes `LeaseOwner` = its id and starts its beat as soon as pre-flight passes and `MapVersion` (S+14)
   reads 1, so a second tool is refused from CHK-01 on. The exception is where a check says it stops. After a dead holder's trip (Pre-flight) it
   takes no lease and does not beat. If a beating checker reads `LeaseOwner` ≠ its own id, the running check FAILs
-  Protocol/`ProtocolMismatch` "Read LeaseOwner (C+9 = 9) = n, expected 65535" (the register does not hold what was
+  Protocol/`ProtocolMismatch` "Read LeaseOwner (C+9 = holding 9) = n, expected 65535" (the register does not hold what was
   written), every later check is SKIPPED with that reason, and the checker writes nothing more to that axis except to
   stop its own beat.
 - **Each check restores.** Every check ends with the axis in State 0 or 1, no latched fault, the lease held and the
@@ -270,11 +272,11 @@ the operator (Ctrl-C / SIGINT) before the list finished.
 
 | Id | Title | Protocol section | Needs | Procedure | PASS when |
 |---|---|---|---|---|---|
-| CHK-01 | Transport and unit | Transport | — | TCP connect (a budget of ≤ 3 s including the tool's own retry; a budget, not a timing threshold), then FC03 of S+0…S+14 on the unit. | Connected, and the read answers with no Modbus exception. |
-| CHK-02 | Map version | Status block | 01 | Read S+14. | `MapVersion == 1`. |
-| CHK-03 | Machine limits published | Status block, "Limits come from the machine" | 02 | Read S+8…S+13. | Not all zero, `TravelMin < TravelMax`, `MaxVelocity > 0`. The values are reported. |
-| CHK-04 | Status mirror cadence | Status block; FR-11 tick | 02 | 30 status-block reads, one every 100 ms. | All 30 answer, the slowest round trip is ≤ 100 ms, and `State` ∈ {0,1,2,3,4,6,7} in every read. |
-| CHK-05 | 32-bit word order and driver ownership of parameters | Transport (word order); Command block | 02 | Write C+2…C+3 = `[0x0002, 0x0001]` (65 538), read back. Write −2 as `[0xFFFE, 0xFFFF]`, read back. Wait 1 s and read again. No edge bit is set. | Both values read back exactly, and are unchanged after 1 s (the PLC does not write driver-owned registers). The PLC's *interpretation* of the order is proven by CHK-03 (sane limits) and CHK-13 (it arrives where it was sent). |
+| CHK-01 | Transport and unit | Transport | — | TCP connect (a budget of ≤ 3 s including the tool's own retry; a budget, not a timing threshold), then FC04 of S+0…S+14 on the unit. | Connected, and the read answers with no Modbus exception. |
+| CHK-02 | Map version | Status block | 01 | Read S+14 (FC04). | `MapVersion == 1`. |
+| CHK-03 | Machine limits published | Status block, "Limits come from the machine" | 02 | Read S+8…S+13 (FC04). | Not all zero, `TravelMin < TravelMax`, `MaxVelocity > 0`. The values are reported. |
+| CHK-04 | Status mirror cadence | Status block; FR-11 tick | 02 | 30 status-block reads (FC04), one every 100 ms. | All 30 answer, the slowest round trip is ≤ 100 ms, and `State` ∈ {0,1,2,3,4,6,7} in every read. |
+| CHK-05 | 32-bit word order and driver ownership of parameters | Transport (word order); Command block | 02 | Write C+2…C+3 = `[0x0002, 0x0001]` (65 538), read back. Write −2 as `[0xFFFE, 0xFFFF]`, read back. Wait 1 s and read again. No edge bit is set. | Both values read back exactly (FC03), and are unchanged after 1 s (the PLC does not write driver-owned holding registers). The PLC's *interpretation* of the order is proven by CHK-03 (sane limits) and CHK-13 (it arrives where it was sent). |
 | CHK-06 | Enable handshake (level) | Command semantics: Handshake, Enable | 02 | Precondition State 0 or 1. Take the lease (checker id), beat. Write `[Enable, seq+1]`, then after the ack `[0, seq+2]`. | Each ack arrives in ≤ 500 ms. State is 1 within 5 s after Enable 1 and 0 within 5 s after Enable 0. Ack ms and state ms are reported. Energises the drive and commands no motion. |
 | CHK-07 | Reset handshake (edge) | Command semantics: Reset, Acknowledge | 06 | From State 0 write `[Reset, seq+1]`. After the ack, clear the edge `[0, seq+1]`. | Ack in ≤ 500 ms, `State` stays 0 and `FaultCode` stays 0 (Reset outside ErrorStop is a no-op). |
 | CHK-08 | Watchdog trips on a stalled beat | FR-11 | 06 | Hold the lease, `WatchdogFault = 0`, beat for 2 s, then stop beating. Keep polling. | `WatchdogFault == 1`, `WatchdogTrips` +1, `State == 7`, `FaultCode == 4`, all within **1.0–1.5 s** of the last beat. The trip time is reported. |
@@ -350,7 +352,7 @@ JSON (`schema: "generic-axis-conformance/1"`). Both tools emit exactly these fie
   "schema": "generic-axis-conformance/1",
   "mapVersion": 1,
   "tool": { "name": "generic-axis-check", "language": "python", "version": "1.0.0" },
-  "target": { "host": "192.168.58.20", "port": 502, "unit": 1, "commandBase": 0, "statusBase": 100 },
+  "target": { "host": "192.168.58.20", "port": 502, "unit": 1, "commandBase": 0, "statusBase": 0 },
   "allowMotion": false,
   "startedAt": "2026-09-29T10:15:02Z",
   "finishedAt": "2026-09-29T10:15:31Z",
@@ -379,10 +381,8 @@ JSON (`schema: "generic-axis-conformance/1"`). Both tools emit exactly these fie
   otherwise `INTERRUPTED` if the operator interrupted the run, otherwise `FAIL` if any check failed, otherwise `PASS`.
 - `errorClass` is `Transport`, `Protocol` or `Machine` on a FAIL, and `null` otherwise.
   `errorClass` is `null` on a FAIL only when the checker itself failed (message `checker error: …`); such a run is not
-  a verdict on the PLC and must be repeated after the tool is fixed. A FAIL also
-  carries `lastRead`, the raw values of C+0…C+11 and S+0…S+14 taken as § Error class of a FAIL says: a fresh read
-  when the failure is detected, before any restore write. If that read fails, the last values read, with `null` for a
-  register never read.
+  a verdict on the PLC and must be repeated after the tool is fixed. A FAIL also carries `lastRead`: the raw values of
+  holding C+0…C+11 and input S+0…S+14, read as § Error class of a FAIL says.
 - `observed` follows § Observed values exactly. `language` is `python` or `csharp`.
 
 The Markdown report has four parts, in order:
