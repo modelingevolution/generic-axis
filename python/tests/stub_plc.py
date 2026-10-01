@@ -99,6 +99,9 @@ class StubPlc:
     def __init__(self, options: StubOptions | None = None) -> None:
         self.o = options or StubOptions()
         self.regs = [0] * 65536
+        """Holding registers (FC03/06/16)."""
+        self.inputs = [0] * 65536
+        """Input registers (FC04), a separate space: no write function code reaches them (ADR-36)."""
         self.axis = Axis(p=float(self.o.initial_position), state=DISABLED)
         self._server: asyncio.Server | None = None
         self._scan: asyncio.Task[None] | None = None
@@ -177,11 +180,12 @@ class StubPlc:
 
     def _handle(self, pdu: bytes) -> bytes:
         fc = pdu[0]
-        if fc == 3:
+        if fc in (3, 4):
             addr, count = struct.unpack(">HH", pdu[1:5])
             if addr + count > 65536:
                 return bytes([fc | 0x80, 2])
-            return bytes([fc, 2 * count]) + struct.pack(f">{count}H", *self.regs[addr : addr + count])
+            space = self.regs if fc == 3 else self.inputs
+            return bytes([fc, 2 * count]) + struct.pack(f">{count}H", *space[addr : addr + count])
         if fc == 6:
             addr, value = struct.unpack(">HH", pdu[1:5])
             self._write(addr, [value])
