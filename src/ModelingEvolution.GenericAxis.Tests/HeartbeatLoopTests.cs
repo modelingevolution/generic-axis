@@ -20,13 +20,13 @@ public class HeartbeatLoopTests
         rig.Device.Heartbeat.TickFailed += (_, e) => failures.Add(e);
         rig.Logs.Clear();
 
-        rig.Plc.AnswerWith = op => op.Address == rig.Plc.Map.Status ? new ushort[14] : null;
+        rig.Plc.AnswerWith = op => op.IsInputRead ? new ushort[14] : null;
         await rig.TickAsync(3);
 
         failures.Should().HaveCount(3, "every malformed tick is reported").And
             .OnlyContain(e => e.Error == MotionError.ProtocolMismatch);
         failures[0].Message.Should().Be("carriage: ProtocolMismatch: the PLC answered a read of the status block with 14 "
-                                        + "registers. Read status block (S+0…S+14 = input 100…114) = 14 registers, expected 15.");
+                                        + "registers. Read status block (S+0…S+14 = input 0…14) = 14 registers, expected 15.");
         rig.Axis.State.Should().Be(AxisState.ErrorStop);
         rig.Axis.Status.Error.Should().Be(MotionError.ProtocolMismatch, "the class is not rewritten to CommunicationLost");
         rig.LogsAt(LogLevel.Error).Should().ContainSingle(r => r.Message.Contains("overlay ProtocolMismatch"),
@@ -72,13 +72,13 @@ public class HeartbeatLoopTests
     public async Task ShortStatusReadAtAttach_RefusedOnceAtError()
     {
         await using var rig = new DriverRig();
-        rig.Plc.AnswerWith = op => op.Address == rig.Plc.Map.Status ? new ushort[16] : null;
+        rig.Plc.AnswerWith = op => op.IsInputRead ? new ushort[16] : null;
 
         var ex = (await rig.Device.Awaiting(d => d.ConnectAsync().WaitAsync(DriverRig.RealTimeout))
             .Should().ThrowAsync<MotionException>()).Which;
 
         ex.Error.Should().Be(MotionError.ProtocolMismatch);
-        ex.Message.Should().EndWith("Read status block (S+0…S+14 = input 100…114) = 16 registers, expected 15.");
+        ex.Message.Should().EndWith("Read status block (S+0…S+14 = input 0…14) = 16 registers, expected 15.");
         rig.LogsAt(LogLevel.Error).Should().ContainSingle().Which.Message.Should().Contain(ex.Message);
         rig.Plc.Writes.Should().BeEmpty("a PLC that answers outside the protocol is never written to");
     }

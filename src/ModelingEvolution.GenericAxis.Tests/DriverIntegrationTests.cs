@@ -306,7 +306,7 @@ public class DriverIntegrationTests(ITestOutputHelper output)
         var ex = await Throws(() => track.ConnectAsync());
 
         ex.Error.Should().Be(MotionError.ProtocolMismatch);
-        ex.Message.Should().Contain("Read MapVersion (S+14 = input 114) = 2, expected 1.");
+        ex.Message.Should().Contain("Read MapVersion (S+14 = input 14) = 2, expected 1.");
         rig.Logs.GetSnapshot().Should().Contain(r => r.Level == LogLevel.Error && r.Message == ex.Message);
         await Task.Delay(100);
         rig.Plc.WrittenRegisters.Should().BeEmpty();
@@ -604,7 +604,7 @@ public class DriverIntegrationTests(ITestOutputHelper output)
         track.Carriage.Status.Position.Should().BeApproximately(1000, 0.005);
         var written = rig.Plc.WrittenRegisters.ToArray();
         written.Should().Contain(r => r >= 200 && r <= 211, "anchor: the relocated command block was written");
-        written.Should().NotContain(r => r <= 114);
+        written.Should().NotContain(r => r < RegisterMap.CommandLength, "holding 0–11 of the default bases are never written");
     }
 
     [Fact(DisplayName = "GA-I-23 A rotary positioner moves in degrees")]

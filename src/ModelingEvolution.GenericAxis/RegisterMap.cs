@@ -8,7 +8,7 @@ namespace ModelingEvolution.GenericAxis;
 /// arrays cannot start at 0 or that serves a second axis.
 /// </summary>
 /// <param name="CommandBase">Base <c>C</c> of the command block (holding registers). Protocol default 0.</param>
-/// <param name="StatusBase">Base <c>S</c> of the status block (input registers). Protocol default 0 (ADR-36; flipped with the fake's input bank).</param>
+/// <param name="StatusBase">Base <c>S</c> of the status block (input registers). Protocol default 0.</param>
 public sealed record RegisterMap(int CommandBase = RegisterMap.DefaultCommandBase,
     int StatusBase = RegisterMap.DefaultStatusBase)
 {
@@ -19,7 +19,7 @@ public sealed record RegisterMap(int CommandBase = RegisterMap.DefaultCommandBas
     public const int DefaultCommandBase = 0;
 
     /// <summary>Protocol default of the status block base (input registers, ADR-36).</summary>
-    public const int DefaultStatusBase = 100;
+    public const int DefaultStatusBase = 0;
 
     /// <summary>Registers in the command block, C+0 … C+11.</summary>
     public const int CommandLength = 12;
@@ -42,7 +42,7 @@ public sealed record RegisterMap(int CommandBase = RegisterMap.DefaultCommandBas
     /// <summary>Protocol FR-11: heartbeat deferral behind move traffic is bounded at 200 ms.</summary>
     public static readonly TimeSpan HeartbeatDeferralBound = TimeSpan.FromMilliseconds(200);
 
-    /// <summary>The default bases.</summary>
+    /// <summary>The protocol defaults: holding base 0, input base 0 (ADR-36).</summary>
     public static RegisterMap Default { get; } = new();
 
     // ── command block ───────────────────────────────────────────

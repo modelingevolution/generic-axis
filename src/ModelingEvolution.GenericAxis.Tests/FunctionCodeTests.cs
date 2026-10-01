@@ -26,8 +26,7 @@ public class FunctionCodeTests
         rig.Plc.State = 0;
         await rig.TickAsync();
         // Ticks answer a block from before the write, so the verb needs the deadline read (GA-U-132's path).
-        var stale = Enumerable.Range(0, RegisterMap.StatusLength)
-            .Select(i => rig.Plc[(ushort)(rig.Plc.Map.Status + i)]).ToArray();
+        var stale = rig.Plc.StatusWords();
         var serveStale = true;
         rig.Plc.AnswerWith = op => serveStale && op.What == "read status block" ? stale : null;
         rig.Plc.OnRead = (_, op) => { if (op.What.EndsWith("at the ack deadline")) serveStale = false; };

@@ -27,7 +27,7 @@ public class ErrorMessageTests
         var commander = (await DriverRig.Bounded(() => rig.Linear.MoveAbsoluteAsync(new Mm(10_500)))
             .Should().ThrowAsync<MotionException>()).Which;
         commander.Message.Should().MatchRegex(Shape.ToString())
-            .And.Contain("Read TravelMin (S+8 = input 108) = 0, TravelMax (S+10 = input 110) = 10000000, MaxVelocity (S+12 = input 112) = 500000.");
+            .And.Contain("Read TravelMin (S+8 = input 8) = 0, TravelMax (S+10 = input 10) = 10000000, MaxVelocity (S+12 = input 12) = 500000.");
 
         var protocol = rig.Axis.HomeAsync();
         for (var i = 0; i < 8 && !protocol.IsCompleted; i++) await rig.TickAsync();
@@ -53,10 +53,10 @@ public class ErrorMessageTests
         byName["CommandSeq"].Value.Should().Be("7");
         byName["LeaseOwner"].Should().Be(new RegisterRow("C+9 = 9", "LeaseOwner", "0xFFFF", "65535"));
         byName["WatchdogTrips"].Value.Should().Be("2");
-        byName["State"].Should().Be(new RegisterRow("S+0 = 100", "State", "0x0000", "Disabled"));
+        byName["State"].Should().Be(new RegisterRow("S+0 = 0", "State", "0x0000", "Disabled"));
         byName["Flags"].Value.Should().Be("DriveReady");
         byName["CommandAck"].Value.Should().Be("6");
-        byName["TravelMax"].Should().Be(new RegisterRow("S+10…S+11 = 110…111", "TravelMax", "0x9680 0x0098", "10000.000"));
+        byName["TravelMax"].Should().Be(new RegisterRow("S+10…S+11 = 10…11", "TravelMax", "0x9680 0x0098", "10000.000"));
         byName["MaxVelocity"].Value.Should().Be("500.000");
         byName["MapVersion"].Value.Should().Be("1");
         byName["FaultCode"].Value.Should().Be("None");
@@ -108,7 +108,7 @@ public class ChannelRetryTests
         using var __ = channel;
         plc.DropNextConnections(1);
 
-        var words = await channel.ReadInputAsync(1, 100, 15, "read status block", ChannelPriority.Move)
+        var words = await channel.ReadInputAsync(1, RegisterMap.Default.Status, RegisterMap.StatusLength, "read status block", ChannelPriority.Move)
             .WaitAsync(LiveRig.T);
 
         words.Should().HaveCount(15);
@@ -117,7 +117,7 @@ public class ChannelRetryTests
         channel.Retries.Should().Be(1, "review #25: the one retry is counted for the checker's `retries`");
         var warnings = logs.GetSnapshot().Where(r => r.Level == LogLevel.Warning).ToArray();
         warnings.Should().ContainSingle().Which.Exception.Should().NotBeNull("the retry is logged with the exception");
-        warnings[0].Message.Should().Contain("read status block (FC04 read S+0…S+14 = input 100…114)")
+        warnings[0].Message.Should().Contain("read status block (FC04 read S+0…S+14 = input 0…14)")
             .And.Contain($"127.0.0.1:{plc.Port} unit 1");
     }
 
@@ -130,11 +130,11 @@ public class ChannelRetryTests
         using var __ = channel;
         plc.DropNextConnections(2);
 
-        var ex = (await channel.Invoking(c => c.ReadInputAsync(1, 100, 15, "read status block").WaitAsync(LiveRig.T))
+        var ex = (await channel.Invoking(c => c.ReadInputAsync(1, RegisterMap.Default.Status, RegisterMap.StatusLength, "read status block").WaitAsync(LiveRig.T))
             .Should().ThrowAsync<MotionException>()).Which;
 
         ex.Error.Should().Be(MotionError.CommunicationLost);
-        ex.Message.Should().StartWith("carriage: CommunicationLost: read status block (FC04 read S+0…S+14 = input 100…114) "
+        ex.Message.Should().StartWith("carriage: CommunicationLost: read status block (FC04 read S+0…S+14 = input 0…14) "
                                       + $"on 127.0.0.1:{plc.Port} unit 1 failed twice (reconnected once): ");
         ex.Message.Should().NotEndWith("(reconnected once): .", "the exception's own message is quoted");
         plc.AcceptedConnections.Should().Be(2);

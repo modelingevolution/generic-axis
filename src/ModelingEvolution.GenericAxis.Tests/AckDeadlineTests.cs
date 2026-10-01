@@ -14,7 +14,7 @@ public class AckDeadlineTests
     private const string TickStatusRead = "read status block";
 
     private static ushort[] StatusWords(DriverRig rig) =>
-        Enumerable.Range(0, RegisterMap.StatusLength).Select(i => rig.Plc[(ushort)(rig.Plc.Map.Status + i)]).ToArray();
+        rig.Plc.StatusWords();
 
     [Fact(DisplayName = "GA-U-132 An ack the ticks never showed is found by the deadline read; the verb proceeds")]
     public async Task Power_TicksStale_AckedPlc_DeadlineReadFindsAck()

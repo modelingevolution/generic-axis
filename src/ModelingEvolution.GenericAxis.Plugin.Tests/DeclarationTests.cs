@@ -81,7 +81,7 @@ public sealed class DeclarationTests
             ("Port", "int", "502"),
             ("UnitId", "int", "1"),
             ("CommandBase", "int", "0"),
-            ("StatusBase", "int", "100"),
+            ("StatusBase", "int", "0"),
             ("DisplayName", "string", "Carriage"),
             ("TravelMin", "double", null),
             ("TravelMax", "double", null),

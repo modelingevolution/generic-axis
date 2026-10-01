@@ -19,14 +19,17 @@ internal sealed record ChannelOp(bool IsWrite, ushort Address, ushort[] Values, 
 }
 
 /// <summary>
-/// A 65 536-register bank standing in for the PLC (design § Tests, <c>FakePlcChannel</c>). Records every transaction
+/// Two 65 536-register banks standing in for the PLC (design § Tests, <c>FakePlcChannel</c>): holding registers (the
+/// command block, FC03/FC06/FC16) and input registers (the status block, FC04; ADR-36). Writes reach only the holding
+/// bank, as on a real PLC. Records every transaction
 /// with its lane; <see cref="OnCommand"/> lets a test script the PLC's answer to a command write. All calls complete
 /// synchronously, so a verb runs up to its first wait before the call returns.
 /// </summary>
 internal sealed class FakePlcChannel : IModbusChannel
 {
     private readonly Lock _sync = new();
-    private readonly ushort[] _regs = new ushort[65536];
+    private readonly ushort[] _regs = new ushort[65536];   // holding
+    private readonly ushort[] _input = new ushort[65536];
     private readonly List<ChannelOp> _ops = [];
 
     public FakePlcChannel(RegisterMap? map = null)
@@ -79,10 +82,29 @@ internal sealed class FakePlcChannel : IModbusChannel
     public IReadOnlyList<ChannelOp> CommandWritesSince(int from) =>
         Ops.Skip(from).Where(o => o.IsWrite && o.Lane != ChannelPriority.Heartbeat).ToArray();
 
+    /// <summary>A holding register (the command block).</summary>
     public ushort this[ushort address]
     {
         get { lock (_sync) return _regs[address]; }
         set { lock (_sync) _regs[address] = value; }
+    }
+
+    /// <summary>An input register (the status block).</summary>
+    public ushort Input(ushort address)
+    {
+        lock (_sync) return _input[address];
+    }
+
+    /// <summary>Sets an input register (the PLC publishing).</summary>
+    public void SetInput(ushort address, ushort value)
+    {
+        lock (_sync) _input[address] = value;
+    }
+
+    /// <summary>The 15 status registers as the PLC publishes them now.</summary>
+    public ushort[] StatusWords()
+    {
+        lock (_sync) return _input.AsSpan(Map.Status, RegisterMap.StatusLength).ToArray();
     }
 
     public void Set(Action<FakePlcChannel> mutate)
@@ -90,19 +112,19 @@ internal sealed class FakePlcChannel : IModbusChannel
         lock (_sync) mutate(this);
     }
 
-    // ── status helpers (default-map addresses unless a map was given) ──
+    // ── register helpers: status fields live in the input bank, command fields in the holding bank ──
 
-    public ushort State { get => this[Map.State]; set => this[Map.State] = value; }
+    public ushort State { get => Input(Map.State); set => SetInput(Map.State, value); }
 
-    public StatusFlags Flags { get => (StatusFlags)this[Map.Flags]; set => this[Map.Flags] = (ushort)value; }
+    public StatusFlags Flags { get => (StatusFlags)Input(Map.Flags); set => SetInput(Map.Flags, (ushort)value); }
 
-    public int ActualPosition { get => GetInt(Map.ActualPosition); set => SetInt(Map.ActualPosition, value); }
+    public int ActualPosition { get => GetInputInt(Map.ActualPosition); set => SetInputInt(Map.ActualPosition, value); }
 
-    public int ActualVelocity { get => GetInt(Map.ActualVelocity); set => SetInt(Map.ActualVelocity, value); }
+    public int ActualVelocity { get => GetInputInt(Map.ActualVelocity); set => SetInputInt(Map.ActualVelocity, value); }
 
-    public ushort FaultCode { get => this[Map.FaultCode]; set => this[Map.FaultCode] = value; }
+    public ushort FaultCode { get => Input(Map.FaultCode); set => SetInput(Map.FaultCode, value); }
 
-    public ushort CommandAck { get => this[Map.CommandAck]; set => this[Map.CommandAck] = value; }
+    public ushort CommandAck { get => Input(Map.CommandAck); set => SetInput(Map.CommandAck, value); }
 
     public ushort Command => this[Map.Command];
 
@@ -116,15 +138,15 @@ internal sealed class FakePlcChannel : IModbusChannel
 
     public ushort WatchdogTrips { get => this[Map.WatchdogTrips]; set => this[Map.WatchdogTrips] = value; }
 
-    public ushort MapVersion { get => this[Map.MapVersion]; set => this[Map.MapVersion] = value; }
+    public ushort MapVersion { get => Input(Map.MapVersion); set => SetInput(Map.MapVersion, value); }
 
     public void SetLimits(int travelMin, int travelMax, int maxVelocity)
     {
         lock (_sync)
         {
-            SetInt(Map.TravelMin, travelMin);
-            SetInt(Map.TravelMax, travelMax);
-            SetInt(Map.MaxVelocity, maxVelocity);
+            SetInputInt(Map.TravelMin, travelMin);
+            SetInputInt(Map.TravelMax, travelMax);
+            SetInputInt(Map.MaxVelocity, maxVelocity);
         }
     }
 
@@ -140,6 +162,21 @@ internal sealed class FakePlcChannel : IModbusChannel
             var (lo, hi) = Words.Split(value);
             _regs[address] = lo;
             _regs[address + 1] = hi;
+        }
+    }
+
+    public int GetInputInt(ushort address)
+    {
+        lock (_sync) return Words.Join(_input[address], _input[address + 1]);
+    }
+
+    public void SetInputInt(ushort address, int value)
+    {
+        lock (_sync)
+        {
+            var (lo, hi) = Words.Split(value);
+            _input[address] = lo;
+            _input[address + 1] = hi;
         }
     }
 
@@ -179,7 +216,7 @@ internal sealed class FakePlcChannel : IModbusChannel
             if (ThrowWhen?.Invoke(op) is { } thrown) return Task.FromException<ushort[]>(thrown);
             OnRead?.Invoke(this, op);
             if (AnswerWith?.Invoke(op) is { } answer) return Task.FromResult(answer);
-            return Task.FromResult(_regs.AsSpan(address, count).ToArray());
+            return Task.FromResult((space == RegisterSpace.Input ? _input : _regs).AsSpan(address, count).ToArray());
         }
     }
 
