@@ -27,10 +27,10 @@ TOP_KEYS = [
 CHECK_KEYS = {"id", "title", "section", "result", "durationMs", "message", "errorClass", "observed"}
 
 
-def sample() -> Report:
+def sample(options: Options | None = None) -> Report:
     at = datetime(2026, 9, 29, 10, 15, 2, tzinfo=UTC)
     return Report(
-        Options(host="192.168.58.20"),
+        options or Options(host="192.168.58.20"),
         at,
         at,
         [
@@ -120,3 +120,20 @@ def test_interrupted_run_reports_interrupted_and_exits_4() -> None:
     assert to_json(report)["summary"]["result"] == "INTERRUPTED"
     assert to_markdown(report).rstrip("\n").splitlines()[-1] == "RESULT: INTERRUPTED"
     assert report.exit_code == 4
+
+
+def test_the_report_carries_both_bases_where_they_are_not_0() -> None:
+    # GA-U-62.py (review #33): at 0/0 a base read from the wrong field, or not read at all, still prints 0. With
+    # C 200 / S 300 the JSON target, the Markdown heading and the FAIL's dump each show the right base.
+    report = sample(Options(host="192.168.58.20", command_base=200, status_base=300))
+    assert to_json(report)["target"] == {
+        "host": "192.168.58.20",
+        "port": 502,
+        "unit": 1,
+        "commandBase": 200,
+        "statusBase": 300,
+    }
+    lines = to_markdown(report).splitlines()
+    assert "(holding C=200, input S=300)" in lines[0], lines[0]
+    assert "Command block: holding registers (FC03 read, FC06/FC16 write), C = 200" in lines
+    assert "Status block: input registers (FC04 read), S = 300" in lines
