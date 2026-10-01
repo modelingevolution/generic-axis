@@ -109,7 +109,7 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
                     }
                     catch (MotionException ex)
                     {
-                        _log.LogWarning("Taking the lease after pre-flight failed ({Message}); CHK-01 will report the transport", CheckerText.Describe(ex));
+                        _log.LogWarning("Taking the lease after pre-flight failed ({Message}); CHK-01 reports it under its own class", CheckerText.Describe(ex));
                     }
                 }
 
