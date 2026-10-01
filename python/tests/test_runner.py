@@ -901,3 +901,19 @@ async def test_every_status_block_read_is_fc04_and_every_command_block_read_fc03
     # The published block (limits and MapVersion never change), not the command block that shares the address 0.
     assert last.status[8:15] == stub.inputs[8:15]
     assert (last.status[0], last.status[14]) == (0, 1)  # Disabled: SuppressAck never let Enable in
+
+
+async def test_chk01_fails_protocol_when_the_plc_refuses_fc04_with_exception_02(stub: StubPlc) -> None:
+    # GA-U-138.py (ADR-37, #54): a PLC that does not serve the status block as input registers answers FC04 with
+    # exception 02. That is Protocol/ProtocolMismatch, never Transport, and no reconnect-and-retry is made.
+    stub.exception_if = lambda pdu: 2 if pdu[0] == 4 else None
+    report = await run(options(stub))
+    chk01 = report.checks[0]
+    assert (chk01.id, chk01.result, chk01.error_class) == ("CHK-01", FAIL, "Protocol"), chk01.message
+    assert chk01.message == (
+        "Protocol/ProtocolMismatch: FC04 read S+0…S+14 = input 0…14 refused: Modbus exception 02 (illegal data "
+        "address) — the PLC does not serve the status block as input registers."
+    )
+    assert chk01.observed.get("retries") == 0, chk01.observed
+    assert [c.result for c in report.checks[1:]] == [SKIPPED] * 15
+    assert report.exit_code == 1

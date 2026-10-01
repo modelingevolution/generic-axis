@@ -102,6 +102,12 @@ internal sealed class MiniPlc : IAsyncDisposable
             foreach (var r in e.Registers) _writtenRegisters.Add(r);
         };
         _server.AddUnit(Unit);
+        _server.RequestValidator = (_, functionCode, _, _) =>
+        {
+            if (functionCode != ModbusFunctionCode.ReadInputRegisters) return ModbusExceptionCode.OK;
+            Interlocked.Increment(ref _inputReads);
+            return (ModbusExceptionCode)Faults.InputRegistersException;
+        };
         _server.Start(_provider);
         lock (_server.Lock) Publish(Stopwatch.GetTimestamp());
         _lastScanAt = Stopwatch.GetTimestamp();
@@ -117,6 +123,11 @@ internal sealed class MiniPlc : IAsyncDisposable
     public int Port => _provider.Port;
 
     public MiniPlcFaults Faults { get; } = new();
+
+    private int _inputReads;
+
+    /// <summary>FC04 requests received since construction, answered or refused.</summary>
+    public int InputReads => Volatile.Read(ref _inputReads);
 
     public PlcTruth Truth => _truth;
 
@@ -677,6 +688,18 @@ internal sealed class MiniPlcFaults
     public volatile bool HomeSensorDead;
     public volatile bool ForceLimitMax;
     public volatile bool FollowingErrorAtHalfway;
+
+    /// <summary>The Modbus exception code every FC04 request is answered with; 0 = served (ADR-37 tests).</summary>
+    public volatile int InputRegistersException;
+
+    /// <summary>
+    /// A PLC whose input block is not mapped: every FC04 is answered with Modbus exception 02 (illegal data address).
+    /// </summary>
+    public bool RefuseInputRegisters
+    {
+        get => InputRegistersException == 2;
+        set => InputRegistersException = value ? 2 : 0;
+    }
 
     /// <summary>One-shot: the next scan faults with FaultCode 1.</summary>
     public void InjectDriveFault() => Interlocked.Exchange(ref _driveFault, 1);

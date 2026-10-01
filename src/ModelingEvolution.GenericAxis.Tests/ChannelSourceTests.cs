@@ -17,7 +17,8 @@ public class ChannelSourceTests
 {
     /// <summary>Non-async FluentModbus members the channel may call: none of them waits on the network.</summary>
     private static readonly HashSet<string> AllowedSync =
-        [".ctor", "Initialize", "Disconnect", "Dispose", "get_IsConnected"];
+        [".ctor", "Initialize", "Disconnect", "Dispose", "get_IsConnected",
+            "get_ExceptionCode"]; // ModbusException's code (ADR-37 refusal), a field read
 
     [Fact(DisplayName = "GA-U-136 ModbusChannel never blocks on a frame or hops threads (sync FluentModbus I/O, Wait, Result, GetResult, Task.Run)")]
     public void ModbusChannel_IL_NoBlockingCalls()

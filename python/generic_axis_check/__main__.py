@@ -12,10 +12,10 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from .client import PlcClient, PlcError
+from .client import PlcClient, PlcError, PlcRefusedError
 from .context import FOREIGN_OWNER_ID, Options
 from .dump import dump
-from .errors import COMMUNICATION_LOST, ErrorClass, format_message
+from .errors import COMMUNICATION_LOST, PROTOCOL_MISMATCH, ErrorClass, format_message
 from .registers import RegisterMap
 from .report import to_json_text, to_markdown
 from .runner import Report, run
@@ -132,6 +132,9 @@ async def run_dump(options: Options, watch: bool) -> int:
         await client.connect()
         await dump(client, registers, lambda text: print(text, flush=True), watch=watch)
         return 0
+    except PlcRefusedError as exc:  # ADR-37: the PLC answered with exception 01/02/03
+        print(format_message(ErrorClass.PROTOCOL, PROTOCOL_MISMATCH, str(exc), registers), file=sys.stderr)
+        return 1
     except PlcError as exc:
         print(format_message(ErrorClass.TRANSPORT, COMMUNICATION_LOST, str(exc), registers), file=sys.stderr)
         return 1

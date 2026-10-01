@@ -179,6 +179,13 @@ internal sealed class ModbusChannel : IModbusChannel
                     // (design § PriorityGate); IoTimeout bounds it (FrameAsync).
                     return await FrameAsync(operation).ConfigureAwait(false);
                 }
+                catch (ModbusException ex) when (IsRefusal(ex.ExceptionCode))
+                {
+                    // ADR-37: the PLC answered, and refused the request as not served (01/02/03). That is the PLC
+                    // answering outside the map — Protocol, never a link fault — and a retry would be refused again.
+                    // The connection is healthy (an exception response is a complete frame), so it is kept.
+                    throw Refused(what, range, ex.ExceptionCode, unit);
+                }
                 catch (Exception ex) when (IsTransport(ex))
                 {
                     failure = ex;
@@ -226,6 +233,39 @@ internal sealed class ModbusChannel : IModbusChannel
         {
             throw new TimeoutException($"timed out: no complete response within {IoTimeout.TotalMilliseconds:F0} ms", ex);
         }
+    }
+
+    /// <summary>
+    /// Modbus exception codes that mean "this request is not served" (ADR-37): 01 illegal function, 02 illegal data
+    /// address, 03 illegal data value. Every other code (04 device failure, 06 busy, 0A/0B gateway…) is a transient
+    /// transport condition and keeps the one retry.
+    /// </summary>
+    internal static bool IsRefusal(ModbusExceptionCode code) =>
+        code is ModbusExceptionCode.IllegalFunction or ModbusExceptionCode.IllegalDataAddress
+            or ModbusExceptionCode.IllegalDataValue;
+
+    private MotionException Refused(string what, string? range, ModbusExceptionCode code, byte unit) =>
+        // Protocol § Errors and debugging example (ADR-37): "FC04 read S+0…S+14 = input 0…14 refused: Modbus exception 02
+        // (illegal data address) — the PLC does not serve the status block as input registers", then the endpoint.
+        AxisErrors.Create(_label, MotionError.ProtocolMismatch,
+            $"{what}: {(range is null ? "request" : range.Trim('(', ')'))} refused: Modbus exception {(int)code:D2} "
+            + $"({CodeName(code)}){RefusalHint(range, code)} ({Host}:{Port} unit {unit})");
+
+    private static string CodeName(ModbusExceptionCode code) => code switch
+    {
+        ModbusExceptionCode.IllegalFunction => "illegal function",
+        ModbusExceptionCode.IllegalDataAddress => "illegal data address",
+        ModbusExceptionCode.IllegalDataValue => "illegal data value",
+        _ => code.ToString(),
+    };
+
+    /// <summary>What the refusal says about the PLC, from the function code in <paramref name="range"/>.</summary>
+    private static string RefusalHint(string? range, ModbusExceptionCode code)
+    {
+        if (range is null || code == ModbusExceptionCode.IllegalDataValue) return "";
+        return range.StartsWith("(FC04", StringComparison.Ordinal)
+            ? " — the PLC does not serve the status block as input registers"
+            : " — the PLC does not serve the command block as holding registers";
     }
 
     private static Exception Innermost(Exception ex) =>

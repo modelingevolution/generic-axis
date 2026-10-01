@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from generic_axis_check.client import REQUEST_TIMEOUT_S, PlcClient, PlcError, connect_timeout
+from generic_axis_check.client import REQUEST_TIMEOUT_S, PlcClient, PlcError, PlcRefusedError, connect_timeout
 
 from .stub_plc import StubOptions, StubPlc
 
@@ -254,3 +254,61 @@ async def test_a_holding_write_at_0_to_14_never_changes_the_input_status_block()
             assert await client.read_input(0, 15) == published
         finally:
             client.close()
+
+
+# --- GA-U-138.py (ADR-37, #54): Modbus exceptions 01/02/03 are Protocol, never retried; others stay Transport ---
+
+
+@pytest.mark.parametrize(
+    ("code", "text"),
+    [
+        (1, "01 (illegal function) — the PLC does not serve the status block as input registers"),
+        (2, "02 (illegal data address) — the PLC does not serve the status block as input registers"),
+        (3, "03 (illegal data value)"),
+    ],
+)
+async def test_an_fc04_refused_with_01_02_03_is_a_protocol_refusal_sent_once(
+    stub: StubPlc, code: int, text: str
+) -> None:
+    stub.exception_if = lambda pdu: code if pdu[0] == 4 else None
+    client = PlcClient("127.0.0.1", stub.port, 1)
+    await client.connect()
+    before = stub.requests
+    try:
+        with pytest.raises(PlcRefusedError) as refused:
+            await client.read_input(0, 15)
+    finally:
+        client.close()
+    assert str(refused.value) == f"FC04 read S+0…S+14 = input 0…14 refused: Modbus exception {text}"
+    assert refused.value.code == code
+    assert (stub.requests - before, client.retries) == (1, 0)  # no reconnect-and-retry
+
+
+async def test_a_holding_read_refused_with_02_names_the_command_block(stub: StubPlc) -> None:
+    stub.exception_if = lambda pdu: 2 if pdu[0] == 3 else None
+    client = PlcClient("127.0.0.1", stub.port, 1)
+    await client.connect()
+    try:
+        with pytest.raises(
+            PlcRefusedError, match=r"^FC03 read C\+8…C\+10 = holding 8…10 refused: Modbus exception 02 "
+        ):
+            await client.read(8, 3)
+    finally:
+        client.close()
+    assert client.retries == 0
+
+
+@pytest.mark.parametrize(("code", "name"), [(4, "slave device failure"), (6, "slave device busy"), (11, "gateway")])
+async def test_other_modbus_exceptions_stay_transport_with_the_one_retry(stub: StubPlc, code: int, name: str) -> None:
+    stub.exception_if = lambda pdu: code if pdu[0] == 4 else None
+    client = PlcClient("127.0.0.1", stub.port, 1)
+    await client.connect()
+    before = stub.requests
+    try:
+        with pytest.raises(PlcError) as failure:
+            await client.read_input(0, 15)
+    finally:
+        client.close()
+    assert not isinstance(failure.value, PlcRefusedError)
+    assert f"Modbus exception {code:02X} ({name}" in str(failure.value)
+    assert (stub.requests - before, client.retries) == (2, 1)
