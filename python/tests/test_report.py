@@ -41,7 +41,7 @@ def sample() -> Report:
                 "Status block",
                 "FAIL",
                 1,
-                "Protocol/ProtocolMismatch: MapVersion not 1. Read MapVersion (S+14 = input 114) = 2, expected 1.",
+                "Protocol/ProtocolMismatch: MapVersion not 1. Read MapVersion (S+14 = input 14) = 2, expected 1.",
                 {"mapVersion": 2},
                 ErrorClass.PROTOCOL,
                 LastRead([None] * 12, [0, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]),
@@ -66,7 +66,7 @@ def test_json_has_exactly_the_schema_fields() -> None:
     assert doc["schema"] == "generic-axis-conformance/1"
     assert doc["mapVersion"] == 1
     assert doc["tool"] == {"name": "generic-axis-check", "language": "python", "version": doc["tool"]["version"]}
-    assert doc["target"] == {"host": "192.168.58.20", "port": 502, "unit": 1, "commandBase": 0, "statusBase": 100}
+    assert doc["target"] == {"host": "192.168.58.20", "port": 502, "unit": 1, "commandBase": 0, "statusBase": 0}
     assert doc["summary"] == {"result": "FAIL", "pass": 1, "fail": 1, "skipped": 1}
     assert doc["startedAt"] == "2026-09-29T10:15:02Z"
     assert set(doc["checks"][0]) == CHECK_KEYS
@@ -103,8 +103,8 @@ def test_markdown_has_the_table_columns_cleanup_and_ends_with_the_result() -> No
     failures = lines.index("Failures:")
     assert failures < lines.index("Cleanup:")
     assert lines[failures + 2].startswith("CHK-02 Map version: Protocol/ProtocolMismatch: MapVersion not 1.")
-    assert "S+14     114  MapVersion             0x0002  2" in lines
-    assert "C+0        0  Command                —       not read" in lines
+    assert "S+14   input 14      MapVersion             0x0002  2" in lines
+    assert "C+0    holding 0     Command                —       not read" in lines
     assert lines[-1] == "RESULT: FAIL"
 
 

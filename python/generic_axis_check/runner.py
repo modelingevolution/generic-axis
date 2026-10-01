@@ -200,7 +200,7 @@ async def hold_from_preflight(ctx: CheckContext) -> None:
     holds the lease under its own id and beats, so a second tool is refused from CHK-01 on. Only on a PLC whose
     ``MapVersion`` reads 1 (a wrong map version is never written), and never over a dead holder's trip."""
     try:
-        (version,) = await ctx.client.read(ctx.registers.map_version, 1)
+        (version,) = await ctx.client.read_input(ctx.registers.map_version, 1)
         if version != MAP_VERSION:
             return
         await ctx.take_lease()

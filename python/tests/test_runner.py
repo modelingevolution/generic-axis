@@ -32,7 +32,7 @@ from generic_axis_check.runner import Report, normalize_observed, run
 from .conftest import stub_options
 from .stub_plc import StubPlc
 
-MAP = RegisterMap(0, 100)  # the stub still publishes the status block at 100
+MAP = RegisterMap()
 
 
 def by_id(report: Report) -> dict[str, tuple[str, str]]:
@@ -70,7 +70,7 @@ async def test_run_failed_map_version_skips_every_dependant_and_writes_nothing()
     assert results["CHK-01"][0] == PASS
     assert results["CHK-02"] == (
         FAIL,
-        "Protocol/ProtocolMismatch: MapVersion not 1. Read MapVersion (S+14 = input 114) = 2, expected 1.",
+        "Protocol/ProtocolMismatch: MapVersion not 1. Read MapVersion (S+14 = input 14) = 2, expected 1.",
     )
     chk02 = report.checks[1]
     assert chk02.error_class == "Protocol"
@@ -173,7 +173,7 @@ async def test_run_catches_a_plc_without_the_watchdog() -> None:
     assert results["CHK-08"][0] == FAIL
     assert re.match(
         r"Protocol/ProtocolMismatch: stalled beat: no trip within 1\.5 s of the last beat \(last read 15\d\d ms\)\. "
-        r"Read State \(S\+0 = input 100\) = 0, ",
+        r"Read State \(S\+0 = input 0\) = 0, ",
         results["CHK-08"][1],
     ), results["CHK-08"][1]
     assert results["CHK-09"][0] == SKIPPED
@@ -187,7 +187,7 @@ async def test_run_catches_swapped_word_order_in_chk03() -> None:
     chk03 = report.checks[2]
     assert chk03.result == FAIL
     assert chk03.message.startswith("Protocol/ProtocolMismatch: limits not sane: TravelMin is not < TravelMax")
-    assert "Read TravelMin (S+8 = input 108) = 0, TravelMax (S+10 = input 110) = " in chk03.message
+    assert "Read TravelMin (S+8 = input 8) = 0, TravelMax (S+10 = input 10) = " in chk03.message
     assert num(chk03.observed, "travelMax") < 0
 
 
@@ -198,8 +198,8 @@ async def test_run_catches_unpublished_limits_in_chk03() -> None:
     chk03 = report.checks[2]
     assert chk03.result == FAIL
     assert chk03.message == (
-        "Protocol/ProtocolMismatch: limits not published (all zero). Read TravelMin (S+8 = input 108) = 0, "
-        "TravelMax (S+10 = input 110) = 0, MaxVelocity (S+12 = input 112) = 0."
+        "Protocol/ProtocolMismatch: limits not published (all zero). Read TravelMin (S+8 = input 8) = 0, "
+        "TravelMax (S+10 = input 10) = 0, MaxVelocity (S+12 = input 12) = 0."
     )
 
 
@@ -437,7 +437,7 @@ async def test_chk06_fails_an_axis_found_in_error_stop_and_commands_nothing(stub
     assert (chk06.result, chk06.error_class) == (FAIL, "Machine")
     assert chk06.message == (
         "Machine/LimitTripped: precondition: State 0 or 1 expected; reset the axis first. "
-        "Read State (S+0 = input 100) = 7, FaultCode (S+6 = input 106) = 2."
+        "Read State (S+0 = input 0) = 7, FaultCode (S+6 = input 6) = 2."
     )
     # Lead ruling on #9: a precondition FAIL is a failure to restore: CHK-11 (needs only 02) is SKIPPED too.
     assert by_id(report)["CHK-07"] == (SKIPPED, "restore after CHK-06 failed")
@@ -454,7 +454,7 @@ async def test_last_read_is_a_fresh_read_not_the_checks_last_values(stub: StubPl
     # GA-U-110.py (review #21 mutant 2): a register that changed after the check's last read shows its new value.
     async def read_then_fail(ctx: CheckContext) -> Outcome:
         await ctx.client.read(MAP.command, 12)
-        await ctx.client.read(MAP.status, 15)
+        await ctx.client.read_input(MAP.status, 15)
         stub.regs[MAP.watchdog_trips] = 42  # PLC-owned; changes after the check read it
         return Outcome(FAIL, "planted", {}, None)
 
@@ -873,3 +873,31 @@ async def test_a_slow_cleanup_does_not_trip_the_watchdog(stub: StubPlc, monkeypa
     ), (stub.axis.state, stub.regs[MAP.watchdog_fault], stub.regs[MAP.watchdog_trips], report.cleanup)
     assert report.cleanup[-1] == "C+9 = 0 (release lease)"
     assert stub.regs[MAP.lease_owner] == 0
+
+
+async def test_every_status_block_read_is_fc04_and_every_command_block_read_fc03(stub: StubPlc) -> None:
+    # GA-U-137.py (ADR-36): CHK-01…04 read S+0…S+14 by FC04, the 20 ms poll and lastRead too; pre-flight's C+8…C+10,
+    # the lease and CHK-05's read-backs stay FC03 in the holding command block. Both blocks sit at 0, so a status read
+    # sent as FC03 would land in the command block: every FC03 must stay inside C+0…C+11, every FC04 inside S+0…S+14.
+    stub.o.suppress_ack = True  # CHK-06 FAILs: lastRead is taken (fresh read of both blocks)
+    report = await run(options(stub))
+    assert {c.id: c.result for c in report.checks if c.id in ("CHK-01", "CHK-02", "CHK-03", "CHK-04", "CHK-05")} == {
+        "CHK-01": PASS,
+        "CHK-02": PASS,
+        "CHK-03": PASS,
+        "CHK-04": PASS,
+        "CHK-05": PASS,
+    }
+    holding = [(a, n) for fc, a, n in stub.reads if fc == 3]
+    status = [(a, n) for fc, a, n in stub.reads if fc == 4]
+    assert {fc for fc, _a, _n in stub.reads} == {3, 4}
+    assert all(MAP.command_base <= a and a + n <= MAP.command_base + 12 for a, n in holding), holding
+    assert all(MAP.status_base <= a and a + n <= MAP.status_base + 15 for a, n in status), status
+    assert (MAP.heartbeat, 3) in holding  # pre-flight's C+8…C+10
+    assert (MAP.map_version, 1) in status  # CHK-02: read S+14 (FC04)
+    assert len([r for r in status if r == (MAP.status, 15)]) >= 30  # CHK-04's 30 block reads, the polls
+    last = next(c for c in report.checks if c.id == "CHK-06").last_read
+    assert last is not None
+    # The published block (limits and MapVersion never change), not the command block that shares the address 0.
+    assert last.status[8:15] == stub.inputs[8:15]
+    assert (last.status[0], last.status[14]) == (0, 1)  # Disabled: SuppressAck never let Enable in

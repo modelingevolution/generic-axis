@@ -1,7 +1,9 @@
 """``--dump [--watch]``: the decoded register dump (protocol.md § Errors and debugging, rule 4).
 
-One row per register: block-relative and absolute address, name, raw hex, and the decoded value. ``State`` and
-``FaultCode`` by name, ``Flags`` and ``Command`` bits by name, 32-bit values in engineering units on their low word.
+Two tables, one per block and register space (ADR-36): the command block in holding registers (FC03) and the status
+block in input registers (FC04). One row per register: block-relative offset, absolute address with its type, name,
+raw hex, and the decoded value. ``State`` and ``FaultCode`` by name, ``Flags`` and ``Command`` bits by name, 32-bit
+values in engineering units on their low word.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from datetime import UTC, datetime
 
 from .client import PlcClient
 from .registers import (
+    BLOCK_SPACE,
     COMMAND_LENGTH,
     REGISTERS,
     STATUS_LENGTH,
@@ -111,24 +114,44 @@ def _decode(name: str, value: int) -> str:
             return str(value)
 
 
+_TABLES = (
+    ("C", "Command block: holding registers (FC03 read, FC06/FC16 write), C"),
+    ("S", "Status block: input registers (FC04 read), S"),
+)
+
+
 def render(registers: RegisterMap, command: Sequence[int | None], status: Sequence[int | None]) -> str:
-    """The dump of C+0…C+11 and S+0…S+14. ``None`` marks a register that was never read."""
+    """The dump of holding C+0…C+11 and input S+0…S+14, one table each. ``None`` marks a register never read."""
     words: dict[tuple[str, int], int | None] = {}
     for offset in range(COMMAND_LENGTH):
         words["C", offset] = command[offset]
     for offset in range(STATUS_LENGTH):
         words["S", offset] = status[offset]
-    rows = [
-        f"{'Ref':<6} {'Addr':>5}  {'Register':<22} {'Raw':<7} Decoded",
-    ]
+    rows: list[str] = []
+    for table, title in _TABLES:
+        base = registers.command_base if table == "C" else registers.status_base
+        rows += [
+            *([""] if rows else []),
+            f"{title} = {base}",
+            f"{'Ref':<6} {'Address':<13} {'Register':<22} {'Raw':<7} Decoded",
+        ]
+        rows += _rows(table, base, words)
+    return "\n".join([*rows, UNIT_NOTE])
+
+
+def _rows(table: str, base: int, words: dict[tuple[str, int], int | None]) -> list[str]:
+    rows: list[str] = []
+    space = BLOCK_SPACE[table]
     for name, block, offset, is_int32 in REGISTERS:
-        base = registers.command_base if block == "C" else registers.status_base
+        if block != table:
+            continue
         cells = [(offset, name)] + ([(offset + 1, f"{name} (high)")] if is_int32 else [])
         for index, (off, label) in enumerate(cells):
             raw = words[block, off]
             ref = f"{block}+{off}"
+            address = f"{space} {base + off}"
             if raw is None:
-                rows.append(f"{ref:<6} {base + off:>5}  {label:<22} {'—':<7} not read")
+                rows.append(f"{ref:<6} {address:<13} {label:<22} {'—':<7} not read")
                 continue
             if is_int32 and index == 0:
                 high = words[block, off + 1]
@@ -141,13 +164,13 @@ def render(registers: RegisterMap, command: Sequence[int | None], status: Sequen
                 decoded = "high word"
             else:
                 decoded = _decode(name, raw)
-            rows.append(f"{ref:<6} {base + off:>5}  {label:<22} 0x{raw:04X}  {decoded}")
-    return "\n".join([*rows, UNIT_NOTE])
+            rows.append(f"{ref:<6} {address:<13} {label:<22} 0x{raw:04X}  {decoded}")
+    return rows
 
 
 async def read_blocks(client: PlcClient, registers: RegisterMap) -> tuple[list[int], list[int]]:
-    command = await client.read(registers.command_base, COMMAND_LENGTH)
-    status = await client.read(registers.status_base, STATUS_LENGTH)
+    command = await client.read(registers.command_base, COMMAND_LENGTH)  # FC03, holding
+    status = await client.read_input(registers.status_base, STATUS_LENGTH)  # FC04, input
     return command, status
 
 

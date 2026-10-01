@@ -47,7 +47,8 @@ class Options:
     port: int = 502
     unit: int = 1
     command_base: int = 0
-    status_base: int = 100
+    status_base: int = 0
+    """Input-register base S (ADR-36); ``command_base`` is the holding-register base C."""
     owner_id: int = 65535
     allow_motion: bool = False
     tolerance: float = 0.1
@@ -83,7 +84,8 @@ class AckTimeout(Exception):  # noqa: N818 — the protocol's name for the condi
 
 @dataclass(slots=True)
 class LastRead:
-    """Raw C+0…C+11 and S+0…S+14; ``None`` for a register never read (protocol.md § Report schema, ``lastRead``)."""
+    """Raw holding C+0…C+11 and input S+0…S+14; ``None`` for a register never read (protocol.md § Report schema,
+    ``lastRead``)."""
 
     command: list[int | None]
     status: list[int | None]
@@ -120,12 +122,12 @@ class CheckContext:
     # --- evidence (protocol.md § Error class of a FAIL, "lastRead") ---
 
     def shadow(self) -> LastRead:
-        """The last value read from each register, ``None`` where none was read."""
-        last = self.client.last_read
+        """The last value read from each register, ``None`` where none was read: holding for the command block, input
+        for the status block."""
         base_c, base_s = self.registers.command_base, self.registers.status_base
         return LastRead(
-            [last.get(base_c + i) for i in range(COMMAND_LENGTH)],
-            [last.get(base_s + i) for i in range(STATUS_LENGTH)],
+            [self.client.last_read.get(base_c + i) for i in range(COMMAND_LENGTH)],
+            [self.client.last_input.get(base_s + i) for i in range(STATUS_LENGTH)],
         )
 
     async def capture(self) -> LastRead:
@@ -133,7 +135,7 @@ class CheckContext:
         if self.client.connected:
             with contextlib.suppress(PlcError):
                 await self.client.read(self.registers.command_base, COMMAND_LENGTH)
-                await self.client.read(self.registers.status_base, STATUS_LENGTH)
+                await self.client.read_input(self.registers.status_base, STATUS_LENGTH)
         return self.shadow()
 
     async def keep_evidence(self) -> None:

@@ -59,8 +59,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("target", metavar="host[:port]", help=f"the PLC; port {DEFAULT_PORT} by default")
     p.add_argument("--unit", type=_u16, default=1, help="Modbus unit id (default 1)")
-    p.add_argument("--command-base", type=_u16, default=0, help="command block base C (default 0)")
-    p.add_argument("--status-base", type=_u16, default=100, help="status block base S (default 100)")
+    p.add_argument("--command-base", type=_u16, default=0, help="command block base C, holding registers (default 0)")
+    p.add_argument("--status-base", type=_u16, default=0, help="status block base S, input registers (default 0)")
     p.add_argument("--owner-id", type=_u16, default=65535, help="the checker's lease id (default 65535)")
     p.add_argument(
         "--allow-motion",
