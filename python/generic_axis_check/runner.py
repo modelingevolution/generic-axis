@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 
 from .beat import BEAT_PERIOD_S, Beater, LeaseLost
 from .checks import CHECKS, FAIL, OBSERVED, PASS, RETRIES_KEY, SKIPPED, Check, Outcome
-from .client import PlcClient, PlcError
+from .client import PlcClient, PlcError, PlcRefusedError
 from .context import ACK_TIMEOUT_S, AckTimeout, CheckContext, LastRead, Options
 from .errors import (
     COMMUNICATION_LOST,
@@ -206,7 +206,7 @@ async def hold_from_preflight(ctx: CheckContext) -> None:
         await ctx.take_lease()
         await ctx.beater.start()
     except (PlcError, LeaseHeld) as exc:
-        log.warning("taking the lease after pre-flight failed (%s); CHK-01 reports the transport", exc)
+        log.warning("taking the lease after pre-flight failed (%s); CHK-01 reports it", exc)
 
 
 async def foreign_trip_problem(ctx: CheckContext) -> Outcome | None:
@@ -390,11 +390,13 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
             # Transport error and every other check is SKIPPED; the run never proceeds as if the axis were free.
             live = None
             what = f"pre-flight did not complete, nothing was written: {exc}"
+            error_class, motion_error = (
+                (ErrorClass.PROTOCOL, PROTOCOL_MISMATCH)
+                if isinstance(exc, PlcRefusedError)
+                else (ErrorClass.TRANSPORT, COMMUNICATION_LOST)
+            )
             preflight_failure = Outcome(
-                FAIL,
-                format_message(ErrorClass.TRANSPORT, COMMUNICATION_LOST, what, registers),
-                {},
-                ErrorClass.TRANSPORT,
+                FAIL, format_message(error_class, motion_error, what, registers), {}, error_class
             )
             abort = "needs CHK-01, which FAILED"
             say(f"CHK-01: {preflight_failure.message}")
@@ -577,6 +579,10 @@ def exception_outcome(exc: PlcError | AckTimeout | LeaseHeld | LeaseLost, regist
         read = Read("LeaseOwner", exc.owner)
         what = f"{exc}: Heartbeat kept changing or LeaseOwner did not hold what was written"
         message = format_message(ErrorClass.PROTOCOL, PROTOCOL_MISMATCH, what, registers, (read,))
+        return Outcome(FAIL, message, {}, ErrorClass.PROTOCOL)
+    if isinstance(exc, PlcRefusedError):
+        # ADR-37: Modbus exception 01/02/03: the PLC answered, but does not serve the map as protocol.md says.
+        message = format_message(ErrorClass.PROTOCOL, PROTOCOL_MISMATCH, str(exc), registers)
         return Outcome(FAIL, message, {}, ErrorClass.PROTOCOL)
     message = format_message(ErrorClass.TRANSPORT, COMMUNICATION_LOST, str(exc), registers)
     return Outcome(FAIL, message, {}, ErrorClass.TRANSPORT)

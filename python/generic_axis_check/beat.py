@@ -8,7 +8,7 @@ import logging
 import time
 from collections.abc import Callable
 
-from .client import PlcClient, PlcError
+from .client import PlcClient, PlcError, PlcRefusedError
 from .registers import RegisterMap, next_nonzero, register_ref
 
 log = logging.getLogger(__name__)
@@ -132,6 +132,8 @@ class Beater:
         if self.lease_lost is not None:
             raise self.lease_lost
         failure = self.failure()
+        if isinstance(failure, PlcRefusedError):
+            raise failure  # the PLC refused the beat write: Protocol (ADR-37), not a lost link
         if failure is not None:
             raise PlcError(f"{self._beat_failed()}: {failure}") from failure
 

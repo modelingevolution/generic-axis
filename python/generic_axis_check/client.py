@@ -34,7 +34,32 @@ log = logging.getLogger(__name__)
 
 
 class PlcError(Exception):
-    """A Modbus request failed: no connection, timeout, or a Modbus exception response."""
+    """A Modbus request failed: no connection, timeout, or a Modbus exception response (Transport)."""
+
+
+PROTOCOL_EXCEPTIONS = {1: "illegal function", 2: "illegal data address", 3: "illegal data value"}
+"""protocol.md § Errors and debugging (ADR-37): Modbus exceptions 01, 02 and 03 mean the PLC answered but does not
+serve the map as this document says: Protocol/ProtocolMismatch, never retried. Every other code (04 slave device
+failure, 06 busy, 0A/0B gateway, …) stays Transport with the one retry."""
+
+TRANSPORT_EXCEPTIONS = {4: "slave device failure", 6: "slave device busy", 10: "gateway path unavailable"}
+TRANSPORT_EXCEPTIONS[11] = "gateway target device failed to respond"
+
+_BLOCK_IN_SPACE = {
+    Space.HOLDING: "the command block as holding registers",
+    Space.INPUT: "the status block as input registers",
+}
+
+
+class PlcRefusedError(PlcError):
+    """The PLC answered a request with Modbus exception 01, 02 or 03: Protocol/ProtocolMismatch (ADR-37)."""
+
+    def __init__(self, operation: str, space: Space, code: int) -> None:
+        self.code = code
+        text = f"{operation} refused: Modbus exception {code:02X} ({PROTOCOL_EXCEPTIONS[code]})"
+        if code in (1, 2):
+            text += f" — the PLC does not serve {_BLOCK_IN_SPACE[space]}"
+        super().__init__(text)
 
 
 def _failure(what: str, exc: BaseException) -> BaseException:
@@ -106,11 +131,14 @@ class PlcClient:
         """Called before every request while a check runs: the runner sets the beat's ``raise_if_failed`` so every
         wait (a poll, a trip watch, a read after a sleep) reports a dead beat as Transport (review #7)."""
 
-    def _where(self, operation: str, space: Space, address: int, count: int) -> str:
+    def _operation(self, function: str, space: Space, address: int, count: int) -> str:
+        """``FC04 read S+0…S+14 = input 0…14``: the function code and the register range in the protocol's rendering."""
+        return f"{function} {describe_range(self.registers, space, address, count)}"
+
+    def _where(self, function: str, space: Space, address: int, count: int) -> str:
         """``FC04 read S+0…S+14 = input 0…14 on host:port unit 1`` (protocol.md § Errors and debugging, rule 1: the
         endpoint, the operation and the register range)."""
-        span = describe_range(self.registers, space, address, count)
-        return f"{operation} {span} on {self.host}:{self.port} unit {self.unit}"
+        return f"{self._operation(function, space, address, count)} on {self.host}:{self.port} unit {self.unit}"
 
     @property
     def connected(self) -> bool:
@@ -176,10 +204,12 @@ class PlcClient:
         request: Callable[[AsyncModbusTcpClient], Awaitable[ModbusPDU]],
         *,
         retry: bool,
+        operation: str,
+        space: Space,
     ) -> ModbusPDU:
         """One request with the protocol's one reconnect-and-retry (§ Errors and debugging, rule 3; § Error class of
         a FAIL, "The one retry"), logged at Warning and counted in ``retries``. ``retry=False`` for a command write:
-        "A command is never re-sent"."""
+        "A command is never re-sent". A Modbus exception 01/02/03 is ``PlcRefusedError`` and never retried (ADR-37)."""
         if self.guard is not None:
             self.guard()
         retried = False
@@ -189,8 +219,14 @@ class PlcClient:
             try:
                 response = await _complete_on_the_wire(request(client))
                 if response.isError():
-                    raise PlcError(f"{where} failed: Modbus exception {response}")
+                    code = int(getattr(response, "exception_code", 0))
+                    if code in PROTOCOL_EXCEPTIONS:
+                        raise PlcRefusedError(operation, space, code)
+                    name = TRANSPORT_EXCEPTIONS.get(code, "unexpected code")
+                    raise PlcError(f"{where} failed: Modbus exception {code:02X} ({name})")
                 return response
+            except PlcRefusedError:
+                raise  # the PLC answered: Protocol, no reconnect-and-retry (ADR-37)
             except (OSError, ModbusException, PlcError) as exc:
                 failure = exc if isinstance(exc, PlcError) else _failure(f"{where} failed", exc)
                 if isinstance(failure, asyncio.CancelledError) or retried or not retry:
@@ -207,7 +243,11 @@ class PlcClient:
         """FC03: holding registers (the command block)."""
         where = self._where("FC03 read", Space.HOLDING, address, count)
         response = await self._transact(
-            where, lambda c: c.read_holding_registers(address, count=count, device_id=self.unit), retry=True
+            where,
+            lambda c: c.read_holding_registers(address, count=count, device_id=self.unit),
+            retry=True,
+            operation=self._operation("FC03 read", Space.HOLDING, address, count),
+            space=Space.HOLDING,
         )
         return self._answered(where, response, count, self.last_read, address)
 
@@ -215,7 +255,11 @@ class PlcClient:
         """FC04: input registers (the status block, ADR-36), with the same shield, timeout and one retry as ``read``."""
         where = self._where("FC04 read", Space.INPUT, address, count)
         response = await self._transact(
-            where, lambda c: c.read_input_registers(address, count=count, device_id=self.unit), retry=True
+            where,
+            lambda c: c.read_input_registers(address, count=count, device_id=self.unit),
+            retry=True,
+            operation=self._operation("FC04 read", Space.INPUT, address, count),
+            space=Space.INPUT,
         )
         return self._answered(where, response, count, self.last_input, address)
 
@@ -231,12 +275,23 @@ class PlcClient:
     async def write(self, address: int, values: list[int], *, retry: bool = True) -> None:
         function = "FC06" if len(values) == 1 else "FC16"
         where = f"{self._where(f'{function} write', Space.HOLDING, address, len(values))} = {values}"
+        operation = f"{self._operation(f'{function} write', Space.HOLDING, address, len(values))} = {values}"
         if len(values) == 1:
             await self._transact(
-                where, lambda c: c.write_register(address, values[0], device_id=self.unit), retry=retry
+                where,
+                lambda c: c.write_register(address, values[0], device_id=self.unit),
+                retry=retry,
+                operation=operation,
+                space=Space.HOLDING,
             )
         else:
-            await self._transact(where, lambda c: c.write_registers(address, values, device_id=self.unit), retry=retry)
+            await self._transact(
+                where,
+                lambda c: c.write_registers(address, values, device_id=self.unit),
+                retry=retry,
+                operation=operation,
+                space=Space.HOLDING,
+            )
         log.debug("wrote %d = %s", address, values)
 
     async def read_status(self, registers: RegisterMap) -> StatusBlock:

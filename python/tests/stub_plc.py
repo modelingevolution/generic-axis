@@ -128,6 +128,8 @@ class StubPlc:
         """True while a delayed reply is pending: the write has been applied, the client does not know yet."""
         self.write_times: list[float] = []
         """``time.monotonic()`` of each applied write, parallel to ``writes``."""
+        self.exception_if: Callable[[bytes], int | None] | None = None
+        """Answer a request whose PDU matches with this Modbus exception code instead (None: serve it)."""
         self.drop_if: Callable[[bytes], bool] | None = None
         """Leave every request whose PDU matches unanswered (for example, every write of ``Heartbeat``)."""
         self._publish()
@@ -167,7 +169,8 @@ class StubPlc:
                     continue
                 if self.drop_if is not None and self.drop_if(pdu):
                     continue
-                reply = self._handle(pdu)
+                code = self.exception_if(pdu) if self.exception_if is not None else None
+                reply = bytes([pdu[0] | 0x80, code]) if code is not None else self._handle(pdu)
                 frame = struct.pack(">HHHB", tid, 0, len(reply) + 1, unit) + reply
                 delay = self.reply_delay_if(pdu) if self.reply_delay_if is not None else 0.0
                 if delay > 0:
