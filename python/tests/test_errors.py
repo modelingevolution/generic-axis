@@ -21,6 +21,7 @@ from generic_axis_check.registers import (
     REGISTERS,
     Command,
     RegisterMap,
+    Space,
     StatusBlock,
     describe_range,
     register_ref,
@@ -39,12 +40,12 @@ def status(state: int, fault: int, ack: int = 0) -> StatusBlock:
 def test_format_message_matches_the_protocol_examples() -> None:
     assert (
         format_message(ErrorClass.PROTOCOL, "ProtocolMismatch", "attach refused", MAP, [Read("MapVersion", 2, 1)])
-        == "Protocol/ProtocolMismatch: attach refused. Read MapVersion (S+14 = 114) = 2, expected 1."
+        == "Protocol/ProtocolMismatch: attach refused. Read MapVersion (S+14 = input 14) = 2, expected 1."
     )
     reads = [Read("FaultCode", 4), Read("WatchdogFault", 1), Read("WatchdogTrips", 3)]
     assert format_message(ErrorClass.MACHINE, "WatchdogTripped", "tripped", MAP, reads) == (
-        "Machine/WatchdogTripped: tripped. Read FaultCode (S+6 = 106) = 4, WatchdogFault (C+10 = 10) = 1, "
-        "WatchdogTrips (C+11 = 11) = 3."
+        "Machine/WatchdogTripped: tripped. Read FaultCode (S+6 = input 6) = 4, WatchdogFault (C+10 = holding 10) = 1, "
+        "WatchdogTrips (C+11 = holding 11) = 3."
     )
 
 
@@ -99,12 +100,20 @@ def test_state_is_invalid_for_5_above_7_and_errorstop_without_fault(state: int, 
     assert state_is_invalid(status(state, fault)) is invalid
 
 
-def test_register_refs_follow_the_bases() -> None:
-    assert register_ref(MAP, "MapVersion") == ("S+14", 114)
-    assert register_ref(RegisterMap(200, 300), "Heartbeat") == ("C+8", 208)
-    assert describe_range(MAP, 100, 15) == "S+0…S+14 (100…114)"
-    assert describe_range(MAP, 9, 1) == "C+9 (9)"
-    assert describe_range(MAP, 50, 2) == "50…51"
+def test_register_refs_name_the_offset_and_the_typed_absolute_register() -> None:
+    # GA-U-133.py (ADR-36, rule 1): "<address> is the offset and the absolute register with its type: C+n = holding a,
+    # S+n = input a (a = base + n)". Both blocks at 0 are told apart only by the type.
+    assert register_ref(MAP, "MapVersion") == "S+14 = input 14"
+    assert register_ref(MAP, "WatchdogFault") == "C+10 = holding 10"
+    assert register_ref(RegisterMap(200, 300), "Heartbeat") == "C+8 = holding 208"
+    assert register_ref(RegisterMap(200, 300), "FaultCode") == "S+6 = input 306"
+    assert describe_range(MAP, Space.INPUT, 0, 15) == "S+0…S+14 = input 0…14"
+    assert describe_range(MAP, Space.HOLDING, 0, 12) == "C+0…C+11 = holding 0…11"
+    assert describe_range(MAP, Space.HOLDING, 9, 1) == "C+9 = holding 9"
+    assert describe_range(RegisterMap(0, 100), Space.INPUT, 108, 6) == "S+8…S+13 = input 108…113"
+    # The same absolute range in the other space is not the block: holding 100 is not S+0 when S = input 100.
+    assert describe_range(RegisterMap(0, 100), Space.HOLDING, 100, 15) == "holding 100…114"
+    assert describe_range(MAP, Space.INPUT, 50, 2) == "input 50…51"
 
 
 def _class_rows() -> dict[str, str]:

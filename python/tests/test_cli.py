@@ -73,7 +73,7 @@ def test_parse_json_report_writes_only_json() -> None:
         [":502"],
         ["plc", "--owner-id", "65534"],
         ["plc", "--owner-id", "0"],
-        ["plc", "--command-base", "95"],
+        ["plc", "--command-base", "65530"],  # C+11 would be holding 65541 (ADR-36: no overlap rule, a bound)
         ["plc", "--tolerance", "0"],
     ],
 )

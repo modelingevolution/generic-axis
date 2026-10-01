@@ -7,7 +7,7 @@ C# driver or simulator.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import IntEnum, IntFlag
+from enum import IntEnum, IntFlag, StrEnum
 
 MAP_VERSION = 1
 """protocol.md § Transport, "Map version": register S+14 holds 1 for this document."""
@@ -16,10 +16,22 @@ COMMAND_LENGTH = 12
 """protocol.md § Command block: holding registers C+0 … C+11."""
 
 STATUS_LENGTH = 15
-"""protocol.md § Status block: holding registers S+0 … S+14, read in one FC03."""
+"""protocol.md § Status block: input registers S+0 … S+14, read in one FC04."""
 
 REGISTER_SPACE = 65536
-"""Modbus holding-register addresses are 16-bit."""
+"""Modbus register addresses are 16-bit, in each space (holding and input) separately."""
+
+
+class Space(StrEnum):
+    """protocol.md § Transport, "Register type": the command block is holding registers, the status block input
+    registers, each block in its own address space (ADR-36)."""
+
+    HOLDING = "holding"
+    INPUT = "input"
+
+
+BLOCK_SPACE = {"C": Space.HOLDING, "S": Space.INPUT}
+"""The space of each block: ``C+n`` is holding register C+n, ``S+n`` is input register S+n."""
 
 WORD_MASK = 0xFFFF
 INT32_MIN = -(2**31)
@@ -90,24 +102,25 @@ class FaultCode(IntEnum):
 
 @dataclass(frozen=True, slots=True)
 class RegisterMap:
-    """Absolute addresses of every register for a given pair of block bases (protocol.md § Transport)."""
+    """Absolute addresses of every register for a given pair of block bases (protocol.md § Transport, ADR-36).
+
+    ``command_base`` is a holding-register address, ``status_base`` an input-register address: the two blocks live in
+    different spaces, so they cannot overlap and both default to 0.
+    """
 
     command_base: int = 0
-    status_base: int = 100
+    status_base: int = 0
 
     def __post_init__(self) -> None:
         for name, base, length in (
             ("command", self.command_base, COMMAND_LENGTH),
             ("status", self.status_base, STATUS_LENGTH),
         ):
+            space = BLOCK_SPACE[name[0].upper()]
             if base < 0 or base + length > REGISTER_SPACE:
-                raise ValueError(f"{name} block {base}..{base + length - 1} is outside 0..{REGISTER_SPACE - 1}")
-        c_end = self.command_base + COMMAND_LENGTH
-        s_end = self.status_base + STATUS_LENGTH
-        if self.command_base < s_end and self.status_base < c_end:
-            raise ValueError(
-                f"command block {self.command_base}..{c_end - 1} overlaps status block {self.status_base}..{s_end - 1}"
-            )
+                raise ValueError(
+                    f"{name} block {space} {base}..{base + length - 1} is outside {space} 0..{REGISTER_SPACE - 1}"
+                )
 
     # Command block (C+n).
     @property
@@ -181,7 +194,7 @@ def next_nonzero(value: int) -> int:
 
 @dataclass(frozen=True, slots=True)
 class StatusBlock:
-    """One FC03 read of S+0 … S+14 (protocol.md § Status block). Positions and velocities are raw register values."""
+    """One FC04 read of S+0 … S+14 (protocol.md § Status block). Positions and velocities are raw register values."""
 
     state: int
     flags: Flags
@@ -246,22 +259,27 @@ REGISTERS: tuple[tuple[str, str, int, bool], ...] = (
 _BY_NAME = {name: (block, offset) for name, block, offset, _ in REGISTERS}
 
 
-def register_ref(registers: RegisterMap, name: str) -> tuple[str, int]:
-    """``("S+14", 114)`` for ``"MapVersion"`` with the default bases."""
+def _block(registers: RegisterMap, block: str) -> tuple[Space, int, int]:
+    if block == "C":
+        return Space.HOLDING, registers.command_base, COMMAND_LENGTH
+    return Space.INPUT, registers.status_base, STATUS_LENGTH
+
+
+def register_ref(registers: RegisterMap, name: str) -> str:
+    """``"S+14 = input 14"`` for ``"MapVersion"`` with the default bases: the offset and the absolute register with its
+    type (protocol.md § Errors and debugging, rule 1)."""
     block, offset = _BY_NAME[name]
-    base = registers.command_base if block == "C" else registers.status_base
-    return f"{block}+{offset}", base + offset
+    space, base, _length = _block(registers, block)
+    return f"{block}+{offset} = {space} {base + offset}"
 
 
-def describe_range(registers: RegisterMap, address: int, count: int) -> str:
-    """``S+0…S+14 (100…114)`` for a range inside a block, else the absolute range."""
+def describe_range(registers: RegisterMap, space: Space, address: int, count: int) -> str:
+    """``S+0…S+14 = input 0…14`` for a range inside a block of ``space``, else ``holding 50…51``."""
     last = address + count - 1
     span = f"{address}" if count == 1 else f"{address}…{last}"
-    for block, base, length in (
-        ("C", registers.command_base, COMMAND_LENGTH),
-        ("S", registers.status_base, STATUS_LENGTH),
-    ):
-        if base <= address and last < base + length:
+    for block in ("C", "S"):
+        block_space, base, length = _block(registers, block)
+        if block_space == space and base <= address and last < base + length:
             rel = f"{block}+{address - base}" if count == 1 else f"{block}+{address - base}…{block}+{last - base}"
-            return f"{rel} ({span})"
-    return span
+            return f"{rel} = {space} {span}"
+    return f"{space} {span}"

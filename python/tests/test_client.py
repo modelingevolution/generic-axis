@@ -19,8 +19,8 @@ async def test_read_from_a_silent_unit_raises_plc_error(stub: StubPlc) -> None:
     client = PlcClient("127.0.0.1", stub.port, 9)  # the stub stays silent for a unit it does not serve
     await client.connect()
     try:
-        with pytest.raises(PlcError, match=r"read S\+0…S\+14 \(100…114\) on 127\.0\.0\.1:\d+ unit 9 failed: "):
-            await client.read(100, 15)
+        with pytest.raises(PlcError, match=r"FC03 read C\+0…C\+11 = holding 0…11 on 127\.0\.0\.1:\d+ unit 9 failed: "):
+            await client.read(0, 12)
     finally:
         client.close()
 
@@ -108,11 +108,11 @@ async def test_a_lost_answer_is_retried_once_at_warning_and_counted(
     try:
         stub.drop_next = 1
         with caplog.at_level(logging.WARNING, logger="generic_axis_check.client"):
-            assert await client.read(114, 1) == [1]
+            assert await client.read(9, 1) == [0]
         assert client.retries == 1
         warnings = [r.getMessage() for r in caplog.records if r.name == "generic_axis_check.client"]
         assert len(warnings) == 1
-        assert warnings[0].startswith("read S+14 (114) on 127.0.0.1:")
+        assert warnings[0].startswith("FC03 read C+9 = holding 9 on 127.0.0.1:")
         assert warnings[0].endswith("; reconnecting and retrying once")
     finally:
         client.close()
@@ -125,7 +125,7 @@ async def test_a_command_write_is_never_re_sent(stub: StubPlc) -> None:
     try:
         stub.drop_next = 1
         before = stub.requests
-        with pytest.raises(PlcError, match=r"write C\+0…C\+1"):
+        with pytest.raises(PlcError, match=r"FC16 write C\+0…C\+1 = holding 0…1"):
             await client.write(0, [1, 7], retry=False)
         assert stub.requests - before == 1
         assert client.retries == 0

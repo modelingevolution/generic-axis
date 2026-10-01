@@ -105,8 +105,7 @@ def format_message(
     if reads:
         cited = []
         for r in reads:
-            ref, address = register_ref(registers, r.name)
-            text = f"{r.name} ({ref} = {address}) = {r.value}"
+            text = f"{r.name} ({register_ref(registers, r.name)}) = {r.value}"
             if r.expected is not None:
                 text += f", expected {r.expected}"
             cited.append(text)
