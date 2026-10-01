@@ -72,6 +72,58 @@ public sealed class CheckerAgainstSimulatorTests
         report.Cleanup.Should().Contain(l => l.Contains("release lease"));
     }
 
+    /// <summary>
+    /// GA-I-69 (#55): the checker honours <c>--command-base</c> / <c>--status-base</c>. A PLC at holding 200 / input 300
+    /// passes the whole list with motion, and nothing is written at the default holding 0…11.
+    /// </summary>
+    [Fact]
+    public async Task GA_I_69_TheCheckerRunsAtRelocatedBases()
+    {
+        using var sim = new LiveSimulator(new SimulatedAxisOptions { CommandBase = 200, StatusBase = 300 });
+
+        var report = await new ConformanceRunner(NullLoggerFactory.Instance).RunAsync(
+            new CheckerOptions { Host = "127.0.0.1", Port = sim.Port, AllowMotion = true, CommandBase = 200, StatusBase = 300 },
+            CancellationToken.None);
+
+        report.Checks.Where(c => c.Result != CheckResultKind.Pass).Select(c => $"{c.Id}: {c.Message}").Should().BeEmpty();
+        report.ExitCode.Should().Be(0);
+        sim.Host.Registers.Holding.ReadBlock(0, SimRegisters.CommandLength).Should().OnlyContain(w => w == 0,
+            "the checker wrote only at its configured command base");
+        var end = await sim.SettledAsync();
+        end.LeaseOwner.Should().Be(0);
+        end.CommandSeq.Should().BeGreaterThan(0, "the commands went to holding 200");
+    }
+
+    /// <summary>
+    /// GA-I-70 (#54, ADR-37): a PLC that answers FC04 with Modbus exception 02 (no input mapping) FAILs CHK-01 as
+    /// Protocol/ProtocolMismatch naming the function code, the range and the exception code — not Transport, and with no
+    /// reconnect-and-retry. Every later check is SKIPPED and nothing is written.
+    /// </summary>
+    [Fact]
+    public async Task GA_I_70_AnFc04RefusedWithException02IsAProtocolError()
+    {
+        using var sim = new LiveSimulator(new SimulatedAxisOptions { Faults = new SimFaults { RefuseInputRegisters = true } });
+        var before = await sim.SettledAsync();
+
+        var report = await Check(sim, allowMotion: false);
+
+        var chk01 = Get(report, "CHK-01");
+        chk01.Result.Should().Be(CheckResultKind.Fail);
+        chk01.ErrorClass.Should().Be(ErrorClass.Protocol, chk01.Message);
+        chk01.Message.Should().StartWith("Protocol/ProtocolMismatch: ").And.Contain("FC04 read S+0…S+14 = input 0…14")
+            .And.Contain("exception 02");
+        chk01.Observed.Single(kv => kv.Key == "retries").Value.Should().Be(0, "a Modbus exception 01–03 is never retried");
+        report.Checks.Skip(1).Should().OnlyContain(c => c.Result == CheckResultKind.Skipped);
+        report.ExitCode.Should().Be(1);
+        (await sim.SettledAsync()).CommandBlock.Should().Equal(before.CommandBlock, "a PLC that cannot be read is never written");
+
+        var error = new StringWriter();
+        var dump = await CheckMode.DumpAsync(new CheckerOptions { Host = "127.0.0.1", Port = sim.Port, Dump = true },
+            NullLoggerFactory.Instance, CancellationToken.None, TextWriter.Null, error);
+        dump.Should().Be(1, "--dump exits 1 when a block cannot be read");
+        error.ToString().Should().StartWith("Protocol/ProtocolMismatch: ").And.Contain("exception 02");
+    }
+
     [Fact]
     public async Task GA_I_31_MotionChecksAreOptIn()
     {

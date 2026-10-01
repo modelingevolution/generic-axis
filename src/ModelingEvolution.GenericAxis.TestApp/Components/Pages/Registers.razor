@@ -73,11 +73,11 @@ else if (reader is not null)
 
 @code {
     private bool _remote;
-    private string _host = "127.0.0.1";
-    private int _port = 502;
-    private int _unit = 1;
-    private int _commandBase = 0;
-    private int _statusBase = 100;
+    private string _host = RegisterEndpoint.Default.Host;
+    private int _port = RegisterEndpoint.Default.Port;
+    private int _unit = RegisterEndpoint.Default.Unit;
+    private int _commandBase = RegisterEndpoint.Default.CommandBase;
+    private int _statusBase = RegisterEndpoint.Default.StatusBase;
     private string? _formError;
     private RemoteRegisterReader? _reader;
 

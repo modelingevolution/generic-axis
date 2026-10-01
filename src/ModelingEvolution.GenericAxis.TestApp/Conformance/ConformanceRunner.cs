@@ -109,7 +109,7 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
                     }
                     catch (MotionException ex)
                     {
-                        _log.LogWarning("Taking the lease after pre-flight failed ({Message}); CHK-01 will report the transport", CheckerText.Describe(ex));
+                        _log.LogWarning("Taking the lease after pre-flight failed ({Message}); CHK-01 reports it under its own class", CheckerText.Describe(ex));
                     }
                 }
 
@@ -230,10 +230,10 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
     {
         if (read.Status[0] is not { } state) yield break;
         var fault = (ushort)(read.Status[6] ?? 0);
-        var where = ctx.WhereInput(ctx.Map.State);
+        var where = ctx.At(RegisterField.State);
         if (state is 5 or > 7 || (state == 7 && fault == 0)) yield return Failure.InvalidState((ushort)state, fault, where);
         else if (state == 7 && !(fault == 4 && CheckCatalog.ExpectWatchdogFault.Contains(def.Id)))
-            yield return Failure.Fault(fault, ctx.WhereInput(ctx.Map.FaultCode));
+            yield return Failure.Fault(fault, ctx.At(RegisterField.FaultCode));
     }
 
     /// <summary>Completes the report after cleanup (cleanup lines and the finish time).</summary>
@@ -310,13 +310,13 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
                 (owner, fault) = (now.Owner, now.Fault);
             }
 
-            var ownerAt = $"LeaseOwner ({ctx.Where(ctx.Map.LeaseOwner)}) = {owner}";
-            var faultAt = $"WatchdogFault ({ctx.Where(ctx.Map.WatchdogFault)}) = {fault}";
+            var ownerAt = $"LeaseOwner ({ctx.At(RegisterField.LeaseOwner)}) = {owner}";
+            var faultAt = $"WatchdogFault ({ctx.At(RegisterField.WatchdogFault)}) = {fault}";
             _log.LogInformation("Pre-flight after {Ms} ms: {Owner}, {Fault}, Heartbeat {Beats}",
                 (long)watched.Elapsed.TotalMilliseconds, ownerAt, faultAt, string.Join(" → ", beats));
             if (beats.Count > 1)
                 return new Preflight(
-                    $"refused to start: another commander is beating — Heartbeat ({ctx.Where(ctx.Map.Heartbeat)}) read {string.Join(" → ", beats.Take(6))}"
+                    $"refused to start: another commander is beating — Heartbeat ({ctx.At(RegisterField.Heartbeat)}) read {string.Join(" → ", beats.Take(6))}"
                     + $"{(beats.Count > 6 ? " …" : "")} within {watched.Elapsed.TotalSeconds:0.0} s, {ownerAt}; stop it first", null);
             if (owner == 0) return Preflight.Free;
             if (fault != 0)
@@ -367,10 +367,10 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
         {
             var v = await ctx.ReadViewAsync(ct);
             if (ctx.ForeignTrip && !ctx.CausedTrip && v.WatchdogFault != 0)
-                return Failure.Fault(4, ctx.WhereInput(ctx.Map.FaultCode)) with
+                return Failure.Fault(4, ctx.At(RegisterField.FaultCode)) with
                 {
-                    Text = $"the previous commander's watchdog trip is left for its operator. Read WatchdogFault ({ctx.Where(ctx.Map.WatchdogFault)}) = "
-                           + $"{v.WatchdogFault}, LeaseOwner ({ctx.Where(ctx.Map.LeaseOwner)}) = {v.LeaseOwner}; the checker does not clear it.",
+                    Text = $"the previous commander's watchdog trip is left for its operator. Read WatchdogFault ({ctx.At(RegisterField.WatchdogFault)}) = "
+                           + $"{v.WatchdogFault}, LeaseOwner ({ctx.At(RegisterField.LeaseOwner)}) = {v.LeaseOwner}; the checker does not clear it.",
                 };
 
             if (v.State is 2 or 3 or 4)
@@ -382,7 +382,7 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
             if (v.State is 2 or 3 or 4 or 6)
             {
                 var still = await ctx.WaitForAsync(x => x.State is not (2 or 3 or 4 or 6), TimeSpan.FromSeconds(5), CheckContext.Now(), ct);
-                if (!still.Met) return Failure.Machine("MotionFailed", $"still moving 5 s after Stop. Read State ({ctx.WhereInput(ctx.Map.State)}) = {still.View.State}, expected 0 or 1.");
+                if (!still.Met) return Failure.Machine("MotionFailed", $"still moving 5 s after Stop. Read State ({ctx.At(RegisterField.State)}) = {still.View.State}, expected 0 or 1.");
                 v = still.View;
             }
 
@@ -396,14 +396,14 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
                 var reset = await ctx.Commands.SendAsync(CommandBits.Reset, ct);
                 if (!reset.Acked) return Failure.NotAcknowledged("Reset", reset.Seq, reset.View.Status.CommandAck, reset.View.State);
                 var w = await ctx.WaitForAsync(x => x.State != 7, TimeSpan.FromSeconds(5), reset.WrittenAt, ct);
-                if (!w.Met) return Failure.Fault(w.View.Status.FaultCode, ctx.WhereInput(ctx.Map.FaultCode)) with { Text = $"still in ErrorStop 5 s after Reset. Read FaultCode ({ctx.WhereInput(ctx.Map.FaultCode)}) = {w.View.Status.FaultCode}." };
+                if (!w.Met) return Failure.Fault(w.View.Status.FaultCode, ctx.At(RegisterField.FaultCode)) with { Text = $"still in ErrorStop 5 s after Reset. Read FaultCode ({ctx.At(RegisterField.FaultCode)}) = {w.View.Status.FaultCode}." };
             }
 
             var end = await ctx.ReadViewAsync(ct);
-            if (end.State is not (0 or 1)) return Failure.Machine("MotionFailed", $"Read State ({ctx.WhereInput(ctx.Map.State)}) = {end.State}, expected 0 or 1.");
-            if (end.Status.FaultCode != 0) return Failure.Fault(end.Status.FaultCode, ctx.WhereInput(ctx.Map.FaultCode));
-            if (end.WatchdogFault != 0) return Failure.Protocol($"WatchdogFault did not clear. Read WatchdogFault ({ctx.Where(ctx.Map.WatchdogFault)}) = {end.WatchdogFault}, expected 0.");
-            if (end.LeaseOwner != ctx.Options.OwnerId) return Failure.Protocol($"the lease write did not hold. Read LeaseOwner ({ctx.Where(ctx.Map.LeaseOwner)}) = {end.LeaseOwner}, expected {ctx.Options.OwnerId}.");
+            if (end.State is not (0 or 1)) return Failure.Machine("MotionFailed", $"Read State ({ctx.At(RegisterField.State)}) = {end.State}, expected 0 or 1.");
+            if (end.Status.FaultCode != 0) return Failure.Fault(end.Status.FaultCode, ctx.At(RegisterField.FaultCode));
+            if (end.WatchdogFault != 0) return Failure.Protocol($"WatchdogFault did not clear. Read WatchdogFault ({ctx.At(RegisterField.WatchdogFault)}) = {end.WatchdogFault}, expected 0.");
+            if (end.LeaseOwner != ctx.Options.OwnerId) return Failure.Protocol($"the lease write did not hold. Read LeaseOwner ({ctx.At(RegisterField.LeaseOwner)}) = {end.LeaseOwner}, expected {ctx.Options.OwnerId}.");
             return null;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)

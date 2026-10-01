@@ -9,6 +9,13 @@ public sealed record RegisterEndpoint(string Host, int Port, byte Unit, int Comm
 {
     internal RegisterMap Map => new(CommandBase, StatusBase);
 
+    /// <summary>
+    /// The <c>/registers</c> form's defaults: the protocol's port 502, unit 1, holding base 0 and input base 0
+    /// (protocol § Transport, ADR-36). The page initialises every field from here, so this is the one place they live.
+    /// </summary>
+    public static RegisterEndpoint Default { get; } =
+        new("127.0.0.1", 502, 1, RegisterMap.DefaultCommandBase, RegisterMap.DefaultStatusBase);
+
     public override string ToString() => $"{Host}:{Port} unit {Unit} (C = holding {CommandBase}, S = input {StatusBase})";
 }
 

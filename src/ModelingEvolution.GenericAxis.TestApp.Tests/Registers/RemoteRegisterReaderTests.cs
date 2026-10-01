@@ -36,6 +36,25 @@ public sealed class RemoteRegisterReaderTests
         inApp.Snapshot.CommandBlock.Should().OnlyContain(w => w == 0, "the in-app simulator is not touched either");
     }
 
+    /// <summary>#53: the form's default endpoint against a correct new-map PLC (bases 0/0) shows the PLC's status block,
+    /// not zeros at "input 114".</summary>
+    [Fact]
+    public async Task GA_I_42_TheDefaultEndpointReadsANewMapPlc()
+    {
+        RegisterEndpoint.Default.Should().Be(new RegisterEndpoint("127.0.0.1", 502, 1, 0, 0), "protocol defaults: holding 0, input 0");
+        using var plc = new LiveSimulator();
+        await using var reader = new RemoteRegisterReader(RegisterEndpoint.Default with { Port = plc.Port }, NullLoggerFactory.Instance);
+        var sw = Stopwatch.StartNew();
+        while (reader.Reads == 0 && sw.Elapsed < TimeSpan.FromSeconds(10)) await Task.Delay(20);
+
+        var reading = reader.Latest!;
+        reading.Error.Should().BeNull();
+        var rows = reading.Rows.ToDictionary(r => r.Name);
+        rows["MapVersion"].Address.Should().Be("S+14 = input 14");
+        rows["MapVersion"].Value.Should().Be("1");
+        rows["TravelMax"].Value.Should().Be("10000.000");
+    }
+
     [Fact]
     public async Task GA_I_42_AClosedPort_ShowsTheTransportErrorInTheProtocolShape()
     {

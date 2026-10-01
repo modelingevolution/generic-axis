@@ -93,6 +93,24 @@ public sealed class SimulatorHostTests
         settled.StatusBlock.Should().Equal(input, "the PLC's status block is the input array");
     }
 
+    /// <summary>ADR-37 fixture: <see cref="SimFaults.RefuseInputRegisters"/> answers every FC04 with exception 02 and
+    /// leaves holding registers served.</summary>
+    [Fact]
+    public void RefuseInputRegistersAnswersFc04WithException02()
+    {
+        using var sim = new LiveSimulator();
+        using var client = Connect(sim.Port);
+        client.ReadInputRegisters<ushort>(1, 0, 15).ToArray().Should().HaveCount(15, "served before the fault");
+
+        sim.Host.Faults = new SimFaults { RefuseInputRegisters = true };
+        var fc04 = () => client.ReadInputRegisters<ushort>(1, 0, 15).ToArray();
+
+        fc04.Should().Throw<FluentModbus.ModbusException>().Which.ExceptionCode.Should().Be(FluentModbus.ModbusExceptionCode.IllegalDataAddress);
+        client.ReadHoldingRegisters<ushort>(1, 0, 12).ToArray().Should().HaveCount(12, "holding registers still answer");
+        sim.Host.Faults = SimFaults.None;
+        fc04.Should().NotThrow("clearing the fault serves input registers again");
+    }
+
     private static FluentModbus.ModbusTcpClient Connect(int port)
     {
         var client = new FluentModbus.ModbusTcpClient();

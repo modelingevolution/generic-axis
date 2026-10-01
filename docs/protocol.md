@@ -176,7 +176,7 @@ table names its class.
 2. **One cause, one class.** A Protocol or Machine error is never reported as Transport. A Transport failure is never
    reported as a Machine fault. After a link loss the driver reports `CommunicationLost`. When the link returns, a
    watchdog trip the PLC reports is a separate `WatchdogTripped`, and the log carries both.
-3. **No silent recovery.** One retry of a Transport failure, after a reconnect, is the only retry; a Protocol refusal is never retried. It logs at Warning
+3. **No silent recovery.** One retry of a Transport failure, after a reconnect, is the only retry; a Protocol refusal is never retried. A refusal identical to the previous tick's logs at Warning once, then at Debug until the cause changes or the link recovers; the latched error itself is logged once at Error. The retry logs at Warning
    with the exception, and so does every failed heartbeat beat. A command is never re-sent, and an ack is waited for
    once.
 4. **A register dump comes first.** Both checkers take `--dump`. It reads holding C+0…C+11 and input S+0…S+14 once, or at 5 Hz
