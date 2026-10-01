@@ -42,7 +42,7 @@ public static class CheckCommandLine
     public const string Flag = "--check";
 
     public const string Usage =
-        "Usage: --check <host>[:port] [--unit N] [--command-base N] [--status-base N] [--owner-id N] "
+        "Usage: --check <host>[:port] [--unit N] [--command-base N (holding, default 0)] [--status-base N (input, default 0)] [--owner-id N] "
         + "[--allow-motion] [--tolerance X] [--report FILE.md|FILE.json] | --check <host>[:port] --dump [--watch]";
 
     /// <summary>Returns the options, or an error message for exit code 2.</summary>

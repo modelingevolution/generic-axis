@@ -15,7 +15,7 @@ public sealed class CheckCommandLineTests
         o.Port.Should().Be(502);
         o.Unit.Should().Be(1);
         o.CommandBase.Should().Be(0);
-        o.StatusBase.Should().Be(100);
+        o.StatusBase.Should().Be(0, "protocol § Command line: --status-base defaults to input 0 (ADR-36)");
         o.OwnerId.Should().Be(65535);
         o.AllowMotion.Should().BeFalse();
         o.Tolerance.Should().Be(0.1);
@@ -67,7 +67,8 @@ public sealed class CheckCommandLineTests
     [InlineData("plc", "--owner-id", "0")]
     [InlineData("plc", "--owner-id", "65534")]
     [InlineData("plc", "--tolerance", "0")]
-    [InlineData("plc", "--command-base", "95")]
+    [InlineData("plc", "--status-base", "65530")]
+    [InlineData("plc", "--command-base", "65530")]
     [InlineData("plc", "--bogus")]
     [InlineData("--check")]
     [InlineData("plc", "--unit")]
@@ -76,6 +77,18 @@ public sealed class CheckCommandLineTests
         var (o, error) = CheckCommandLine.Parse(args);
         o.Should().BeNull();
         error.Should().NotBeNullOrWhiteSpace();
+    }
+
+    /// <summary>ADR-36: the blocks live in separate spaces, so equal and overlapping bases are a valid map.</summary>
+    [Theory]
+    [InlineData("0", "0")]
+    [InlineData("10", "5")]
+    public void GA_U_61_OverlappingBasesAreAccepted(string commandBase, string statusBase)
+    {
+        var (o, error) = CheckCommandLine.Parse(["plc", "--command-base", commandBase, "--status-base", statusBase]);
+        error.Should().BeNull();
+        o!.CommandBase.Should().Be(int.Parse(commandBase, System.Globalization.CultureInfo.InvariantCulture));
+        o.StatusBase.Should().Be(int.Parse(statusBase, System.Globalization.CultureInfo.InvariantCulture));
     }
 
     [Fact]

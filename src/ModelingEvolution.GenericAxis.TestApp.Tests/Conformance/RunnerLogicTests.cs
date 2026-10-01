@@ -31,7 +31,7 @@ public sealed class RunnerLogicTests
     public async Task GA_U_63_AFailedPrerequisiteSkipsEveryDependant()
     {
         var ran = new List<string>();
-        var catalog = Scripted(id => id == "CHK-02" ? CheckOutcome.Fail(Failure.Protocol("wrong map version. Read MapVersion (S+14 = 114) = 2, expected 1.")) : CheckOutcome.Pass("ok"), ran);
+        var catalog = Scripted(id => id == "CHK-02" ? CheckOutcome.Fail(Failure.Protocol("wrong map version. Read MapVersion (S+14 = input 14) = 2, expected 1.")) : CheckOutcome.Pass("ok"), ran);
 
         var report = await Run(catalog, allowMotion: true);
 

@@ -33,9 +33,16 @@ internal sealed class CheckContext : IAsyncDisposable
     public static readonly TimeSpan AckTimeout = RegisterMap.AckTimeout;
 
     private readonly List<string> _cleanup = [];
+    private readonly string _purpose;
 
-    public CheckContext(CheckerOptions options, IModbusChannel channel, ILogger logger)
+    /// <param name="options">The run's options (target, bases, owner id).</param>
+    /// <param name="channel">The driver's channel; the context owns and disposes it.</param>
+    /// <param name="logger">The checker's log.</param>
+    /// <param name="purpose">Who reads, for Transport messages (<c>checker</c>, <c>dump</c>); the channel adds the function
+    /// code and the range (<c>FC04 read S+0…S+14 = input 0…14</c>).</param>
+    public CheckContext(CheckerOptions options, IModbusChannel channel, ILogger logger, string purpose = "checker")
     {
+        _purpose = purpose;
         Options = options;
         Channel = channel;
         Logger = logger;
@@ -105,25 +112,30 @@ internal sealed class CheckContext : IAsyncDisposable
         }
     }
 
-    /// <summary><c>S+14 = 114</c> — a register's block offset and absolute address, for messages.</summary>
-    public string Where(ushort address) =>
-        address >= Map.StatusBase && address < Map.StatusBase + RegisterMap.StatusLength
-            ? $"S+{address - Map.StatusBase} = {address}"
-            : $"C+{address - Map.CommandBase} = {address}";
+    /// <summary><c>C+9 = holding 9</c> — a command-block register in the protocol's form (rule 1), by the driver's map.</summary>
+    public string Where(ushort address) => Map.DescribeRange(RegisterSpace.Holding, address, 1);
 
-    private string Range(ushort address, int count) =>
-        $"{Where(address).Split(' ')[0]}…{Where((ushort)(address + count - 1)).Split(' ')[0]}"; // the channel adds "on host:port unit N"
+    /// <summary><c>S+14 = input 14</c> — a status-block register in the protocol's form (rule 1), by the driver's map.</summary>
+    public string WhereInput(ushort address) => Map.DescribeRange(RegisterSpace.Input, address, 1);
 
+    /// <summary>FC03 of command-block (holding) registers.</summary>
     public async Task<ushort[]> ReadAsync(ushort address, ushort count, CancellationToken ct, ChannelPriority lane = ChannelPriority.Move)
     {
-        var words = await Channel.ReadHoldingAsync(Unit, address, count, $"read {Range(address, count)}", lane, ct);
-        var inStatus = address >= Map.StatusBase && address < Map.StatusBase + RegisterMap.StatusLength;
-        Remember(inStatus, address - (inStatus ? Map.StatusBase : Map.CommandBase), words);
+        var words = await Channel.ReadHoldingAsync(Unit, address, count, _purpose, lane, ct);
+        Remember(false, address - Map.CommandBase, words);
+        return words;
+    }
+
+    /// <summary>FC04 of status-block (input) registers (ADR-36).</summary>
+    public async Task<ushort[]> ReadInputAsync(ushort address, ushort count, CancellationToken ct, ChannelPriority lane = ChannelPriority.Move)
+    {
+        var words = await Channel.ReadInputAsync(Unit, address, count, _purpose, lane, ct);
+        Remember(true, address - Map.StatusBase, words);
         return words;
     }
 
     public async Task<StatusBlock> ReadStatusAsync(CancellationToken ct) =>
-        StatusBlock.Parse(await ReadAsync(Map.Status, RegisterMap.StatusLength, ct));
+        StatusBlock.Parse(await ReadInputAsync(Map.Status, RegisterMap.StatusLength, ct));
 
     public async Task<PlcView> ReadViewAsync(CancellationToken ct)
     {
@@ -162,7 +174,7 @@ internal sealed class CheckContext : IAsyncDisposable
         using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(3));
         try { await ReadAsync(Map.Command, RegisterMap.CommandLength, budget.Token); }
         catch (Exception ex) when (ex is MotionException or OperationCanceledException) { Logger.LogWarning("lastRead: command block not read ({Message})", ex.Message); }
-        try { await ReadAsync(Map.Status, RegisterMap.StatusLength, budget.Token); }
+        try { await ReadInputAsync(Map.Status, RegisterMap.StatusLength, budget.Token); }
         catch (Exception ex) when (ex is MotionException or OperationCanceledException) { Logger.LogWarning("lastRead: status block not read ({Message})", ex.Message); }
         return LastValues();
     }
@@ -174,10 +186,10 @@ internal sealed class CheckContext : IAsyncDisposable
     }
 
     private Task WriteOneAsync(ushort address, ushort value, string what, CancellationToken ct) =>
-        Channel.WriteRegisterAsync(Unit, address, value, $"write {Where(address)} ({what})", ChannelPriority.Move, ct);
+        Channel.WriteRegisterAsync(Unit, address, value, what, ChannelPriority.Move, ct);
 
     public Task WriteAsync(ushort address, ushort[] values, string what, CancellationToken ct) =>
-        Channel.WriteRegistersAsync(Unit, address, values, $"write {Range(address, values.Length)} ({what})", ChannelPriority.Move, ct);
+        Channel.WriteRegistersAsync(Unit, address, values, what, ChannelPriority.Move, ct);
 
     public async Task TakeLeaseAsync(CancellationToken ct)
     {
@@ -269,7 +281,7 @@ internal sealed class Beater(CheckContext ctx, string name)
     private async Task BeatOnceAsync(CancellationToken ct)
     {
         _value = Words.NextNonZero(_value);
-        await ctx.Channel.WriteRegisterAsync(ctx.Unit, ctx.Map.Heartbeat, _value, $"write {ctx.Where(ctx.Map.Heartbeat)} (Heartbeat {_value}, {name})", ChannelPriority.Heartbeat, ct);
+        await ctx.Channel.WriteRegisterAsync(ctx.Unit, ctx.Map.Heartbeat, _value, $"Heartbeat {_value}, {name}", ChannelPriority.Heartbeat, ct);
         Interlocked.Exchange(ref _lastBeatAt, CheckContext.Now());
     }
 
@@ -339,7 +351,7 @@ internal sealed class CommandWriter(CheckContext ctx)
 
         Used = true;
         await ctx.Channel.WriteRegistersAsync(ctx.Unit, ctx.Map.Command, [(ushort)bits, seq],
-            $"write {ctx.Where(ctx.Map.Command)}…C+1 (Command {bits}, CommandSeq {seq})", lane, ct);
+            $"Command {bits}, CommandSeq {seq}", lane, ct);
         var since = CheckContext.Now();
         ctx.Logger.LogInformation("Command {Bits} (0x{Raw:X4}) CommandSeq {Seq}", bits, (ushort)bits, seq);
 
@@ -348,7 +360,7 @@ internal sealed class CommandWriter(CheckContext ctx)
         var level = bits & CommandBits.Enable;
         if (level != bits)
             await ctx.Channel.WriteRegistersAsync(ctx.Unit, ctx.Map.Command, [(ushort)level, seq],
-                $"write {ctx.Where(ctx.Map.Command)}…C+1 (clear edge bits, CommandSeq {seq})", lane, ct);
+                $"clear edge bits, CommandSeq {seq}", lane, ct);
 
         return new Ack(seq, wait.Met, wait.ElapsedMs, wait.View, since);
     }

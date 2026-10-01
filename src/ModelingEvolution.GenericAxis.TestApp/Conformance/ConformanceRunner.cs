@@ -29,7 +29,7 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
 
     /// <summary>Runs the whole checklist. <paramref name="progress"/> receives an immutable report after every step.</summary>
     public Task<ConformanceReport> RunAsync(CheckerOptions options, CancellationToken ct, Action<ConformanceReport>? progress = null) =>
-        RunAsync(options, new ModbusChannel(options.Host, options.Port, loggerFactory.CreateLogger<ModbusChannel>()), ct, progress);
+        RunAsync(options, new ModbusChannel(options.Host, options.Port, loggerFactory.CreateLogger<ModbusChannel>(), map: options.Map), ct, progress);
 
     internal async Task<ConformanceReport> RunAsync(CheckerOptions options, IModbusChannel channel, CancellationToken ct,
         Action<ConformanceReport>? progress = null)
@@ -96,7 +96,7 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
                     try
                     {
                         // Only on a PLC that speaks map v1: a wrong MapVersion stops the run at CHK-02 with nothing written.
-                        var mapVersion = (await ctx.ReadAsync(ctx.Map.MapVersion, 1, ct))[0];
+                        var mapVersion = (await ctx.ReadInputAsync(ctx.Map.MapVersion, 1, ct))[0];
                         if (mapVersion == RegisterMap.Version)
                         {
                             await ctx.TakeLeaseAsync(ct);
@@ -230,10 +230,10 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
     {
         if (read.Status[0] is not { } state) yield break;
         var fault = (ushort)(read.Status[6] ?? 0);
-        var where = ctx.Where(ctx.Map.State);
+        var where = ctx.WhereInput(ctx.Map.State);
         if (state is 5 or > 7 || (state == 7 && fault == 0)) yield return Failure.InvalidState((ushort)state, fault, where);
         else if (state == 7 && !(fault == 4 && CheckCatalog.ExpectWatchdogFault.Contains(def.Id)))
-            yield return Failure.Fault(fault, ctx.Where(ctx.Map.FaultCode));
+            yield return Failure.Fault(fault, ctx.WhereInput(ctx.Map.FaultCode));
     }
 
     /// <summary>Completes the report after cleanup (cleanup lines and the finish time).</summary>
@@ -352,7 +352,7 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
 
     private static async Task<(ushort Beat, ushort Owner, ushort Fault)> ReadBeatOwnerFaultAsync(CheckContext ctx, CancellationToken ct)
     {
-        var words = await ctx.Channel.ReadHoldingAsync(ctx.Unit, ctx.Map.Heartbeat, 3, "read C+8…C+10 (pre-flight: Heartbeat, LeaseOwner, WatchdogFault)",
+        var words = await ctx.Channel.ReadHoldingAsync(ctx.Unit, ctx.Map.Heartbeat, 3, "pre-flight: Heartbeat, LeaseOwner, WatchdogFault",
             ChannelPriority.Move, ct);
         return (words[0], words[1], words[2]);
     }
@@ -367,7 +367,7 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
         {
             var v = await ctx.ReadViewAsync(ct);
             if (ctx.ForeignTrip && !ctx.CausedTrip && v.WatchdogFault != 0)
-                return Failure.Fault(4, ctx.Where(ctx.Map.FaultCode)) with
+                return Failure.Fault(4, ctx.WhereInput(ctx.Map.FaultCode)) with
                 {
                     Text = $"the previous commander's watchdog trip is left for its operator. Read WatchdogFault ({ctx.Where(ctx.Map.WatchdogFault)}) = "
                            + $"{v.WatchdogFault}, LeaseOwner ({ctx.Where(ctx.Map.LeaseOwner)}) = {v.LeaseOwner}; the checker does not clear it.",
@@ -382,7 +382,7 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
             if (v.State is 2 or 3 or 4 or 6)
             {
                 var still = await ctx.WaitForAsync(x => x.State is not (2 or 3 or 4 or 6), TimeSpan.FromSeconds(5), CheckContext.Now(), ct);
-                if (!still.Met) return Failure.Machine("MotionFailed", $"still moving 5 s after Stop. Read State ({ctx.Where(ctx.Map.State)}) = {still.View.State}, expected 0 or 1.");
+                if (!still.Met) return Failure.Machine("MotionFailed", $"still moving 5 s after Stop. Read State ({ctx.WhereInput(ctx.Map.State)}) = {still.View.State}, expected 0 or 1.");
                 v = still.View;
             }
 
@@ -396,12 +396,12 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
                 var reset = await ctx.Commands.SendAsync(CommandBits.Reset, ct);
                 if (!reset.Acked) return Failure.NotAcknowledged("Reset", reset.Seq, reset.View.Status.CommandAck, reset.View.State);
                 var w = await ctx.WaitForAsync(x => x.State != 7, TimeSpan.FromSeconds(5), reset.WrittenAt, ct);
-                if (!w.Met) return Failure.Fault(w.View.Status.FaultCode, ctx.Where(ctx.Map.FaultCode)) with { Text = $"still in ErrorStop 5 s after Reset. Read FaultCode ({ctx.Where(ctx.Map.FaultCode)}) = {w.View.Status.FaultCode}." };
+                if (!w.Met) return Failure.Fault(w.View.Status.FaultCode, ctx.WhereInput(ctx.Map.FaultCode)) with { Text = $"still in ErrorStop 5 s after Reset. Read FaultCode ({ctx.WhereInput(ctx.Map.FaultCode)}) = {w.View.Status.FaultCode}." };
             }
 
             var end = await ctx.ReadViewAsync(ct);
-            if (end.State is not (0 or 1)) return Failure.Machine("MotionFailed", $"Read State ({ctx.Where(ctx.Map.State)}) = {end.State}, expected 0 or 1.");
-            if (end.Status.FaultCode != 0) return Failure.Fault(end.Status.FaultCode, ctx.Where(ctx.Map.FaultCode));
+            if (end.State is not (0 or 1)) return Failure.Machine("MotionFailed", $"Read State ({ctx.WhereInput(ctx.Map.State)}) = {end.State}, expected 0 or 1.");
+            if (end.Status.FaultCode != 0) return Failure.Fault(end.Status.FaultCode, ctx.WhereInput(ctx.Map.FaultCode));
             if (end.WatchdogFault != 0) return Failure.Protocol($"WatchdogFault did not clear. Read WatchdogFault ({ctx.Where(ctx.Map.WatchdogFault)}) = {end.WatchdogFault}, expected 0.");
             if (end.LeaseOwner != ctx.Options.OwnerId) return Failure.Protocol($"the lease write did not hold. Read LeaseOwner ({ctx.Where(ctx.Map.LeaseOwner)}) = {end.LeaseOwner}, expected {ctx.Options.OwnerId}.");
             return null;

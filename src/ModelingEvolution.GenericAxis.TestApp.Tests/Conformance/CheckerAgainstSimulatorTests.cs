@@ -109,7 +109,7 @@ public sealed class CheckerAgainstSimulatorTests
 
         Get(report, "CHK-01").Result.Should().Be(CheckResultKind.Pass);
         Get(report, "CHK-02").Result.Should().Be(CheckResultKind.Fail);
-        Get(report, "CHK-02").Message.Should().Be("Protocol/ProtocolMismatch: wrong map version. Read MapVersion (S+14 = 114) = 2, expected 1.");
+        Get(report, "CHK-02").Message.Should().Be("Protocol/ProtocolMismatch: wrong map version. Read MapVersion (S+14 = input 14) = 2, expected 1.");
         Get(report, "CHK-02").ErrorClass.Should().Be(ErrorClass.Protocol);
         Get(report, "CHK-02").LastRead!.Status[14].Should().Be(2);
         ShouldBe(report, CheckResultKind.Skipped, Ids(3, 16));
@@ -275,7 +275,7 @@ public sealed class CheckerAgainstSimulatorTests
         report.SummaryResult.Should().Be("REFUSED");
         ReportWriter.ToMarkdown(report).TrimEnd().Should().EndWith("RESULT: REFUSED");
         report.Checks.Should().OnlyContain(c => c.Result == CheckResultKind.Skipped && c.Message.StartsWith("refused to start: another commander is beating"));
-        report.Checks[0].Message.Should().Contain("LeaseOwner (C+9 = 9) = 0");
+        report.Checks[0].Message.Should().Contain("LeaseOwner (C+9 = holding 9) = 0");
         (await sim.SettledAsync()).CommandSeq.Should().Be(0, "a refused run writes nothing");
     }
 
@@ -333,7 +333,7 @@ public sealed class CheckerAgainstSimulatorTests
         var chk06 = Get(report, "CHK-06");
         chk06.Result.Should().Be(CheckResultKind.Fail);
         chk06.ErrorClass.Should().Be(ErrorClass.Machine);
-        chk06.Message.Should().Be("Machine/DriveFault: the PLC reports ErrorStop. Read FaultCode (S+6 = 106) = 1.");
+        chk06.Message.Should().Be("Machine/DriveFault: the PLC reports ErrorStop. Read FaultCode (S+6 = input 6) = 1.");
         chk06.LastRead!.Status[0].Should().Be(7);
         foreach (var id in Ids(7, 11)) Get(report, id).Message.Should().Be("restore after CHK-06 failed", id);
         var end = await sim.SettledAsync();
@@ -342,16 +342,29 @@ public sealed class CheckerAgainstSimulatorTests
         ((int)end.FaultCode).Should().Be(1);
     }
 
+    /// <summary>GA-I-40.cs: two tables, the command block from holding (FC03) and the status block from input (FC04).
+    /// At the default bases holding 14 is 0 while input 14 (MapVersion) is 1, so a status block read by FC03 shows.</summary>
     [Fact]
     public async Task DumpReadsBothBlocksAndWritesNothing()
     {
         using var sim = new LiveSimulator();
         var options = new CheckerOptions { Host = "127.0.0.1", Port = sim.Port, Dump = true };
         var before = await sim.SettledAsync();
+        var output = new StringWriter();
 
-        var code = await CheckMode.DumpAsync(options, NullLoggerFactory.Instance, CancellationToken.None);
+        var code = await CheckMode.DumpAsync(options, NullLoggerFactory.Instance, CancellationToken.None, output, TextWriter.Null);
 
         code.Should().Be(0);
+        var text = output.ToString();
+        var commandAt = text.IndexOf("Command block — holding registers (FC03)", StringComparison.Ordinal);
+        var statusAt = text.IndexOf("Status block — input registers (FC04)", StringComparison.Ordinal);
+        commandAt.Should().BeGreaterThan(0, text);
+        statusAt.Should().BeGreaterThan(commandAt, text);
+        var commandTable = text[commandAt..statusAt].Split('\n');
+        var statusTable = text[statusAt..].Split('\n');
+        commandTable.Should().Contain(l => l.Contains("LeaseOwner", StringComparison.Ordinal)).And.NotContain(l => l.Contains("MapVersion", StringComparison.Ordinal));
+        statusTable.Should().ContainSingle(l => System.Text.RegularExpressions.Regex.IsMatch(l, @"MapVersion\s+0x0001\s+1$"), text);
+        statusTable.Should().ContainSingle(l => System.Text.RegularExpressions.Regex.IsMatch(l, @"TravelMax\s+0x9680 0x0098\s+10000\.000$"), text);
         var after = await sim.SettledAsync();
         after.CommandBlock.Should().Equal(before.CommandBlock, "--dump writes nothing and takes no lease");
 
@@ -385,9 +398,9 @@ public sealed class CheckerAgainstSimulatorTests
         var chk07 = Get(report, "CHK-07");
         chk07.Result.Should().Be(CheckResultKind.Fail);
         chk07.ErrorClass.Should().Be(ErrorClass.Protocol);
-        chk07.Message.Should().StartWith("Protocol/ProtocolMismatch: the lease did not hold. Read LeaseOwner (C+9 = 9) = 1, expected 65535.");
+        chk07.Message.Should().StartWith("Protocol/ProtocolMismatch: the lease did not hold. Read LeaseOwner (C+9 = holding 9) = 1, expected 65535.");
         foreach (var id in Ids(8, 16))
-            Get(report, id).Message.Should().Be("CHK-07: the lease did not hold. Read LeaseOwner (C+9 = 9) = 1, expected 65535.", id);
+            Get(report, id).Message.Should().Be("CHK-07: the lease did not hold. Read LeaseOwner (C+9 = holding 9) = 1, expected 65535.", id);
         report.ExitCode.Should().Be(1);
         report.Cleanup.Should().NotContain(l => l.StartsWith("C+0", StringComparison.Ordinal) || l.Contains("release lease"),
             "nothing is written to an axis the checker no longer owns");
@@ -408,7 +421,7 @@ public sealed class CheckerAgainstSimulatorTests
 
         code.Should().Be(1);
         var line = error.ToString().Trim();
-        line.Should().StartWith("dump: Transport/CommunicationLost: read C+0…C+11");
+        line.Should().StartWith("Transport/CommunicationLost: dump (FC03 read C+0…C+11 = holding 0…11) on 127.0.0.1:1 unit 1 failed twice");
         Count(line, "127.0.0.1:1").Should().Be(1, line);
         Count(line, "unit 1").Should().Be(1, line);
         Count(line, "CommunicationLost").Should().Be(1, line);
@@ -546,7 +559,7 @@ public sealed class CheckerAgainstSimulatorTests
         var report = await Check(sim, allowMotion: false);
 
         report.ExitCode.Should().Be(3);
-        report.Preflight.Should().Be("refused to start: LeaseOwner (C+9 = 9) = 1 is held and WatchdogFault (C+10 = 10) = 0: no beat and no trip "
+        report.Preflight.Should().Be("refused to start: LeaseOwner (C+9 = holding 9) = 1 is held and WatchdogFault (C+10 = holding 10) = 0: no beat and no trip "
                                      + "within 1.6 s — a live commander, or a PLC without a working watchdog; release LeaseOwner by hand only if no commander runs");
         ReportWriter.ToMarkdown(report).Split('\n')[2].Should().StartWith("Pre-flight: refused to start: LeaseOwner");
         using (var json = System.Text.Json.JsonDocument.Parse(ReportWriter.ToJson(report)))
@@ -565,7 +578,7 @@ public sealed class CheckerAgainstSimulatorTests
         var report = await Check(sim, allowMotion: false);
 
         Cadence.Budget(sim.MaxScanGap, () => report.Refused.Should().BeFalse("the trip lands 1.0 s after the last beat, inside the 1.6 s watch"));
-        report.Preflight.Should().Be("LeaseOwner (C+9 = 9) = 1 held with no beat and WatchdogFault (C+10 = 10) = 1: "
+        report.Preflight.Should().Be("LeaseOwner (C+9 = holding 9) = 1 held with no beat and WatchdogFault (C+10 = holding 10) = 1: "
                                      + "the previous commander is dead; its trip is left for its operator.");
         ReportWriter.ToMarkdown(report).Split('\n')[2].Should().Be("Pre-flight: " + report.Preflight);
         using (var json = System.Text.Json.JsonDocument.Parse(ReportWriter.ToJson(report)))
@@ -573,7 +586,7 @@ public sealed class CheckerAgainstSimulatorTests
         ShouldBe(report, CheckResultKind.Pass, Ids(1, 5));
         var chk06 = Get(report, "CHK-06");
         chk06.Result.Should().Be(CheckResultKind.Fail);
-        chk06.Message.Should().Be("Machine/WatchdogTripped: the PLC reports ErrorStop. Read FaultCode (S+6 = 106) = 4.");
+        chk06.Message.Should().Be("Machine/WatchdogTripped: the PLC reports ErrorStop. Read FaultCode (S+6 = input 6) = 4.");
         foreach (var id in Ids(7, 11)) Get(report, id).Message.Should().Be("restore after CHK-06 failed", id);
         report.Cleanup.Should().BeEmpty("the checker took no lease, beat or command, and does not clear a foreign trip");
         var end = await sim.SettledAsync();
@@ -615,7 +628,7 @@ public sealed class CheckerAgainstSimulatorTests
         refused.ExitCode.Should().Be(3, refused.Preflight);
         refused.SummaryResult.Should().Be("REFUSED");
         refused.Preflight.Should().StartWith("refused to start: another commander is beating")
-            .And.Contain("LeaseOwner (C+9 = 9) = 65535");
+            .And.Contain("LeaseOwner (C+9 = holding 9) = 65535");
         Cadence.Budget(sim.MaxScanGap, () => // the first run includes CHK-04's and CHK-08's timing thresholds
             first.ExitCode.Should().Be(0, string.Join("; ", first.Checks.Where(c => c.Result == CheckResultKind.Fail).Select(c => $"{c.Id}: {c.Message}"))));
         (await sim.SettledAsync()).LeaseOwner.Should().Be(0, "the first run released its lease in cleanup");
@@ -649,7 +662,7 @@ public sealed class CheckerAgainstSimulatorTests
         var chk01 = Get(report, "CHK-01");
         chk01.Result.Should().Be(CheckResultKind.Fail);
         chk01.ErrorClass.Should().Be(ErrorClass.Transport);
-        chk01.Message.Should().StartWith("Transport/CommunicationLost: read C+8…C+10 (pre-flight: Heartbeat, LeaseOwner, WatchdogFault)");
+        chk01.Message.Should().StartWith("Transport/CommunicationLost: pre-flight: Heartbeat, LeaseOwner, WatchdogFault (FC03 read C+8…C+10 = holding 8…10) on 127.0.0.1:");
         report.Checks.Skip(1).Should().OnlyContain(c => c.Result == CheckResultKind.Skipped && c.Message == "needs CHK-01, which FAILED");
         report.Cleanup.Should().BeEmpty();
         var end = await sim.SettledAsync();
@@ -811,7 +824,7 @@ public sealed class CheckerAgainstSimulatorTests
 
         var chk06 = Get(report, "CHK-06");
         chk06.Result.Should().Be(CheckResultKind.Fail);
-        chk06.Message.Should().StartWith("Protocol/ProtocolMismatch: the lease did not hold. Read LeaseOwner (C+9 = 9) = 1, expected 65535.");
+        chk06.Message.Should().StartWith("Protocol/ProtocolMismatch: the lease did not hold. Read LeaseOwner (C+9 = holding 9) = 1, expected 65535.");
         var end = await sim.SettledAsync();
         end.CommandSeq.Should().Be(seqAtIntrusion, "no command after the lease was lost: Enable 0 was never sent");
         end.LeaseOwner.Should().Be(1);
@@ -850,7 +863,7 @@ public sealed class CheckerAgainstSimulatorTests
         var chk11 = Get(report, "CHK-11");
         chk11.Result.Should().Be(CheckResultKind.Fail);
         chk11.ErrorClass.Should().Be(ErrorClass.Protocol, chk11.Message);
-        chk11.Message.Should().StartWith("Protocol/ProtocolMismatch: (a) another commander took the lease after its release. Read LeaseOwner (C+9 = 9) = 1,");
+        chk11.Message.Should().StartWith("Protocol/ProtocolMismatch: (a) another commander took the lease after its release. Read LeaseOwner (C+9 = holding 9) = 1,");
         report.Cleanup.Should().NotContain(l => l.StartsWith("C+", StringComparison.Ordinal) && !l.Contains("stopped beating"),
             "nothing is written to the axis another commander owns");
         var end = await sim.SettledAsync();
