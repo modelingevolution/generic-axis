@@ -59,22 +59,69 @@ public class CodecAndMapTests
         shortRead.Should().Throw<ArgumentException>().WithMessage("*15*14*");
     }
 
-    [Fact(DisplayName = "GA-U-04 Bases move whole blocks")]
-    public void RegisterMap_RelocatedBases_AddressesFollowAndOverlapIsRefused()
+    [Fact(DisplayName = "GA-U-04 Bases move whole blocks, each in its own address space")]
+    public void RegisterMap_RelocatedBases_AddressesFollowPerSpaceAndOnlyThe65535BoundIsRefused()
     {
         var map = new RegisterMap(200, 300);
         map.Heartbeat.Should().Be(208);
         map.CommandAck.Should().Be(307);
         map.MapVersion.Should().Be(314);
+        map.Describe(RegisterField.Heartbeat).Should().Be("C+8 = holding 208");
+        map.Describe(RegisterField.CommandAck).Should().Be("S+7 = input 307");
+        map.Describe(RegisterField.MapVersion).Should().Be("S+14 = input 314");
         map.Invoking(m => m.Validate()).Should().NotThrow();
 
-        RegisterMap.Default.Heartbeat.Should().Be(8);
-        RegisterMap.Default.MapVersion.Should().Be(114);
+        // ADR-36: holding and input registers are separate spaces — equal or interleaved bases are not an overlap.
+        new RegisterMap(0, 0).Invoking(m => m.Validate()).Should().NotThrow("the blocks are in separate address spaces");
+        new RegisterMap(95, 100).Invoking(m => m.Validate()).Should().NotThrow();
 
-        new RegisterMap(95, 100).Invoking(m => m.Validate()).Should().Throw<ArgumentException>().WithMessage("*overlaps*");
-        new RegisterMap(100, 88).Invoking(m => m.Validate()).Should().Throw<ArgumentException>().WithMessage("*overlaps*");
-        new RegisterMap(0, 65_530).Invoking(m => m.Validate()).Should().Throw<ArgumentException>().WithMessage("*65535*");
+        new RegisterMap(0, 65_530).Invoking(m => m.Validate()).Should().Throw<ArgumentException>()
+            .WithMessage("*status block*65535*");
+        new RegisterMap(65_530, 0).Invoking(m => m.Validate()).Should().Throw<ArgumentException>()
+            .WithMessage("*command block*65535*");
+        new RegisterMap(0, 65_521).Invoking(m => m.Validate()).Should().NotThrow("S+14 = input 65535 is the last register");
+        new RegisterMap(65_524, 0).Invoking(m => m.Validate()).Should().NotThrow("C+11 = holding 65535 is the last register");
     }
+
+    [Fact(DisplayName = "GA-U-137 An address renders with its space: C+n = holding a, S+n = input a, even at equal bases")]
+    public void Describe_BothBasesZero_SameAbsoluteAddressRendersByItsSpace()
+    {
+        var map = new RegisterMap(0, 0);
+        map.Address(RegisterField.FaultCode).Should().Be(map.Address(RegisterField.Acceleration));
+        map.Describe(RegisterField.FaultCode).Should().Be("S+6 = input 6");
+        map.Describe(RegisterField.Acceleration).Should().Be("C+6 = holding 6");
+        map.Describe(RegisterField.WatchdogTrips).Should().Be("C+11 = holding 11", "WatchdogTrips stays a holding register");
+        map.DescribeRange(RegisterSpace.Input, 0, RegisterMap.StatusLength).Should().Be("S+0…S+14 = input 0…14");
+        map.DescribeRange(RegisterSpace.Holding, 9, 3).Should().Be("C+9…C+11 = holding 9…11");
+        map.DescribeRange(RegisterSpace.Holding, 500, 2).Should().Be("holding 500…501", "outside the block: no offset is claimed");
+        map.DescribeRange(RegisterSpace.Input, 14, 2).Should().Be("input 14…15", "a range running past the block claims no offset");
+
+        foreach (var f in Fields())
+            map.Describe(f).Should().Be(f.Space == RegisterSpace.Holding
+                ? $"C+{f.Offset} = holding {f.Offset}" : $"S+{f.Offset} = input {f.Offset}", f.Name);
+    }
+
+    [Fact(DisplayName = "GA-U-138 Every field is declared once with the protocol's space and offset")]
+    public void RegisterField_Table_MatchesTheMapProperties()
+    {
+        var map = new RegisterMap(200, 300);
+        var fields = Fields().ToList();
+        fields.Should().HaveCount(19, "12 command registers as 9 fields, 15 status registers as 10 fields");
+        fields.Select(f => f.Name).Should().OnlyHaveUniqueItems();
+        foreach (var f in fields)
+        {
+            var property = typeof(RegisterMap).GetProperty(f.Name)!;
+            ((ushort)property.GetValue(map)!).Should().Be(map.Address(f), f.Name);
+        }
+
+        fields.Where(f => f.Space == RegisterSpace.Holding).Select(f => f.Offset).Should().OnlyContain(o => o < RegisterMap.CommandLength);
+        fields.Where(f => f.Space == RegisterSpace.Input).Select(f => f.Offset).Should().OnlyContain(o => o < RegisterMap.StatusLength);
+    }
+
+    private static IEnumerable<RegisterField> Fields() =>
+        typeof(RegisterField).GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+            .Where(f => f.FieldType == typeof(RegisterField))
+            .Select(f => (RegisterField)f.GetValue(null)!);
 
     [Fact(DisplayName = "GA-U-05 The beat and the sequence never write 0")]
     public void NextBeatAndNextSeq_Wrap_SkipZero()

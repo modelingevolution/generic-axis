@@ -13,7 +13,7 @@ namespace ModelingEvolution.GenericAxis.Tests;
 public class ErrorMessageTests
 {
     private static readonly Regex Shape = new(
-        @"^carriage: [A-Za-z]+: .+\. Read [A-Za-z]+ \((C|S)\+[0-9]+ = [0-9]+\) = [^,]+",
+        @"^carriage: [A-Za-z]+: .+\. Read [A-Za-z]+ \((C\+[0-9]+ = holding|S\+[0-9]+ = input) [0-9]+\) = [^,]+",
         RegexOptions.Compiled);
 
     [Fact(DisplayName = "GA-U-67 Messages state what was seen (Machine, Commander, Protocol)")]
@@ -27,7 +27,7 @@ public class ErrorMessageTests
         var commander = (await DriverRig.Bounded(() => rig.Linear.MoveAbsoluteAsync(new Mm(10_500)))
             .Should().ThrowAsync<MotionException>()).Which;
         commander.Message.Should().MatchRegex(Shape.ToString())
-            .And.Contain("Read TravelMin (S+8 = 108) = 0, TravelMax (S+10 = 110) = 10000000, MaxVelocity (S+12 = 112) = 500000.");
+            .And.Contain("Read TravelMin (S+8 = input 108) = 0, TravelMax (S+10 = input 110) = 10000000, MaxVelocity (S+12 = input 112) = 500000.");
 
         var protocol = rig.Axis.HomeAsync();
         for (var i = 0; i < 8 && !protocol.IsCompleted; i++) await rig.TickAsync();
@@ -117,7 +117,7 @@ public class ChannelRetryTests
         channel.Retries.Should().Be(1, "review #25: the one retry is counted for the checker's `retries`");
         var warnings = logs.GetSnapshot().Where(r => r.Level == LogLevel.Warning).ToArray();
         warnings.Should().ContainSingle().Which.Exception.Should().NotBeNull("the retry is logged with the exception");
-        warnings[0].Message.Should().Contain("read status block (read S+0…S+14 (100…114))")
+        warnings[0].Message.Should().Contain("read status block (FC03 read holding 100…114)")
             .And.Contain($"127.0.0.1:{plc.Port} unit 1");
     }
 
@@ -134,7 +134,7 @@ public class ChannelRetryTests
             .Should().ThrowAsync<MotionException>()).Which;
 
         ex.Error.Should().Be(MotionError.CommunicationLost);
-        ex.Message.Should().StartWith("carriage: CommunicationLost: read status block (read S+0…S+14 (100…114)) "
+        ex.Message.Should().StartWith("carriage: CommunicationLost: read status block (FC03 read holding 100…114) "
                                       + $"on 127.0.0.1:{plc.Port} unit 1 failed twice (reconnected once): ");
         ex.Message.Should().NotEndWith("(reconnected once): .", "the exception's own message is quoted");
         plc.AcceptedConnections.Should().Be(2);

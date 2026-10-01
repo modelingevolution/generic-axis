@@ -240,7 +240,7 @@ public class DriverIntegrationTests(ITestOutputHelper output)
 
         output.WriteLine($"GA-I-09 refused after {refusedAfter * 1000:F0} ms: {ex.Message}");
         ex.Error.Should().Be(MotionError.LeaseHeld);
-        ex.Message.Should().Contain("Read LeaseOwner (C+9 = 9) = 1, expected 0 or 2");
+        ex.Message.Should().Contain("Read LeaseOwner (C+9 = holding 9) = 1, expected 0 or 2");
         Cadence.Budget(gap, () => refusedAfter.Should().BeInRange(3.0, 4.0));
         owners.Should().NotBeEmpty().And.OnlyContain(o => o == 1);
         move.IsCompleted.Should().BeFalse("A's move is undisturbed");
@@ -306,7 +306,7 @@ public class DriverIntegrationTests(ITestOutputHelper output)
         var ex = await Throws(() => track.ConnectAsync());
 
         ex.Error.Should().Be(MotionError.ProtocolMismatch);
-        ex.Message.Should().Contain("Read MapVersion (S+14 = 114) = 2, expected 1.");
+        ex.Message.Should().Contain("Read MapVersion (S+14 = input 114) = 2, expected 1.");
         rig.Logs.GetSnapshot().Should().Contain(r => r.Level == LogLevel.Error && r.Message == ex.Message);
         await Task.Delay(100);
         rig.Plc.WrittenRegisters.Should().BeEmpty();
@@ -354,7 +354,7 @@ public class DriverIntegrationTests(ITestOutputHelper output)
         ex.Which.Error.Should().Be(MotionError.CommunicationLost);
         ex.Which.Message.Should().StartWith("carriage: CommunicationLost: ")
             .And.Contain($"127.0.0.1:{rig.Plc.Port} unit 1 failed twice (reconnected once): ")
-            .And.MatchRegex(@"\((read|write) (C|S)\+[0-9]+");
+            .And.MatchRegex(@"\(FC(03|04|06|16) (read|write) (C\+[0-9]+(…C\+[0-9]+)? = holding|S\+[0-9]+(…S\+[0-9]+)? = input) [0-9]+");
         rig.Logs.GetSnapshot().Should().Contain(r => r.Level == LogLevel.Warning && r.Exception != null
                                                      && r.Message.Contains("reconnecting and retrying once"),
             "the one retry is logged at Warning with the exception");

@@ -48,7 +48,8 @@ internal sealed class ModbusChannel : IModbusChannel
     /// <param name="logger">Logger.</param>
     /// <param name="gate">The lane gate; a new one when absent.</param>
     /// <param name="label">Message prefix (the axis name, or a checker id); <c>host:port</c> when absent.</param>
-    /// <param name="map">Block bases, so messages name ranges as <c>S+0…S+14</c>; raw addresses when absent.</param>
+    /// <param name="map">Block bases, so messages name ranges as <c>S+0…S+14 = input 0…14</c>; the space and absolute
+    /// addresses when absent.</param>
     public ModbusChannel(string host, int port, ILogger? logger, PriorityGate? gate = null, string? label = null,
         RegisterMap? map = null)
     {
@@ -235,8 +236,16 @@ internal sealed class ModbusChannel : IModbusChannel
             $"{_label}: {MotionError.CommunicationLost}: {what}"
             + $"{(range is null ? "" : " " + range)} on {Host}:{Port} not sent: the channel was disposed.");
 
-    private string Range(string op, ushort address, int count) =>
-        $"({op} {(_map is null ? (count <= 1 ? $"{address}" : $"{address}…{address + count - 1}") : _map.DescribeRange(address, count))})";
+    /// <summary>
+    /// The function code and the register range of a frame, in the protocol's form: <c>(FC04 read S+0…S+14 = input
+    /// 0…14)</c>. Without a map, the space and the absolute addresses only (<c>(FC03 read holding 8…9)</c>).
+    /// </summary>
+    private string Range(string op, RegisterSpace space, ushort address, int count) =>
+        $"({op} {(_map ?? NoBlocks).DescribeRange(space, address, count)})";
+
+    /// <summary>A map whose blocks contain no address, so <see cref="RegisterMap.DescribeRange"/> renders the space
+    /// and the absolute addresses only.</summary>
+    private static readonly RegisterMap NoBlocks = new(ushort.MaxValue + 1, ushort.MaxValue + 1);
 
     private void Reset()
     {
@@ -266,19 +275,19 @@ internal sealed class ModbusChannel : IModbusChannel
     public Task<ushort[]> ReadHoldingAsync(byte unit, ushort address, ushort count, string what,
         ChannelPriority priority = ChannelPriority.Move, CancellationToken ct = default)
         => ExecuteAsync(async c => (await c.ReadHoldingRegistersAsync<ushort>(unit, address, count).ConfigureAwait(false)).ToArray(), what,
-            Range("read", address, count), priority, ct, unit);
+            Range("FC03 read", RegisterSpace.Holding, address, count), priority, ct, unit);
 
     /// <inheritdoc/>
     public Task WriteRegisterAsync(byte unit, ushort address, ushort value, string what,
         ChannelPriority priority = ChannelPriority.Move, CancellationToken ct = default)
         => ExecuteAsync<object?>(async c => { await c.WriteSingleRegisterAsync(unit, address, value).ConfigureAwait(false); return null; },
-            what, Range("write", address, 1), priority, ct, unit);
+            what, Range("FC06 write", RegisterSpace.Holding, address, 1), priority, ct, unit);
 
     /// <inheritdoc/>
     public Task WriteRegistersAsync(byte unit, ushort address, ushort[] values, string what,
         ChannelPriority priority = ChannelPriority.Move, CancellationToken ct = default)
         => ExecuteAsync<object?>(async c => { await c.WriteMultipleRegistersAsync(unit, address, values).ConfigureAwait(false); return null; },
-            what, Range("write", address, values.Length), priority, ct, unit);
+            what, Range("FC16 write", RegisterSpace.Holding, address, values.Length), priority, ct, unit);
 
     /// <inheritdoc/>
     public void Dispose()

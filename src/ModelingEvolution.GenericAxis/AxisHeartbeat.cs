@@ -104,7 +104,7 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
                 _leaseHeld = true;
                 _logger?.LogInformation(
                     "{Axis}: lease taken on {Host}:{Port} — LeaseOwner ({Register}) = {Owner}; {Reason}",
-                    _axis, _channel.Host, _channel.Port, _map.Describe(_map.LeaseOwner), OwnerId, decision.Reason);
+                    _axis, _channel.Host, _channel.Port, _map.Describe(RegisterField.LeaseOwner), OwnerId, decision.Reason);
                 return decision;
             }
 
@@ -119,8 +119,8 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
                 throw AxisErrors.Create(_axis, MotionError.LeaseHeld,
                     $"cannot attach to {_channel.Host}:{_channel.Port}: another commander kept beating for the whole "
                     + $"lease timeout of {t.TotalSeconds.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)} s",
-                    AxisErrors.Read(_map, "LeaseOwner", _map.LeaseOwner, owner, $"0 or {OwnerId}"),
-                    AxisErrors.Read(_map, "Heartbeat", _map.Heartbeat,
+                    AxisErrors.Read(_map, RegisterField.LeaseOwner, owner, $"0 or {OwnerId}"),
+                    AxisErrors.Read(_map, RegisterField.Heartbeat,
                         $"{beat} (changed {_time.GetElapsedTime(lastChange).TotalSeconds.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)} s ago)",
                         $"unchanged for {AdvisoryLease.Expiry.TotalSeconds.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)} s"));
 
@@ -147,7 +147,7 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
         await _channel.WriteRegisterAsync(_unit, _map.WatchdogFault, 0, "clear watchdog fault", ChannelPriority.Stop, ct).ConfigureAwait(false);
         _lastWatchdogFault = 0;
         _logger?.LogInformation("{Axis}: WatchdogFault ({Register}) = 0 written on {Host}:{Port}",
-            _axis, _map.Describe(_map.WatchdogFault), _channel.Host, _channel.Port);
+            _axis, _map.Describe(RegisterField.WatchdogFault), _channel.Host, _channel.Port);
     }
 
     // ═══════════════════════ tick ═══════════════════════
@@ -208,7 +208,7 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
         var next = NextBeat(_beat);
         await _channel.WriteRegisterAsync(_unit, _map.Heartbeat, next, "heartbeat", ChannelPriority.Heartbeat, ct).ConfigureAwait(false);
         Volatile.Write(ref _beat, next);
-        _logger?.LogTrace("{Axis}: Heartbeat ({Register}) = {Beat}", _axis, _map.Describe(_map.Heartbeat), next);
+        _logger?.LogTrace("{Axis}: Heartbeat ({Register}) = {Beat}", _axis, _map.Describe(RegisterField.Heartbeat), next);
 
         var snapshot = await ReadSnapshotAsync(ChannelPriority.Heartbeat, ct).ConfigureAwait(false);
         _logger?.LogTrace(
@@ -220,8 +220,8 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
         if (snapshot.WatchdogFault != 0 && _lastWatchdogFault == 0)
             _logger?.LogError("{Message}", AxisErrors.Message(_axis, MotionError.WatchdogTripped,
                 $"WATCHDOG TRIPPED on {_channel.Host}:{_channel.Port}; recovery is Reset, then re-command (no re-home)",
-                AxisErrors.Read(_map, "WatchdogFault", _map.WatchdogFault, snapshot.WatchdogFault, "0"),
-                AxisErrors.Read(_map, "WatchdogTrips", _map.WatchdogTrips, snapshot.WatchdogTrips)));
+                AxisErrors.Read(_map, RegisterField.WatchdogFault, snapshot.WatchdogFault, "0"),
+                AxisErrors.Read(_map, RegisterField.WatchdogTrips, snapshot.WatchdogTrips)));
         _lastWatchdogFault = snapshot.WatchdogFault;
 
         Interlocked.Increment(ref _ticks);
@@ -234,10 +234,10 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
     {
         var watchdog = await _channel.ReadHoldingAsync(_unit, _map.LeaseOwner, RegisterMap.WatchdogBlockLength,
             "read lease and watchdog", lane, ct).ConfigureAwait(false);
-        CheckLength(watchdog, _map.LeaseOwner, RegisterMap.WatchdogBlockLength, "lease and watchdog block");
+        CheckLength(watchdog, RegisterSpace.Holding, _map.LeaseOwner, RegisterMap.WatchdogBlockLength, "lease and watchdog block");
         var status = await _channel.ReadHoldingAsync(_unit, _map.Status, RegisterMap.StatusLength,
             "read status block", lane, ct).ConfigureAwait(false);
-        CheckLength(status, _map.Status, RegisterMap.StatusLength, "status block");
+        CheckLength(status, RegisterSpace.Input, _map.Status, RegisterMap.StatusLength, "status block");
         return new PlcSnapshot(StatusBlock.Parse(status), watchdog[0], watchdog[1], watchdog[2], _time.GetTimestamp());
     }
 
@@ -245,12 +245,12 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
     /// A read answered with the wrong number of registers is the PLC answering outside the protocol
     /// (<c>ProtocolMismatch</c>, review #11), never an <see cref="ArgumentException"/> from the parser.
     /// </summary>
-    private void CheckLength(ushort[] words, ushort address, int expected, string block)
+    private void CheckLength(ushort[] words, RegisterSpace space, ushort address, int expected, string block)
     {
         if (words.Length == expected) return;
         throw AxisErrors.Create(_axis, MotionError.ProtocolMismatch,
             $"the PLC answered a read of the {block} with {words.Length} registers",
-            new RegisterRead(block, _map.DescribeRange(address, expected),
+            new RegisterRead(block, _map.DescribeRange(space, address, expected),
                 $"{words.Length} registers", expected.ToString(System.Globalization.CultureInfo.InvariantCulture)));
     }
 
@@ -290,7 +290,7 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
                 await _channel.WriteRegisterAsync(_unit, _map.LeaseOwner, AdvisoryLease.Unowned, "release lease",
                     ChannelPriority.Stop, CancellationToken.None).ConfigureAwait(false);
                 _logger?.LogInformation("{Axis}: lease released on {Host}:{Port} — LeaseOwner ({Register}) = 0",
-                    _axis, _channel.Host, _channel.Port, _map.Describe(_map.LeaseOwner));
+                    _axis, _channel.Host, _channel.Port, _map.Describe(RegisterField.LeaseOwner));
             }
             else
             {

@@ -48,7 +48,7 @@ public class LeaseAndHeartbeatTests
         var ex = await acquire.Invoking(a => a).Should().ThrowAsync<MotionException>();
         ex.Which.Error.Should().Be(MotionError.LeaseHeld);
         ex.Which.Message.Should().StartWith("carriage: LeaseHeld: ")
-            .And.Contain("Read LeaseOwner (C+9 = 9) = 3, expected 0 or 7");
+            .And.Contain("Read LeaseOwner (C+9 = holding 9) = 3, expected 0 or 7");
         (time.GetUtcNow() - started).Should().BeCloseTo(TimeSpan.FromSeconds(3), Interval);
         plc.Writes.Should().NotContain(w => w.Address == plc.Map.LeaseOwner, "a refused lease writes nothing");
         plc.Ops.Count(o => !o.IsWrite && o.Address == plc.Map.Heartbeat).Should().BeGreaterThan(20,

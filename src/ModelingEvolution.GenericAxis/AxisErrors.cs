@@ -2,9 +2,9 @@ using RocketWelder.SDK.Devices.Motion;
 
 namespace ModelingEvolution.GenericAxis;
 
-/// <summary>One register read quoted in an error message: <c>Name (S+14 = 114) = 2[, expected 1]</c>.</summary>
+/// <summary>One register read quoted in an error message: <c>Name (S+14 = input 14) = 2[, expected 1]</c>.</summary>
 /// <param name="Name">The protocol's register name.</param>
-/// <param name="Address">The address, e.g. <c>S+14 = 114</c> (<see cref="RegisterMap.Describe"/>).</param>
+/// <param name="Address">The address, e.g. <c>S+14 = input 14</c> (<see cref="RegisterMap.Describe"/>).</param>
 /// <param name="Value">The value read, as text (raw register value or a decoded one).</param>
 /// <param name="Expected">What the protocol expects, if one value or range is expected.</param>
 internal readonly record struct RegisterRead(string Name, string Address, string Value, string? Expected = null)
@@ -46,8 +46,8 @@ internal static class AxisErrors
             + $"read{(ackQualifier is null ? "" : " " + ackQualifier)}, State {state} read.",
             axis);
 
-    /// <summary>A register read by name, with the map's address text.</summary>
-    public static RegisterRead Read(RegisterMap map, string name, ushort address, object value, string? expected = null) =>
-        new(name, map.Describe(address), Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture)!,
+    /// <summary>A register read by field, with the map's address text (<c>S+14 = input 14</c>).</summary>
+    public static RegisterRead Read(RegisterMap map, RegisterField field, object value, string? expected = null) =>
+        new(field.Name, map.Describe(field), Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture)!,
             expected);
 }

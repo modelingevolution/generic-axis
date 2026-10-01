@@ -197,13 +197,13 @@ internal sealed class AxisEngine : IDisposable
     {
         mapVersion = s.MapVersion != RegisterMap.Version;
         if (mapVersion)
-            return [AxisErrors.Read(map, "MapVersion", map.MapVersion, s.MapVersion, RegisterMap.Version.ToString(Inv))];
+            return [AxisErrors.Read(map, RegisterField.MapVersion, s.MapVersion, RegisterMap.Version.ToString(Inv))];
         if (s.LimitsPublished && !s.LimitsValid)
             return
             [
-                AxisErrors.Read(map, "TravelMin", map.TravelMin, s.TravelMin),
-                AxisErrors.Read(map, "TravelMax", map.TravelMax, s.TravelMax),
-                AxisErrors.Read(map, "MaxVelocity", map.MaxVelocity, s.MaxVelocity,
+                AxisErrors.Read(map, RegisterField.TravelMin, s.TravelMin),
+                AxisErrors.Read(map, RegisterField.TravelMax, s.TravelMax),
+                AxisErrors.Read(map, RegisterField.MaxVelocity, s.MaxVelocity,
                     "all three 0, or TravelMin < TravelMax and MaxVelocity > 0"),
             ];
         return null;
@@ -216,21 +216,21 @@ internal sealed class AxisEngine : IDisposable
         var error = FaultError(s);
         if (!IsKnownState(s.State))
             return AxisErrors.Create(axis, error, "the PLC reports a State map version 1 does not define",
-                AxisErrors.Read(map, "State", map.State, s.State, "0–4, 6, 7"));
+                AxisErrors.Read(map, RegisterField.State, s.State, "0–4, 6, 7"));
 
-        var fault = AxisErrors.Read(map, "FaultCode", map.FaultCode, s.FaultCode);
+        var fault = AxisErrors.Read(map, RegisterField.FaultCode, s.FaultCode);
         return s.FaultCode switch
         {
             0 => AxisErrors.Create(axis, error, "the PLC reports ErrorStop without a fault code",
-                AxisErrors.Read(map, "State", map.State, s.State),
-                AxisErrors.Read(map, "FaultCode", map.FaultCode, s.FaultCode, "1–7 or ≥ 100")),
+                AxisErrors.Read(map, RegisterField.State, s.State),
+                AxisErrors.Read(map, RegisterField.FaultCode, s.FaultCode, "1–7 or ≥ 100")),
             1 => AxisErrors.Create(axis, error, "drive fault", fault),
             2 => AxisErrors.Create(axis, error, $"limit switch tripped ({LimitText(s.Flags)})", fault,
-                AxisErrors.Read(map, "Flags", map.Flags, $"0x{(ushort)s.Flags:X4}")),
+                AxisErrors.Read(map, RegisterField.Flags, $"0x{(ushort)s.Flags:X4}")),
             3 => AxisErrors.Create(axis, error, "following error", fault),
             4 => AxisErrors.Create(axis, error, "the PLC watchdog tripped; Reset, then re-command (no re-home)", fault,
-                AxisErrors.Read(map, "WatchdogFault", map.WatchdogFault, snapshot.WatchdogFault),
-                AxisErrors.Read(map, "WatchdogTrips", map.WatchdogTrips, snapshot.WatchdogTrips)),
+                AxisErrors.Read(map, RegisterField.WatchdogFault, snapshot.WatchdogFault),
+                AxisErrors.Read(map, RegisterField.WatchdogTrips, snapshot.WatchdogTrips)),
             5 => AxisErrors.Create(axis, error, "homing failed in the PLC sequence", fault),
             6 => AxisErrors.Create(axis, error, "the PLC lost its drive link", fault),
             7 => AxisErrors.Create(axis, error, "safety circuit (E-stop / guard)", fault),
@@ -266,7 +266,7 @@ internal sealed class AxisEngine : IDisposable
         _logger?.LogInformation(
             "{Axis}: attach — Command ({Command}) = 0x{Word:X4}, CommandSeq ({Seq}) = {Ack} (continuing from CommandAck); "
             + "PLC state {State}",
-            Name, _map.Describe(_map.Command), word, _map.Describe(_map.CommandSeq), s.CommandAck, state);
+            Name, _map.Describe(RegisterField.Command), word, _map.Describe(RegisterField.CommandSeq), s.CommandAck, state);
 
         AxisStatus status;
         Action? limitLog;
@@ -355,7 +355,7 @@ internal sealed class AxisEngine : IDisposable
             if (leaseLost)
                 _overlay = new Overlay(MotionError.LeaseHeld, AxisErrors.Message(Name, MotionError.LeaseHeld,
                     "another commander took the axis; commanding stopped. Reconnect to take it back",
-                    AxisErrors.Read(_map, "LeaseOwner", _map.LeaseOwner, snapshot.LeaseOwner, _ownerId.ToString(Inv))));
+                    AxisErrors.Read(_map, RegisterField.LeaseOwner, snapshot.LeaseOwner, _ownerId.ToString(Inv))));
 
             // Review #7: a PLC that answers outside the protocol mid-run is a Protocol error, latched like a link
             // loss — never a quiet "no limit source". It supersedes CommunicationLost (the link answers again, but
@@ -382,7 +382,7 @@ internal sealed class AxisEngine : IDisposable
         if (leaseLost)
             _logger?.LogError("{Message}", AxisErrors.Message(Name, MotionError.LeaseHeld,
                 "LEASE LOST: another commander took the axis; commanding stopped, the axis shows ErrorStop / LeaseHeld "
-                + "until reconnect", AxisErrors.Read(_map, "LeaseOwner", _map.LeaseOwner, snapshot.LeaseOwner,
+                + "until reconnect", AxisErrors.Read(_map, RegisterField.LeaseOwner, snapshot.LeaseOwner,
                     _ownerId.ToString(Inv))));
         limitLog?.Invoke();
         if (mismatch is not null)
@@ -444,7 +444,7 @@ internal sealed class AxisEngine : IDisposable
         if (oldState == newState) return;
         _logger?.LogInformation(
             "{Axis}: state {Old} → {New} (State ({Register}) = {Raw}, FaultCode ({FaultRegister}) = {Fault}, Flags 0x{Flags:X4})",
-            Name, oldState, newState, _map.Describe(_map.State), raw.State, _map.Describe(_map.FaultCode),
+            Name, oldState, newState, _map.Describe(RegisterField.State), raw.State, _map.Describe(RegisterField.FaultCode),
             raw.FaultCode, (ushort)raw.Flags);
     }
 
@@ -748,7 +748,7 @@ internal sealed class AxisEngine : IDisposable
                     await _channel.WriteRegisterAsync(_unit, _map.WatchdogFault, 0, "clear watchdog fault",
                         ChannelPriority.Move, token).ConfigureAwait(false);
                     _logger?.LogInformation("{Axis}: ResetAsync — WatchdogFault ({Register}) = 0", Name,
-                        _map.Describe(_map.WatchdogFault));
+                        _map.Describe(RegisterField.WatchdogFault));
                 }
 
                 if (MapState(snapshot.Status.State) != AxisState.ErrorStop) return;
@@ -771,10 +771,10 @@ internal sealed class AxisEngine : IDisposable
         var s = _snapshot?.Status ?? default;
         return string.Join(", ", new[]
         {
-            AxisErrors.Read(_map, "MapVersion", _map.MapVersion, s.MapVersion),
-            AxisErrors.Read(_map, "TravelMin", _map.TravelMin, s.TravelMin),
-            AxisErrors.Read(_map, "TravelMax", _map.TravelMax, s.TravelMax),
-            AxisErrors.Read(_map, "MaxVelocity", _map.MaxVelocity, s.MaxVelocity),
+            AxisErrors.Read(_map, RegisterField.MapVersion, s.MapVersion),
+            AxisErrors.Read(_map, RegisterField.TravelMin, s.TravelMin),
+            AxisErrors.Read(_map, RegisterField.TravelMax, s.TravelMax),
+            AxisErrors.Read(_map, RegisterField.MaxVelocity, s.MaxVelocity),
         });
     }
 
@@ -809,9 +809,9 @@ internal sealed class AxisEngine : IDisposable
         if (!arrived.Status.InPosition)
             throw Error(MotionError.MotionFailed,
                 $"{verb} to {Fmt(Words.FromRaw(rawTarget))} {_unitSymbol} stopped outside the in-position window",
-                AxisErrors.Read(_map, "ActualPosition", _map.ActualPosition, arrived.Status.ActualPosition,
+                AxisErrors.Read(_map, RegisterField.ActualPosition, arrived.Status.ActualPosition,
                     rawTarget.ToString(Inv)),
-                AxisErrors.Read(_map, "Flags", _map.Flags, $"0x{(ushort)arrived.Status.Flags:X4}", "InPosition set"));
+                AxisErrors.Read(_map, RegisterField.Flags, $"0x{(ushort)arrived.Status.Flags:X4}", "InPosition set"));
     }
 
     // ═══════════════════════ guards ═══════════════════════
@@ -821,7 +821,7 @@ internal sealed class AxisEngine : IDisposable
         if (state != AxisState.Standstill) throw RefuseState(verb, state);
         if (!s.Status.Homed)
             throw Error(MotionError.NotHomed, $"{verb} needs a homed axis; home the axis first",
-                AxisErrors.Read(_map, "Flags", _map.Flags, $"0x{(ushort)s.Status.Flags:X4}", "Homed set"));
+                AxisErrors.Read(_map, RegisterField.Flags, $"0x{(ushort)s.Status.Flags:X4}", "Homed set"));
         GuardReadingRange(s);
         GuardLimitSource();
         reading = Words.FromRaw(s.Status.ActualPosition);
@@ -840,7 +840,7 @@ internal sealed class AxisEngine : IDisposable
                 $"position {Fmt(reading)} {_unitSymbol} is outside the reading range "
                 + $"{(min is { } a ? Fmt(a) : "-∞")}..{(max is { } b ? Fmt(b) : "+∞")} {_unitSymbol}; the reading cannot "
                 + "be trusted, home the axis first",
-                AxisErrors.Read(_map, "ActualPosition", _map.ActualPosition, s.Status.ActualPosition));
+                AxisErrors.Read(_map, RegisterField.ActualPosition, s.Status.ActualPosition));
     }
 
     /// <summary>G6: a limit source must exist.</summary>
@@ -1003,8 +1003,8 @@ internal sealed class AxisEngine : IDisposable
             _logger?.LogInformation(
                 "{Axis}: {Verb} — TargetPosition ({Target}) = {TargetRaw}, Velocity ({Velocity}) = {VelocityRaw}, "
                 + "Acceleration ({Acceleration}) = {AccelerationRaw} (raw, 0.001 unit)",
-                Name, verb, _map.Describe(_map.TargetPosition), parameters[0], _map.Describe(_map.Velocity), parameters[1],
-                _map.Describe(_map.Acceleration), parameters[2]);
+                Name, verb, _map.Describe(RegisterField.TargetPosition), parameters[0], _map.Describe(RegisterField.Velocity), parameters[1],
+                _map.Describe(RegisterField.Acceleration), parameters[2]);
         }
 
         ushort seq, word, level;
@@ -1021,7 +1021,7 @@ internal sealed class AxisEngine : IDisposable
 
         await _channel.WriteRegistersAsync(_unit, _map.Command, [word, seq], verb, lane, ct).ConfigureAwait(false);
         _logger?.LogInformation("{Axis}: {Verb} — Command ({Command}) = 0x{Word:X4}, CommandSeq ({SeqRegister}) = {Seq}",
-            Name, verb, _map.Describe(_map.Command), word, _map.Describe(_map.CommandSeq), seq);
+            Name, verb, _map.Describe(RegisterField.Command), word, _map.Describe(RegisterField.CommandSeq), seq);
 
         long ackTick;
         try
@@ -1055,7 +1055,7 @@ internal sealed class AxisEngine : IDisposable
             // The PLC did acknowledge; no tick had shown it yet. Later waits start from the next tick.
             _logger?.LogInformation(
                 "{Axis}: {Verb} — CommandAck ({Register}) = {Seq} seen by the read at the {Deadline} ms ack deadline",
-                Name, verb, _map.Describe(_map.CommandAck), seq, RegisterMap.AckTimeout.TotalMilliseconds);
+                Name, verb, _map.Describe(RegisterField.CommandAck), seq, RegisterMap.AckTimeout.TotalMilliseconds);
             lock (_sync) ackTick = _tickNo + 1;
         }
 
@@ -1072,7 +1072,7 @@ internal sealed class AxisEngine : IDisposable
         if (words.Length != RegisterMap.StatusLength)
             throw AxisErrors.Create(Name, MotionError.ProtocolMismatch,
                 $"the PLC answered a read of the status block with {words.Length} registers",
-                new RegisterRead("status block", _map.DescribeRange(_map.Status, RegisterMap.StatusLength),
+                new RegisterRead("status block", _map.DescribeRange(RegisterSpace.Input, _map.Status, RegisterMap.StatusLength),
                     $"{words.Length} registers", RegisterMap.StatusLength.ToString(Inv)));
         return StatusBlock.Parse(words);
     }
@@ -1085,7 +1085,7 @@ internal sealed class AxisEngine : IDisposable
             await _channel.WriteRegistersAsync(_unit, _map.Command, [level, seq], $"{verb} clear edge", lane, ct).ConfigureAwait(false);
             _logger?.LogInformation(
                 "{Axis}: {Verb} — clear edge: Command ({Command}) = 0x{Word:X4}, CommandSeq ({SeqRegister}) = {Seq}",
-                Name, verb, _map.Describe(_map.Command), level, _map.Describe(_map.CommandSeq), seq);
+                Name, verb, _map.Describe(RegisterField.Command), level, _map.Describe(RegisterField.CommandSeq), seq);
         }
         catch (MotionException ex) when (bestEffort)
         {
@@ -1173,18 +1173,18 @@ internal sealed class AxisEngine : IDisposable
         AxisErrors.Create(Name, error, what, reads);
 
     private RegisterRead StateRead(string? expected = null) =>
-        AxisErrors.Read(_map, "State", _map.State, LastBlock().State, expected);
+        AxisErrors.Read(_map, RegisterField.State, LastBlock().State, expected);
 
     private RegisterRead FlagsRead(string? expected = null) =>
-        AxisErrors.Read(_map, "Flags", _map.Flags, $"0x{(ushort)LastBlock().Flags:X4}", expected);
+        AxisErrors.Read(_map, RegisterField.Flags, $"0x{(ushort)LastBlock().Flags:X4}", expected);
 
-    private RegisterRead FaultRead() => AxisErrors.Read(_map, "FaultCode", _map.FaultCode, LastBlock().FaultCode);
+    private RegisterRead FaultRead() => AxisErrors.Read(_map, RegisterField.FaultCode, LastBlock().FaultCode);
 
     private RegisterRead VelocityRead() =>
-        AxisErrors.Read(_map, "ActualVelocity", _map.ActualVelocity, LastBlock().ActualVelocity, "0");
+        AxisErrors.Read(_map, RegisterField.ActualVelocity, LastBlock().ActualVelocity, "0");
 
     private RegisterRead PositionRead(int expectedRaw) =>
-        AxisErrors.Read(_map, "ActualPosition", _map.ActualPosition, LastBlock().ActualPosition, expectedRaw.ToString(Inv));
+        AxisErrors.Read(_map, RegisterField.ActualPosition, LastBlock().ActualPosition, expectedRaw.ToString(Inv));
 
     /// <summary>The three limit registers as last read (a configured source still shows what the PLC publishes).</summary>
     private RegisterRead[] LimitReads()
@@ -1192,9 +1192,9 @@ internal sealed class AxisEngine : IDisposable
         var s = _snapshot?.Status ?? default;
         return
         [
-            AxisErrors.Read(_map, "TravelMin", _map.TravelMin, s.TravelMin),
-            AxisErrors.Read(_map, "TravelMax", _map.TravelMax, s.TravelMax),
-            AxisErrors.Read(_map, "MaxVelocity", _map.MaxVelocity, s.MaxVelocity),
+            AxisErrors.Read(_map, RegisterField.TravelMin, s.TravelMin),
+            AxisErrors.Read(_map, RegisterField.TravelMax, s.TravelMax),
+            AxisErrors.Read(_map, RegisterField.MaxVelocity, s.MaxVelocity),
         ];
     }
 

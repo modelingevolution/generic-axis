@@ -37,7 +37,7 @@ public class StateAndLimitTests
         rig.Axis.State.Should().Be(AxisState.ErrorStop);
         rig.Axis.Status.Error.Should().Be(MotionError.ProtocolMismatch);
         rig.LogsAt(LogLevel.Error).Should().Contain(r => r.Message.StartsWith("carriage: ProtocolMismatch: ")
-            && r.Message.Contains($"Read State (S+0 = 100) = {raw}, expected 0–4, 6, 7."));
+            && r.Message.Contains($"Read State (S+0 = input 100) = {raw}, expected 0–4, 6, 7."));
     }
 
     [Theory(DisplayName = "GA-U-17 Fault codes map by remedy")]
@@ -56,7 +56,7 @@ public class StateAndLimitTests
         var ex = AxisEngine.FaultException("carriage", RegisterMap.Default, snapshot);
         ex.Error.Should().Be(expected);
         MotionErrorClasses.Of(ex.Error).Should().Be(ErrorClass.Machine);
-        ex.Message.Should().StartWith($"carriage: {expected}: ").And.Contain($"Read FaultCode (S+6 = 106) = {code}");
+        ex.Message.Should().StartWith($"carriage: {expected}: ").And.Contain($"Read FaultCode (S+6 = input 106) = {code}");
 
         await using var rig = await new DriverRig().ConnectAsync();
         rig.Plc.State = 7;
@@ -72,7 +72,7 @@ public class StateAndLimitTests
             new PlcSnapshot(new StatusBlock(7, StatusFlags.None, 0, 0, 0, 0, 0, 0, 0, 1), 1, 0, 0, 0));
         ex.Error.Should().Be(MotionError.ProtocolMismatch);
         MotionErrorClasses.Of(ex.Error).Should().Be(ErrorClass.Protocol);
-        ex.Message.Should().Contain("Read State (S+0 = 100) = 7, FaultCode (S+6 = 106) = 0, expected 1–7 or ≥ 100.");
+        ex.Message.Should().Contain("Read State (S+0 = input 100) = 7, FaultCode (S+6 = input 106) = 0, expected 1–7 or ≥ 100.");
 
         await using var rig = await new DriverRig().ConnectAsync();
         rig.Plc.State = 7;
@@ -86,7 +86,7 @@ public class StateAndLimitTests
         var ex = AxisEngine.FaultException("carriage", RegisterMap.Default,
             new PlcSnapshot(new StatusBlock(7, StatusFlags.Homed, 0, 0, 4, 0, 0, 0, 0, 1), 1, 1, 3, 0));
         ex.Message.Should().EndWith(
-            "Read FaultCode (S+6 = 106) = 4, WatchdogFault (C+10 = 10) = 1, WatchdogTrips (C+11 = 11) = 3.");
+            "Read FaultCode (S+6 = input 106) = 4, WatchdogFault (C+10 = holding 10) = 1, WatchdogTrips (C+11 = holding 11) = 3.");
     }
 
     [Fact(DisplayName = "GA-U-17 no error outside ErrorStop")]
@@ -205,8 +205,8 @@ public class StateAndLimitTests
         var ex = (await DriverRig.Bounded(connect).Should().ThrowAsync<MotionException>()).Which;
         ex.Error.Should().Be(MotionError.ProtocolMismatch);
         ex.Message.Should().StartWith("carriage: ProtocolMismatch: attach refused")
-            .And.Contain($"TravelMin (S+8 = 108) = {min}").And.Contain($"TravelMax (S+10 = 110) = {max}")
-            .And.Contain($"MaxVelocity (S+12 = 112) = {maxVelocity}");
+            .And.Contain($"TravelMin (S+8 = input 108) = {min}").And.Contain($"TravelMax (S+10 = input 110) = {max}")
+            .And.Contain($"MaxVelocity (S+12 = input 112) = {maxVelocity}");
         rig.LogsAt(LogLevel.Error).Should().Contain(r => r.Message == ex.Message);
         rig.Plc.Ops.Should().NotBeEmpty("anchor: the status block was read");
         rig.Plc.Writes.Should().BeEmpty();
@@ -224,7 +224,7 @@ public class StateAndLimitTests
 
         ex.Error.Should().Be(MotionError.OutOfRange);
         ex.Message.Should().StartWith("carriage: OutOfRange: attach refused: configured Read")
-            .And.Contain(readMin is null ? "Read TravelMax (S+10 = 110) = 10000000." : "Read TravelMin (S+8 = 108) = 0.");
+            .And.Contain(readMin is null ? "Read TravelMax (S+10 = input 110) = 10000000." : "Read TravelMin (S+8 = input 108) = 0.");
         rig.LogsAt(LogLevel.Error).Should().Contain(r => r.Message == ex.Message);
         rig.Plc.Writes.Should().BeEmpty();
     }
