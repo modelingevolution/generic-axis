@@ -118,6 +118,7 @@
         new(nameof(SimFaults.WatchdogDisabled), f => f.WatchdogDisabled, (f, v) => f with { WatchdogDisabled = v }),
         new(nameof(SimFaults.SwappedWordOrder), f => f.SwappedWordOrder, (f, v) => f with { SwappedWordOrder = v }),
         new(nameof(SimFaults.Silent), f => f.Silent, (f, v) => f with { Silent = v }),
+        new(nameof(SimFaults.RefuseInputRegisters), f => f.RefuseInputRegisters, (f, v) => f with { RefuseInputRegisters = v }),
     ];
 
     private static double HardMin(SimulatedAxisOptions o) => o.TravelMin - 2 * o.LimitSwitchMargin;

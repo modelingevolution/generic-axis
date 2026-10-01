@@ -50,6 +50,11 @@ public sealed class SimulatorHost : IDisposable
 
         Registers = new PlcRegisterFile(_server, options.UnitId);
         _plc = new AxisPlc(options, Registers, loggerFactory?.CreateLogger<AxisPlc>());
+        // SimFaults.RefuseInputRegisters: FC04 answered with exception 02, as a PLC without the input mapping does.
+        _server.RequestValidator = (_, functionCode, _, _) =>
+            functionCode == ModbusFunctionCode.ReadInputRegisters && _plc.Faults.RefuseInputRegisters
+                ? ModbusExceptionCode.IllegalDataAddress
+                : ModbusExceptionCode.OK;
         _provider = new GatedTcpClientProvider(new IPEndPoint(bindAddress ?? IPAddress.Any, options.Port),
             (ILogger?)loggerFactory?.CreateLogger<GatedTcpClientProvider>() ?? NullLogger.Instance);
         _snapshot = _plc.Snapshot(false);

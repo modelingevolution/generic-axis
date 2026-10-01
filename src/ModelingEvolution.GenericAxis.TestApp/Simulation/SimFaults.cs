@@ -49,6 +49,12 @@ public sealed record SimFaults
     public bool Silent { get; init; }
 
     /// <summary>
+    /// A PLC that does not serve the status block as input registers: every FC04 is answered with Modbus exception 02
+    /// (illegal data address) — the wrong-mapping case of ADR-37, a Protocol error. Holding registers still answer.
+    /// </summary>
+    public bool RefuseInputRegisters { get; init; }
+
+    /// <summary>
     /// A slow drive: a move is accepted and acknowledged at once (State 3 or 4), but the axis starts moving only this
     /// long afterwards. Zero (the default) means no delay. Makes a check exceed its motion budget in tests.
     /// </summary>
@@ -69,6 +75,7 @@ public sealed record SimFaults
         if (WatchdogDisabled) yield return nameof(WatchdogDisabled);
         if (SwappedWordOrder) yield return nameof(SwappedWordOrder);
         if (Silent) yield return nameof(Silent);
+        if (RefuseInputRegisters) yield return nameof(RefuseInputRegisters);
         if (MotionStartDelay > TimeSpan.Zero) yield return $"{nameof(MotionStartDelay)} {MotionStartDelay.TotalSeconds:0.#} s";
     }
 
