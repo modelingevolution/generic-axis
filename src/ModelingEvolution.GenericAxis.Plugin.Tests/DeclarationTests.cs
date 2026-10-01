@@ -105,6 +105,12 @@ public sealed class DeclarationTests
         carriage.DisplayName.Should().Contain("(mm)").And.Contain("only if the PLC publishes none");
         turntable.DisplayName.Should().Contain("(°)");
         carriage.Group.Should().Be("Carriage — Machine limits");
+
+        var schemas = PluginHarness.Track.Axes.Single().PropertySchemas;
+        schemas.Single(s => s.Name == PluginHarness.CarriageKey("CommandBase")).DisplayName
+            .Should().Be("Command block base (holding registers)");
+        schemas.Single(s => s.Name == PluginHarness.CarriageKey("StatusBase")).DisplayName
+            .Should().Be("Status block base (input registers)", "ADR-36: the status block is input registers");
         turntable.Group.Should().Be("Turntable — Machine limits");
     }
 }

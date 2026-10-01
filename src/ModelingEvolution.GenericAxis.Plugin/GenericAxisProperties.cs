@@ -67,12 +67,12 @@ internal static class GenericAxisProperties
             (o, v) => o with { UnitId = ParseInt(v) }),
 
         new("CommandBase", nameof(GenericAxisOptions.Map),
-            _ => "Command block base register", "int", GroupConnection, Required: false,
+            _ => "Command block base (holding registers)", "int", GroupConnection, Required: false,
             o => Int(o.Map.CommandBase),
             (o, v) => o with { Map = o.Map with { CommandBase = ParseInt(v) } }),
 
         new("StatusBase", nameof(GenericAxisOptions.Map),
-            _ => "Status block base register", "int", GroupConnection, Required: false,
+            _ => "Status block base (input registers)", "int", GroupConnection, Required: false,
             o => Int(o.Map.StatusBase),
             (o, v) => o with { Map = o.Map with { StatusBase = ParseInt(v) } }),
 
