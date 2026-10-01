@@ -65,7 +65,7 @@ public static class CheckMode
         output ??= Console.Out;
         error ??= Console.Error;
         // The context owns and disposes the channel.
-        await using var ctx = new CheckContext(options, new ModbusChannel(options.Host, options.Port, loggerFactory.CreateLogger<ModbusChannel>()), loggerFactory.CreateLogger("GenericAxis.Dump"));
+        await using var ctx = new CheckContext(options, new ModbusChannel(options.Host, options.Port, loggerFactory.CreateLogger<ModbusChannel>(), map: options.Map), loggerFactory.CreateLogger("GenericAxis.Dump"), "dump");
         // 5 Hz from the start of one dump to the start of the next, not 200 ms after each read (review #33: 4.3 Hz).
         using var period = new PeriodicTimer(WatchPeriod);
         do
@@ -73,7 +73,7 @@ public static class CheckMode
             try
             {
                 await ctx.ReadAsync(ctx.Map.Command, RegisterMap.CommandLength, ct);
-                await ctx.ReadAsync(ctx.Map.Status, RegisterMap.StatusLength, ct);
+                await ctx.ReadInputAsync(ctx.Map.Status, RegisterMap.StatusLength, ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -81,7 +81,7 @@ public static class CheckMode
             }
             catch (RocketWelder.SDK.Devices.Motion.MotionException ex)
             {
-                await error.WriteLineAsync($"dump: {CheckerText.Describe(ex)}");
+                await error.WriteLineAsync(CheckerText.Describe(ex));
                 return ConformanceExitCodes.Fail;
             }
 

@@ -9,14 +9,14 @@ public sealed record RegisterEndpoint(string Host, int Port, byte Unit, int Comm
 {
     internal RegisterMap Map => new(CommandBase, StatusBase);
 
-    public override string ToString() => $"{Host}:{Port} unit {Unit} (C={CommandBase}, S={StatusBase})";
+    public override string ToString() => $"{Host}:{Port} unit {Unit} (C = holding {CommandBase}, S = input {StatusBase})";
 }
 
 /// <summary>One decoded read of both blocks, or the error of the last attempt with the last rows read.</summary>
 public sealed record RegisterReading(DateTimeOffset At, IReadOnlyList<RegisterRow> Rows, string? Error);
 
 /// <summary>
-/// Reads C+0…C+11 and S+0…S+14 of any PLC at 5 Hz through the driver's <see cref="ModbusChannel"/> and decodes them
+/// Reads holding C+0…C+11 (FC03) and input S+0…S+14 (FC04) of any PLC at 5 Hz through the driver's <see cref="ModbusChannel"/> and decodes them
 /// with <see cref="RegisterDump"/>, the decoder behind <c>--dump</c> (design § Test app, <c>/registers</c>; GA-I-42).
 /// Read-only: it takes no lease, never beats and writes nothing. The latest reading is an immutable record swapped
 /// atomically, so the page renders it without a lock.
@@ -35,7 +35,7 @@ public sealed class RemoteRegisterReader : IAsyncDisposable
     public RemoteRegisterReader(RegisterEndpoint endpoint, ILoggerFactory loggerFactory)
     {
         Endpoint = endpoint;
-        _channel = new ModbusChannel(endpoint.Host, endpoint.Port, loggerFactory.CreateLogger<ModbusChannel>());
+        _channel = new ModbusChannel(endpoint.Host, endpoint.Port, loggerFactory.CreateLogger<ModbusChannel>(), map: endpoint.Map);
         _loop = Task.Run(RunAsync);
     }
 
@@ -57,9 +57,9 @@ public sealed class RemoteRegisterReader : IAsyncDisposable
             try
             {
                 var command = await _channel.ReadHoldingAsync(Endpoint.Unit, map.Command, RegisterMap.CommandLength,
-                    "read C+0…C+11 (/registers)", ChannelPriority.Move, ct);
-                var status = await _channel.ReadHoldingAsync(Endpoint.Unit, map.Status, RegisterMap.StatusLength,
-                    "read S+0…S+14 (/registers)", ChannelPriority.Move, ct);
+                    "/registers", ChannelPriority.Move, ct);
+                var status = await _channel.ReadInputAsync(Endpoint.Unit, map.Status, RegisterMap.StatusLength,
+                    "/registers", ChannelPriority.Move, ct);
                 _latest = new RegisterReading(DateTimeOffset.UtcNow, RegisterDump.Decode(map, command, status), null);
                 Interlocked.Increment(ref _reads);
             }

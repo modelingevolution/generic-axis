@@ -1,7 +1,7 @@
 namespace ModelingEvolution.GenericAxis.TestApp.Conformance;
 
 /// <summary>
-/// Renders a <see cref="LastRead"/> with the driver's <see cref="RegisterDump"/> (protocol § Errors and debugging,
+/// Renders a <see cref="LastRead"/> as two tables with the driver's <see cref="RegisterDump"/> (protocol § Errors and debugging,
 /// rule 4) — one decoder for the driver, <c>--dump</c> and the report. A register never read shows as <c>—</c>.
 /// </summary>
 public static class LastReadDump
@@ -24,6 +24,14 @@ public static class LastReadDump
             var never = Enumerable.Range(offset, count).Any(o => source[o] is null);
             return never ? row with { RawHex = "—", Value = "never read" } : row;
         }).ToList();
-        return RegisterDump.Format(rows);
+        return Tables(rows);
     }
+
+    /// <summary>The dump as two tables (rule 4, ADR-36): the command block in holding registers, then the status block in
+    /// input registers. Rows are split by the decoder's <see cref="RegisterRow.Space"/>.</summary>
+    public static string Tables(IReadOnlyList<RegisterRow> rows) =>
+        "Command block — holding registers (FC03)\n"
+        + RegisterDump.Format([.. rows.Where(r => r.Space == RegisterSpace.Holding)])
+        + "\nStatus block — input registers (FC04)\n"
+        + RegisterDump.Format([.. rows.Where(r => r.Space == RegisterSpace.Input)]);
 }

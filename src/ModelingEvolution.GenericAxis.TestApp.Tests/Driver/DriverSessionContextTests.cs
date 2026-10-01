@@ -10,6 +10,18 @@ namespace ModelingEvolution.GenericAxis.TestApp.Tests.Driver;
 /// </summary>
 public sealed class DriverSessionContextTests
 {
+    /// <summary>ADR-36: the form and the in-app simulator both default to holding 0 / input 0.</summary>
+    [Fact]
+    public void TheDriverFormDefaultsToBothBasesZero()
+    {
+        new DriverForm().CommandBase.Should().Be(0);
+        new DriverForm().StatusBase.Should().Be(0, "protocol § Transport: the status block defaults to input 0");
+        using var host = new SimulatorHost(new SimulatedAxisOptions { Port = 0 });
+        var session = new DriverSession(host, NullLoggerFactory.Instance);
+        session.Form.CommandBase.Should().Be(0);
+        session.Form.StatusBase.Should().Be(0);
+    }
+
     [Fact]
     public async Task GA_U_99_AVerbRunsOffTheCallersContextAndReportsBackOnIt()
     {

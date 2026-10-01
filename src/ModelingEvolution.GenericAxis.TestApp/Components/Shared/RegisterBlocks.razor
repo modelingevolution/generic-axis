@@ -1,22 +1,22 @@
 @* Both blocks from RegisterDump.Decode (command rows first, then status rows), side by side. *@
 <MudGrid>
     <MudItem xs="12" lg="6">
-        <MudText Typo="Typo.subtitle1" Class="mb-2">Command block (driver → PLC)</MudText>
+        <MudText Typo="Typo.subtitle1" Class="mb-2">Command block — holding registers, FC03 (driver → PLC)</MudText>
         <RegisterTable Rows="@Command"/>
     </MudItem>
     <MudItem xs="12" lg="6">
-        <MudText Typo="Typo.subtitle1" Class="mb-2">Status block (PLC → driver)</MudText>
+        <MudText Typo="Typo.subtitle1" Class="mb-2">Status block — input registers, FC04 (PLC → driver)</MudText>
         <RegisterTable Rows="@Status"/>
     </MudItem>
 </MudGrid>
 
 @code {
-    /// <summary>The rows of <see cref="RegisterDump.Decode"/>: addresses starting "C+" are the command block.</summary>
+    /// <summary>The rows of <see cref="RegisterDump.Decode"/>: split by RegisterRow.Space (holding = command block, input = status block).</summary>
     [Parameter, EditorRequired] public IReadOnlyList<RegisterRow> Rows { get; set; } = [];
 
-    private IReadOnlyList<SimRegisterRow> Command => Select("C+");
-    private IReadOnlyList<SimRegisterRow> Status => Select("S+");
+    private IReadOnlyList<SimRegisterRow> Command => Select(RegisterSpace.Holding);
+    private IReadOnlyList<SimRegisterRow> Status => Select(RegisterSpace.Input);
 
-    private IReadOnlyList<SimRegisterRow> Select(string prefix) =>
-        [.. Rows.Where(r => r.Address.StartsWith(prefix, StringComparison.Ordinal)).Select(r => new SimRegisterRow(r.Address, r.Name, r.RawHex, r.Value))];
+    private IReadOnlyList<SimRegisterRow> Select(RegisterSpace space) =>
+        [.. Rows.Where(r => r.Space == space).Select(r => new SimRegisterRow(r.Address, r.Name, r.RawHex, r.Value))];
 }

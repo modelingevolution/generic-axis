@@ -52,7 +52,7 @@
 {
     var s = Host.Snapshot();
     <MudText Typo="Typo.body2" Class="mb-2">
-        In-app simulator, unit @o.UnitId, C=@o.CommandBase, S=@o.StatusBase@(s.Faults.SwappedWordOrder ? " — injecting SwappedWordOrder, so 32-bit values decode wrong on purpose" : "").
+        In-app simulator, unit @o.UnitId, C = holding @o.CommandBase, S = input @o.StatusBase@(s.Faults.SwappedWordOrder ? " — injecting SwappedWordOrder, so 32-bit values decode wrong on purpose" : "").
     </MudText>
     <RegisterBlocks Rows="@RegisterDump.Decode(new RegisterMap(o.CommandBase, o.StatusBase), s.CommandBlock.AsSpan(), s.StatusBlock.AsSpan())"/>
 }

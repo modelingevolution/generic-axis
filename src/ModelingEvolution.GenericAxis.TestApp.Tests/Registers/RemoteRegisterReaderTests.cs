@@ -26,7 +26,7 @@ public sealed class RemoteRegisterReaderTests
         reads.Should().BeGreaterThanOrEqualTo((long)(elapsed / RemoteRegisterReader.Period) - 1, "it reads at 5 Hz");
         reading!.Error.Should().BeNull();
         var rows = reading.Rows.ToDictionary(r => r.Name);
-        rows["TravelMax"].Address.Should().Be("S+10…S+11 = 310…311", "the second simulator's bases are used");
+        rows["TravelMax"].Address.Should().Be("S+10…S+11 = input 310…311", "the second simulator's bases are used");
         rows["TravelMax"].Value.Should().StartWith("8000.000", "the second simulator's limits, not the in-app one's 10000");
         rows["MapVersion"].Value.Should().Be("1");
 
@@ -39,11 +39,11 @@ public sealed class RemoteRegisterReaderTests
     [Fact]
     public async Task GA_I_42_AClosedPort_ShowsTheTransportErrorInTheProtocolShape()
     {
-        await using var reader = new RemoteRegisterReader(new RegisterEndpoint("127.0.0.1", 1, 1, 0, 100), NullLoggerFactory.Instance);
+        await using var reader = new RemoteRegisterReader(new RegisterEndpoint("127.0.0.1", 1, 1, 0, 0), NullLoggerFactory.Instance);
         var sw = Stopwatch.StartNew();
         while (reader.Latest is null && sw.Elapsed < TimeSpan.FromSeconds(10)) await Task.Delay(20);
 
-        reader.Latest!.Error.Should().StartWith("Transport/CommunicationLost: read C+0…C+11 (/registers)")
+        reader.Latest!.Error.Should().StartWith("Transport/CommunicationLost: /registers (FC03 read C+0…C+11 = holding 0…11)")
             .And.Contain("on 127.0.0.1:1 unit 1 failed twice");
         reader.Reads.Should().Be(0);
     }

@@ -17,7 +17,7 @@ public sealed class ReportWriterTests
         [
             new("CHK-01", "Transport and unit", "Transport", CheckResultKind.Pass, 7, "connected", [KeyValuePair.Create("connectMs", (long?)3)]),
             new("CHK-02", "Map version", "Status block", CheckResultKind.Fail, 2,
-                "Protocol/ProtocolMismatch: wrong map version. Read MapVersion (S+14 = 114) = 2, expected 1.", [KeyValuePair.Create("mapVersion", (long?)2), KeyValuePair.Create("retries", (long?)0)],
+                "Protocol/ProtocolMismatch: wrong map version. Read MapVersion (S+14 = input 14) = 2, expected 1.", [KeyValuePair.Create("mapVersion", (long?)2), KeyValuePair.Create("retries", (long?)0)],
                 ErrorClass.Protocol,
                 new LastRead([1, 7, null, null, 0, 0, 0, 0, 12, 65535, 0, 2], [0, 32, 0, 0, 0, 0, 0, 6, 0, 0, 38528, 152, 41248, 7, 2])),
             new("CHK-12", "Home", "Command semantics: Home", CheckResultKind.Skipped, 0, "needs --allow-motion", []),
@@ -83,12 +83,14 @@ public sealed class ReportWriterTests
         failures.Should().BeGreaterThan(Array.IndexOf(lines, "| Id | Title | Result | Observed | Protocol section |"), "the Failures part follows the table");
         cleanup.Should().BeGreaterThan(failures, "the cleanup list comes last");
         var part = lines[failures..cleanup];
-        part.Should().Contain("CHK-02: Protocol/ProtocolMismatch: wrong map version. Read MapVersion (S+14 = 114) = 2, expected 1.");
+        part.Should().Contain("CHK-02: Protocol/ProtocolMismatch: wrong map version. Read MapVersion (S+14 = input 14) = 2, expected 1.");
         // The driver's RegisterDump renders the dump; a register never read shows as "—".
-        part.Should().Contain(l => System.Text.RegularExpressions.Regex.IsMatch(l, @"^S\+14 = 114\s+MapVersion\s+0x0002\s+2$"));
-        part.Should().Contain(l => System.Text.RegularExpressions.Regex.IsMatch(l, @"^S\+0 = 100\s+State\s+0x0000\s+Disabled"));
-        part.Should().Contain(l => System.Text.RegularExpressions.Regex.IsMatch(l, @"^C\+0 = 0\s+Command\s+0x0001\s+.*Enable"));
-        part.Should().Contain(l => System.Text.RegularExpressions.Regex.IsMatch(l, @"^C\+2…C\+3 = 2…3\s+TargetPosition\s+—\s+never read$"));
+        // Two tables (ADR-36): the command block from holding, then the status block from input.
+        Array.IndexOf(part, "Command block — holding registers (FC03)").Should().BeGreaterThan(-1).And.BeLessThan(Array.IndexOf(part, "Status block — input registers (FC04)"));
+        part.Should().Contain(l => System.Text.RegularExpressions.Regex.IsMatch(l, @"^S\+14 = input 14\s+MapVersion\s+0x0002\s+2$"));
+        part.Should().Contain(l => System.Text.RegularExpressions.Regex.IsMatch(l, @"^S\+0 = input 0\s+State\s+0x0000\s+Disabled"));
+        part.Should().Contain(l => System.Text.RegularExpressions.Regex.IsMatch(l, @"^C\+0 = holding 0\s+Command\s+0x0001\s+.*Enable"));
+        part.Should().Contain(l => System.Text.RegularExpressions.Regex.IsMatch(l, @"^C\+2…C\+3 = holding 2…3\s+TargetPosition\s+—\s+never read$"));
         lines.Should().Contain("- C+9 = 0 (release lease)");
         lines[^1].Should().Be("RESULT: FAIL");
     }
