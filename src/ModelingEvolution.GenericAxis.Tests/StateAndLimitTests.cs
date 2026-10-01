@@ -162,7 +162,8 @@ public class StateAndLimitTests
 
         rig.Device.Limits.Should().Be(new AxisLimits(0, 8000, 300, LimitSource.Configuration));
         rig.LogsAt(LogLevel.Information).Where(r => r.Message.Contains("publishes no limits"))
-            .Should().ContainSingle().Which.Message.Should().Contain("8000").And.Contain("300");
+            .Should().ContainSingle().Which.Message.Should().Contain("8000").And.Contain("300")
+            .And.Contain("(S+8…S+13 = input 8…13 all 0)");
     }
 
     [Fact(DisplayName = "GA-U-22 No limit source refuses moves only")]

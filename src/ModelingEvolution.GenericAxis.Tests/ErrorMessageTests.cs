@@ -21,7 +21,9 @@ public class ErrorMessageTests
     {
         var machine = AxisEngine.FaultException("carriage", RegisterMap.Default,
             new PlcSnapshot(new StatusBlock(7, StatusFlags.Homed, 0, 0, 4, 0, 0, 0, 0, 1), 1, 1, 3, 0));
-        machine.Message.Should().MatchRegex(Shape.ToString());
+        machine.Message.Should().MatchRegex(Shape.ToString())
+            .And.EndWith("Read FaultCode (S+6 = input 6) = 4, WatchdogFault (C+10 = holding 10) = 1, "
+                         + "WatchdogTrips (C+11 = holding 11) = 3.", "protocol § Errors and debugging, example 3");
 
         await using var rig = await new DriverRig().ConnectAsync();
         var commander = (await DriverRig.Bounded(() => rig.Linear.MoveAbsoluteAsync(new Mm(10_500)))
