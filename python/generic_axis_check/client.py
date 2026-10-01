@@ -240,4 +240,5 @@ class PlcClient:
         log.debug("wrote %d = %s", address, values)
 
     async def read_status(self, registers: RegisterMap) -> StatusBlock:
-        return StatusBlock.parse(await self.read(registers.status, STATUS_LENGTH))
+        """One FC04 of S+0…S+14 (protocol.md § Transport, "Consistency")."""
+        return StatusBlock.parse(await self.read_input(registers.status, STATUS_LENGTH))

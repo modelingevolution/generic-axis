@@ -1,5 +1,5 @@
-"""A minimal PLC for the Python tool's own tests: Modbus TCP (FC03/06/16) plus a 10 ms scan implementing
-protocol.md map v1 just enough for the checklist. It is NOT the acceptance target: the C# test app's simulator is.
+"""A minimal PLC for the Python tool's own tests: Modbus TCP (FC03/06/16 on the holding command block, FC04 on the
+input status block, ADR-36) plus a 10 ms scan implementing protocol.md map v1 just enough for the checklist. It is NOT the acceptance target: the C# test app's simulator is.
 
 It has its own tiny Modbus server because pymodbus 3.15's datastore is mid-refactor and exposes no stable write hook.
 Options mirror the C# simulator's configuration keys, so the integration fixture can start either one:
@@ -24,13 +24,15 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, fields
 from types import TracebackType
 
-C, S = 0, 100  # block bases (protocol.md § Transport defaults)
+C, S = 0, 0  # block bases (protocol.md § Transport defaults): C in the holding space, S in the input space
 SCAN_S = 0.01
 WATCHDOG_S = 1.0
 ERROR_STOP, DISABLED, STANDSTILL, HOMING, DISCRETE, CONTINUOUS, STOPPING = 7, 0, 1, 2, 3, 4, 6
 ENABLE, HOME, MOVE_ABS, MOVE_VEL, STOP, RESET = 1, 2, 4, 8, 16, 32
 HOMED, IN_POSITION, DRIVE_READY, MOVING = 1, 2, 32, 64
-PLC_OWNED = {C + 11, *range(S, S + 15)}
+PLC_OWNED = {C + 11}
+"""Holding registers whose writes the PLC ignores (protocol.md checklist item 1). The status block needs no entry:
+it is input registers, and no function code writes those."""
 
 
 @dataclass
@@ -112,6 +114,8 @@ class StubPlc:
         """Open client connections, closed on exit: a client the code under test leaked must not hang the teardown."""
         self.port = self.o.port
         self.writes: list[tuple[int, list[int]]] = []
+        self.reads: list[tuple[int, int, int]] = []
+        """Every read answered: ``(function code, address, count)``."""
         self.accepted: list[int] = []
         """Every command word the scan accepted, in order."""
         self.requests = 0
@@ -184,6 +188,7 @@ class StubPlc:
             addr, count = struct.unpack(">HH", pdu[1:5])
             if addr + count > 65536:
                 return bytes([fc | 0x80, 2])
+            self.reads.append((fc, addr, count))
             space = self.regs if fc == 3 else self.inputs
             return bytes([fc, 2 * count]) + struct.pack(f">{count}H", *space[addr : addr + count])
         if fc == 6:
@@ -213,9 +218,10 @@ class StubPlc:
         return u - (1 << 32) if u & 0x80000000 else u
 
     def put32(self, n: int, value: int) -> None:
+        """Publish an int32 into the status block (input registers)."""
         u = value & 0xFFFFFFFF
         lo, hi = u & 0xFFFF, u >> 16
-        self.regs[n], self.regs[n + 1] = (hi, lo) if self.o.swapped_word_order else (lo, hi)
+        self.inputs[n], self.inputs[n + 1] = (hi, lo) if self.o.swapped_word_order else (lo, hi)
 
     async def _scan_loop(self) -> None:
         last = time.monotonic()
@@ -251,10 +257,10 @@ class StubPlc:
 
         # Accept a command write.
         word, seq = r[C], r[C + 1]
-        if seq != r[S + 7] and not self.o.suppress_ack:
+        if seq != self.inputs[S + 7] and not self.o.suppress_ack:
             self.accepted.append(word)
             self._accept(word)
-            r[S + 7] = seq
+            self.inputs[S + 7] = seq
 
         self._move(dt)
         self._publish()
@@ -323,7 +329,7 @@ class StubPlc:
             a.v = 0.0
 
     def _publish(self) -> None:
-        a, o, r = self.axis, self.o, self.regs
+        a, o, r = self.axis, self.o, self.inputs
         r[S] = a.state
         flags = (HOMED if a.homed else 0) | (IN_POSITION if a.in_position else 0)
         flags |= (DRIVE_READY if a.state != ERROR_STOP else 0) | (MOVING if a.v else 0)

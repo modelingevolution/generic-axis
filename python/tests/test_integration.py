@@ -31,7 +31,7 @@ from .conftest import PYTHON_DIR
 from .simproc import Simulator, cadence, free_port, simulator_cwd
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(240)]
-MAP = RegisterMap(0, 100)
+MAP = RegisterMap()
 START = Callable[..., Simulator]
 
 
@@ -62,10 +62,21 @@ def ids(first: int, last: int) -> list[str]:
 
 
 async def registers(port: int, address: int, count: int) -> list[int]:
+    """Holding registers (FC03): the command block."""
     client = PlcClient("127.0.0.1", port, 1)
     await client.connect()
     try:
         return await client.read(address, count)
+    finally:
+        client.close()
+
+
+async def inputs(port: int, address: int, count: int) -> list[int]:
+    """Input registers (FC04): the status block (ADR-36)."""
+    client = PlcClient("127.0.0.1", port, 1)
+    await client.connect()
+    try:
+        return await client.read_input(address, count)
     finally:
         client.close()
 
@@ -79,21 +90,21 @@ async def test_ga_i_30_simulator_passes_the_whole_checklist(simulator: START, tm
         observed = {c["id"]: c["observed"] for c in doc["checks"]}
         assert 1000 <= observed["CHK-08"]["tripAfterMs"] <= 1500
         assert observed["CHK-14"]["haltMs"] <= 200
-        state = (await registers(sim.port, MAP.status, 1))[0]
+        state = (await inputs(sim.port, MAP.status, 1))[0]
         lease, fault = await registers(sim.port, MAP.lease_owner, 2)
         assert (state, lease, fault) == (0, 0, 0)
 
 
 async def test_ga_i_31_motion_checks_are_opt_in(simulator: START, tmp_path: Path) -> None:
     sim = simulator()
-    before = await registers(sim.port, MAP.status + 2, 2)
+    before = await inputs(sim.port, MAP.status + 2, 2)
     code, doc = run_checker(sim.port, tmp_path)
     r = results(doc)
     with cadence(sim):  # a budget missed while the simulator missed its cadence is INCONCLUSIVE
         assert [r[i][0] for i in ids(1, 11)] == ["PASS"] * 11
         assert [r[i] for i in ids(12, 16)] == [("SKIPPED", "needs --allow-motion")] * 5
         assert code == 0
-        assert await registers(sim.port, MAP.status + 2, 2) == before
+        assert await inputs(sim.port, MAP.status + 2, 2) == before
 
 
 async def test_ga_i_32_wrong_map_version_stops_the_run(simulator: START, tmp_path: Path) -> None:
@@ -104,7 +115,7 @@ async def test_ga_i_32_wrong_map_version_stops_the_run(simulator: START, tmp_pat
     assert r["CHK-01"][0] == "PASS"
     assert r["CHK-02"] == (
         "FAIL",
-        "Protocol/ProtocolMismatch: MapVersion not 1. Read MapVersion (S+14 = input 114) = 2, expected 1.",
+        "Protocol/ProtocolMismatch: MapVersion not 1. Read MapVersion (S+14 = input 14) = 2, expected 1.",
     )
     chk02 = doc["checks"][1]
     assert chk02["errorClass"] == "Protocol"
@@ -121,8 +132,8 @@ async def test_ga_i_33_unpublished_limits_fail_chk03_only(simulator: START, tmp_
     with cadence(sim):  # a budget missed while the simulator missed its cadence is INCONCLUSIVE
         assert r["CHK-03"] == (
             "FAIL",
-            "Protocol/ProtocolMismatch: limits not published (all zero). Read TravelMin (S+8 = input 108) = 0, "
-            "TravelMax (S+10 = input 110) = 0, MaxVelocity (S+12 = input 112) = 0.",
+            "Protocol/ProtocolMismatch: limits not published (all zero). Read TravelMin (S+8 = input 8) = 0, "
+            "TravelMax (S+10 = input 10) = 0, MaxVelocity (S+12 = input 12) = 0.",
         )
         assert all(r[i][0] == "SKIPPED" for i in ids(13, 16))
         assert [r[i][0] for i in ids(4, 12)] == ["PASS"] * 9
@@ -201,7 +212,7 @@ async def test_ga_i_38_interrupting_a_run_cleans_up(simulator: START, tmp_path: 
     process.send_signal(signal.SIGINT)
     _out, err = process.communicate(timeout=60)
     await asyncio.sleep(0.5)
-    status = await registers(sim.port, MAP.status, 7)
+    status = await inputs(sim.port, MAP.status, 7)
     (lease,) = await registers(sim.port, MAP.lease_owner, 1)
     fault, trips = await registers(sim.port, MAP.watchdog_fault, 2)
     doc = json.loads(report.with_suffix(".json").read_text(encoding="utf-8"))
@@ -340,7 +351,7 @@ async def test_ga_i_40_dump_reads_without_touching(simulator: START) -> None:
 
 async def test_ga_i_41_a_fail_carries_class_and_evidence(simulator: START, tmp_path: Path) -> None:
     sim = simulator(Simulator__Faults__SuppressAck="true")
-    at_rest = await registers(sim.port, MAP.status, 15)
+    at_rest = await inputs(sim.port, MAP.status, 15)
     _code, doc = run_checker(sim.port, tmp_path)
     chk06 = next(c for c in doc["checks"] if c["id"] == "CHK-06")
     assert chk06["result"] == "FAIL"
@@ -452,14 +463,14 @@ async def test_ga_i_44_cancelled_requests_leave_the_connection_clean(simulator: 
     failure: str | None = None
     try:
         for cycle in range(CANCEL_CYCLES):
-            pending = asyncio.create_task(client.read(MAP.status, 15))
+            pending = asyncio.create_task(client.read_input(MAP.status, 15))
             await asyncio.sleep(rng.uniform(0, 0.004))
             pending.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await pending
             started = time.monotonic()
             try:
-                await client.read(MAP.status, 15)
+                await client.read_input(MAP.status, 15)
             except PlcError as exc:
                 failure = f"cycle {cycle}: {exc}"
                 break

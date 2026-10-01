@@ -28,7 +28,7 @@ def test_parse_host_only_takes_the_protocol_defaults() -> None:
     inv = parse(["plc.local"])
     o = inv.options
     assert (o.host, o.port, o.unit, o.owner_id, o.allow_motion) == ("plc.local", 502, 1, 65535, False)
-    assert (o.command_base, o.status_base, o.tolerance) == (0, 100, 0.1)
+    assert (o.command_base, o.status_base, o.tolerance) == (0, 0, 0.1)  # holding C, input S (ADR-36)
     assert inv.report_md is None
     assert inv.report_json is None
 

@@ -46,7 +46,8 @@ Every FAIL says what was seen, in the protocol's shape (`docs/protocol.md` § Er
 read.` The report attaches the dump of the last read of both blocks to each FAIL.
 
 `--report x.md` also writes `x.json`; `--report x.json` writes JSON only. Other options: `--command-base N`,
-`--status-base N` (block bases, default 0 and 100), `--owner-id N` (default 65535), `--tolerance X` (CHK-13, axis
+`--status-base N` (block bases, both default 0: the command block is holding registers, read by FC03 and written by
+FC06/FC16; the status block is input registers, read by FC04), `--owner-id N` (default 65535), `--tolerance X` (CHK-13, axis
 units, default 0.1).
 
 Exit codes: 0 no FAIL · 1 at least one FAIL · 2 usage error · 3 refused to start, because another commander (rw2, a

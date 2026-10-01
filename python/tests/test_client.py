@@ -12,7 +12,7 @@ import pytest
 
 from generic_axis_check.client import REQUEST_TIMEOUT_S, PlcClient, PlcError, connect_timeout
 
-from .stub_plc import StubPlc
+from .stub_plc import StubOptions, StubPlc
 
 
 async def test_read_from_a_silent_unit_raises_plc_error(stub: StubPlc) -> None:
@@ -30,7 +30,7 @@ async def test_cancelling_a_request_in_flight_raises_cancelled_error_not_plc_err
     client = PlcClient("127.0.0.1", stub.port, 9)
     await client.connect()
     try:
-        task = asyncio.create_task(client.read(100, 15))
+        task = asyncio.create_task(client.read_input(0, 15))
         await asyncio.sleep(0.1)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -68,7 +68,7 @@ async def test_read_from_a_silent_server_fails_after_two_half_second_attempts() 
         await client.connect()
         started = time.monotonic()
         with pytest.raises(PlcError, match="failed"):
-            await client.read(100, 15)
+            await client.read_input(0, 15)
         elapsed = time.monotonic() - started
     finally:
         client.close()
@@ -141,8 +141,8 @@ async def test_a_cancel_during_a_request_leaves_the_next_request_answered_at_onc
     client = PlcClient("127.0.0.1", stub.port, 1)
     await client.connect()
     try:
-        stub.reply_delay_if = lambda pdu: 0.2 if pdu[0] == 3 and int.from_bytes(pdu[1:3]) == 100 else 0.0
-        in_flight = asyncio.create_task(client.read(100, 15))
+        stub.reply_delay_if = lambda pdu: 0.2 if pdu[0] == 3 and int.from_bytes(pdu[1:3]) == 0 else 0.0
+        in_flight = asyncio.create_task(client.read(0, 12))
         while not stub.replying_late:  # noqa: ASYNC110 — waits for the stub to hold the reply; no event to await
             await asyncio.sleep(0.001)
         cancelled_at = time.monotonic()
@@ -152,7 +152,7 @@ async def test_a_cancel_during_a_request_leaves_the_next_request_answered_at_onc
         cancel_s = time.monotonic() - cancelled_at
         stub.reply_delay_if = None
         started = time.monotonic()
-        assert await client.read(114, 1) == [1]
+        assert await client.read_input(14, 1) == [1]  # MapVersion
         next_read_s = time.monotonic() - started
     finally:
         client.close()
@@ -167,17 +167,19 @@ async def test_a_cancel_during_a_request_leaves_the_next_request_answered_at_onc
 async def test_read_input_reads_the_input_space_not_the_holding_space(stub: StubPlc) -> None:
     # Holding 0…14 and input 0…14 are different registers: FC04 answers the input array, FC03 the holding one, and
     # the fallback evidence of each is kept apart.
-    stub.inputs[0:15] = range(100, 115)
-    stub.regs[0:15] = range(200, 215)
+    stub.regs[12:15] = (312, 313, 314)  # holding 12…14: past the command block, where S+12…S+14 sit in the input space
+    published = list(stub.inputs[0:15])  # an axis at rest: the scan republishes the same block
+    assert published[14] == 1
     client = PlcClient("127.0.0.1", stub.port, 1)
     await client.connect()
     try:
-        assert await client.read_input(0, 15) == list(range(100, 115))
-        assert await client.read(0, 15) == list(range(200, 215))
+        assert await client.read_input(0, 15) == published
+        assert await client.read(0, 15) == stub.regs[0:15]
     finally:
         client.close()
-    assert client.last_input == {a: 100 + a for a in range(15)}
-    assert client.last_read == {a: 200 + a for a in range(15)}
+    assert stub.regs[12:15] == [312, 313, 314]
+    assert client.last_input == dict(enumerate(published))
+    assert client.last_read == dict(enumerate(stub.regs[0:15]))
 
 
 async def test_read_input_from_a_silent_unit_names_fc04_and_the_input_range(stub: StubPlc) -> None:
@@ -234,3 +236,21 @@ async def test_read_input_cancelled_in_flight_leaves_the_next_request_answered_a
         client.close()
     assert next_read_s < 0.05, next_read_s
     assert client.retries == 0
+
+
+async def test_a_holding_write_at_0_to_14_never_changes_the_input_status_block() -> None:
+    # GA-U-136.py (ADR-36): holding 0…14 and input 0…14 are separate registers. With the scan held (no republish), an
+    # FC16 over holding 0…14 lands in the command block and holding 12…14, and FC04 still answers the status block the
+    # PLC published. A PLC serving the status block from its holding array (the old map at base 0) fails here.
+    async with StubPlc(StubOptions(scan_s=60.0)) as plc:
+        published = list(plc.inputs[0:15])
+        assert published[14] == 1
+        client = PlcClient("127.0.0.1", plc.port, 1)
+        await client.connect()
+        try:
+            words = [0, 0, *([0xBEEF] * 6), 0xBEEF, 0, 0xBEEF, 0, 0xBEEF, 0xBEEF, 0xBEEF]  # no edge, no lease
+            await client.write(0, words)
+            assert await client.read(0, 15) == words
+            assert await client.read_input(0, 15) == published
+        finally:
+            client.close()

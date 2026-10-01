@@ -36,7 +36,7 @@ async def wait_for(
     since: float | None = None,
     period_s: float = POLL_PERIOD_S,
 ) -> PollResult:
-    """Poll S+0…S+14 every ``period_s`` until ``predicate`` holds or ``timeout_s`` passes after ``since``.
+    """Poll S+0…S+14 (one FC04 each) every ``period_s`` until ``predicate`` holds or ``timeout_s`` passes after ``since``.
 
     ``since`` is the ``time.monotonic()`` of the triggering write's completion (default: now). A read is stamped when
     its answer arrives, so ``elapsed_ms`` is "completion of the write to the first read that shows the effect".
