@@ -72,6 +72,28 @@ public sealed class CheckerAgainstSimulatorTests
         report.Cleanup.Should().Contain(l => l.Contains("release lease"));
     }
 
+    /// <summary>
+    /// GA-I-69 (#55): the checker honours <c>--command-base</c> / <c>--status-base</c>. A PLC at holding 200 / input 300
+    /// passes the whole list with motion, and nothing is written at the default holding 0…11.
+    /// </summary>
+    [Fact]
+    public async Task GA_I_69_TheCheckerRunsAtRelocatedBases()
+    {
+        using var sim = new LiveSimulator(new SimulatedAxisOptions { CommandBase = 200, StatusBase = 300 });
+
+        var report = await new ConformanceRunner(NullLoggerFactory.Instance).RunAsync(
+            new CheckerOptions { Host = "127.0.0.1", Port = sim.Port, AllowMotion = true, CommandBase = 200, StatusBase = 300 },
+            CancellationToken.None);
+
+        report.Checks.Where(c => c.Result != CheckResultKind.Pass).Select(c => $"{c.Id}: {c.Message}").Should().BeEmpty();
+        report.ExitCode.Should().Be(0);
+        sim.Host.Registers.Holding.ReadBlock(0, SimRegisters.CommandLength).Should().OnlyContain(w => w == 0,
+            "the checker wrote only at its configured command base");
+        var end = await sim.SettledAsync();
+        end.LeaseOwner.Should().Be(0);
+        end.CommandSeq.Should().BeGreaterThan(0, "the commands went to holding 200");
+    }
+
     [Fact]
     public async Task GA_I_31_MotionChecksAreOptIn()
     {
