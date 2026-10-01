@@ -34,8 +34,17 @@ public class RefusalLoggingTests
         refuse = ModbusExceptionCode.IllegalDataAddress;
         await rig.TickAsync();
         Count().Should().Be((1, 0), "the first refusal is news");
+        // Rule 3: a refused status read is a Protocol refusal, not a failed beat (the beat write landed) — one line,
+        // never a second Warning from the beat path or the channel.
+        rig.LogsAt(LogLevel.Warning).Should().ContainSingle("a refused tick is logged once, as the refusal")
+            .Which.Message.Should().Contain("refused: Modbus exception 02");
+        rig.Plc.Writes.Should().Contain(o => o.Address == rig.Plc.Map.Heartbeat && o.What == "heartbeat",
+            "anchor: the beat itself was written");
         await rig.TickAsync();
         Count().Should().Be((1, 1), "the same refusal on the next tick drops to Debug");
+        rig.LogsAt(LogLevel.Warning).Should().ContainSingle("no Warning on the repeated refusal, from any path");
+        rig.Logs.GetSnapshot().Where(r => r.Level == LogLevel.Debug && r.Message.Contains("refused"))
+            .Should().ContainSingle("one Debug line for the repeat, none from the beat path");
         await rig.TickAsync(3);
         Count().Should().Be((1, 4), "and stays at Debug while it repeats");
 
