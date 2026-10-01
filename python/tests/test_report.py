@@ -41,7 +41,7 @@ def sample() -> Report:
                 "Status block",
                 "FAIL",
                 1,
-                "Protocol/ProtocolMismatch: MapVersion not 1. Read MapVersion (S+14 = 114) = 2, expected 1.",
+                "Protocol/ProtocolMismatch: MapVersion not 1. Read MapVersion (S+14 = input 114) = 2, expected 1.",
                 {"mapVersion": 2},
                 ErrorClass.PROTOCOL,
                 LastRead([None] * 12, [0, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]),

@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable
 
 from .client import PlcClient, PlcError
-from .registers import RegisterMap, next_nonzero
+from .registers import RegisterMap, next_nonzero, register_ref
 
 log = logging.getLogger(__name__)
 
@@ -21,10 +21,11 @@ class LeaseLost(Exception):  # noqa: N818 — the condition's name in the lead r
     """A beating checker read ``LeaseOwner`` ≠ its own id: Protocol/ProtocolMismatch, the register does not hold what
     was written."""
 
-    def __init__(self, owner: int, expected: int) -> None:
+    def __init__(self, owner: int, expected: int, registers: RegisterMap) -> None:
         self.owner = owner
         self.expected = expected
-        super().__init__(f"the lease did not hold. Read LeaseOwner (C+9) = {owner}, expected {expected}.")
+        where = register_ref(registers, "LeaseOwner")
+        super().__init__(f"the lease did not hold. Read LeaseOwner ({where}) = {owner}, expected {expected}.")
 
 
 class Beater:
@@ -88,7 +89,7 @@ class Beater:
                 if await self._lease_lost():
                     return  # the axis has another owner: stop beating, write nothing more
             except PlcError as exc:
-                log.warning("Heartbeat (C+8) write failed, the beat stopped: %s", exc)
+                log.warning("%s: %s", self._beat_failed(), exc)
                 raise
 
     async def _lease_lost(self) -> bool:
@@ -98,7 +99,7 @@ class Beater:
         (owner,) = await self._client.read(self._registers.lease_owner, 1)
         if owner == expected:
             return False
-        self.lease_lost = LeaseLost(owner, expected)
+        self.lease_lost = LeaseLost(owner, expected, self._registers)
         log.warning("%s The beat stopped; nothing more is written to this axis.", self.lease_lost)
         return True
 
@@ -132,7 +133,10 @@ class Beater:
             raise self.lease_lost
         failure = self.failure()
         if failure is not None:
-            raise PlcError(f"Heartbeat (C+8) write failed, the beat stopped: {failure}") from failure
+            raise PlcError(f"{self._beat_failed()}: {failure}") from failure
+
+    def _beat_failed(self) -> str:
+        return f"Heartbeat ({register_ref(self._registers, 'Heartbeat')}) write failed, the beat stopped"
 
     def failure(self) -> BaseException | None:
         """The exception that ended the loop, if it ended by itself."""

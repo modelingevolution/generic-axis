@@ -13,7 +13,7 @@ from pymodbus.client import AsyncModbusTcpClient
 from pymodbus.exceptions import ModbusException
 from pymodbus.pdu import ModbusPDU
 
-from .registers import STATUS_LENGTH, RegisterMap, StatusBlock, describe_range
+from .registers import STATUS_LENGTH, RegisterMap, Space, StatusBlock, describe_range
 
 CONNECT_ATTEMPTS = 2
 CONNECT_TIMEOUT_S = 2.0
@@ -103,10 +103,11 @@ class PlcClient:
         """Called before every request while a check runs: the runner sets the beat's ``raise_if_failed`` so every
         wait (a poll, a trip watch, a read after a sleep) reports a dead beat as Transport (review #7)."""
 
-    def _where(self, operation: str, address: int, count: int) -> str:
-        return (
-            f"{operation} {describe_range(self.registers, address, count)} on {self.host}:{self.port} unit {self.unit}"
-        )
+    def _where(self, operation: str, space: Space, address: int, count: int) -> str:
+        """``FC04 read S+0…S+14 = input 0…14 on host:port unit 1`` (protocol.md § Errors and debugging, rule 1: the
+        endpoint, the operation and the register range)."""
+        span = describe_range(self.registers, space, address, count)
+        return f"{operation} {span} on {self.host}:{self.port} unit {self.unit}"
 
     @property
     def connected(self) -> bool:
@@ -200,7 +201,7 @@ class PlcClient:
                     raise PlcError(f"{failure}; reconnect failed: {again}") from exc
 
     async def read(self, address: int, count: int) -> list[int]:
-        where = self._where("read", address, count)
+        where = self._where("FC03 read", Space.HOLDING, address, count)
         response = await self._transact(
             where, lambda c: c.read_holding_registers(address, count=count, device_id=self.unit), retry=True
         )
@@ -212,7 +213,8 @@ class PlcClient:
         return registers
 
     async def write(self, address: int, values: list[int], *, retry: bool = True) -> None:
-        where = f"{self._where('write', address, len(values))} = {values}"
+        function = "FC06" if len(values) == 1 else "FC16"
+        where = f"{self._where(f'{function} write', Space.HOLDING, address, len(values))} = {values}"
         if len(values) == 1:
             await self._transact(
                 where, lambda c: c.write_register(address, values[0], device_id=self.unit), retry=retry

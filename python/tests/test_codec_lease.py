@@ -67,10 +67,15 @@ def test_register_map_bases_move_whole_blocks() -> None:
     # GA-U-04
     m = RegisterMap(200, 300)
     assert (m.heartbeat, m.map_version, m.status + 7) == (208, 314, 307)
-    with pytest.raises(ValueError, match="overlaps"):
-        RegisterMap(95, 100)
-    with pytest.raises(ValueError, match="outside"):
+    # ADR-36: holding C and input S are separate spaces, both at 0 by default; equal bases do not overlap.
+    assert RegisterMap() == RegisterMap(0, 0)
+    assert (RegisterMap(5, 5).lease_owner, RegisterMap(5, 5).map_version) == (14, 19)
+    # Each block must fit its 16-bit space: the last register is 65535.
+    assert RegisterMap(65536 - 12, 65536 - 15).watchdog_trips == 65535
+    with pytest.raises(ValueError, match=r"status block input 65530\.\.65544 is outside input 0\.\.65535"):
         RegisterMap(0, 65530)
+    with pytest.raises(ValueError, match=r"command block holding 65530\.\.65541 is outside holding 0\.\.65535"):
+        RegisterMap(65530, 0)
 
 
 def test_next_nonzero_wraps_65535_to_1() -> None:

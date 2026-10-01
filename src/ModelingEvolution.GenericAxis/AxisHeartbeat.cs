@@ -229,13 +229,14 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
         return snapshot;
     }
 
-    /// <summary>Reads C+9…C+11 and S+0…S+14 on <paramref name="lane"/>. Used by the tick and by attach.</summary>
+    /// <summary>Reads holding C+9…C+11 (FC03) and input S+0…S+14 (FC04) on <paramref name="lane"/>. Used by the tick and
+    /// by attach.</summary>
     internal async Task<PlcSnapshot> ReadSnapshotAsync(ChannelPriority lane, CancellationToken ct)
     {
         var watchdog = await _channel.ReadHoldingAsync(_unit, _map.LeaseOwner, RegisterMap.WatchdogBlockLength,
             "read lease and watchdog", lane, ct).ConfigureAwait(false);
         CheckLength(watchdog, RegisterSpace.Holding, _map.LeaseOwner, RegisterMap.WatchdogBlockLength, "lease and watchdog block");
-        var status = await _channel.ReadHoldingAsync(_unit, _map.Status, RegisterMap.StatusLength,
+        var status = await _channel.ReadInputAsync(_unit, _map.Status, RegisterMap.StatusLength,
             "read status block", lane, ct).ConfigureAwait(false);
         CheckLength(status, RegisterSpace.Input, _map.Status, RegisterMap.StatusLength, "status block");
         return new PlcSnapshot(StatusBlock.Parse(status), watchdog[0], watchdog[1], watchdog[2], _time.GetTimestamp());

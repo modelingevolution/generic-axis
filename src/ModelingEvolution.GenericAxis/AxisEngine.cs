@@ -1064,10 +1064,10 @@ internal sealed class AxisEngine : IDisposable
         return (seq, ackTick);
     }
 
-    /// <summary>One read of the status block on the command's lane, at the ack deadline.</summary>
+    /// <summary>One read of the status block (FC04) on the command's lane, at the ack deadline.</summary>
     private async Task<StatusBlock> ReadStatusAtDeadlineAsync(string verb, ChannelPriority lane, CancellationToken ct)
     {
-        var words = await _channel.ReadHoldingAsync(_unit, _map.Status, RegisterMap.StatusLength,
+        var words = await _channel.ReadInputAsync(_unit, _map.Status, RegisterMap.StatusLength,
             $"{verb}: read status block at the ack deadline", lane, ct).ConfigureAwait(false);
         if (words.Length != RegisterMap.StatusLength)
             throw AxisErrors.Create(Name, MotionError.ProtocolMismatch,

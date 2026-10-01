@@ -32,7 +32,7 @@ from generic_axis_check.runner import Report, normalize_observed, run
 from .conftest import stub_options
 from .stub_plc import StubPlc
 
-MAP = RegisterMap()
+MAP = RegisterMap(0, 100)  # the stub still publishes the status block at 100
 
 
 def by_id(report: Report) -> dict[str, tuple[str, str]]:
@@ -70,7 +70,7 @@ async def test_run_failed_map_version_skips_every_dependant_and_writes_nothing()
     assert results["CHK-01"][0] == PASS
     assert results["CHK-02"] == (
         FAIL,
-        "Protocol/ProtocolMismatch: MapVersion not 1. Read MapVersion (S+14 = 114) = 2, expected 1.",
+        "Protocol/ProtocolMismatch: MapVersion not 1. Read MapVersion (S+14 = input 114) = 2, expected 1.",
     )
     chk02 = report.checks[1]
     assert chk02.error_class == "Protocol"
@@ -117,8 +117,8 @@ async def test_run_refuses_a_live_foreign_commander_with_exit_3_and_writes_nothi
     assert to_markdown(report).splitlines()[2] == f"Pre-flight: {report.checks[0].message}"
     message = report.checks[0].message
     assert re.fullmatch(
-        r"another commander is live: Heartbeat \(C\+8 = 8\) = \d+( → \d+)+ within 1\.[01] s, "
-        r"LeaseOwner \(C\+9 = 9\) = 1; stop it first",
+        r"another commander is live: Heartbeat \(C\+8 = holding 8\) = \d+( → \d+)+ within 1\.[01] s, "
+        r"LeaseOwner \(C\+9 = holding 9\) = 1; stop it first",
         message,
     )
     assert all(c.result == SKIPPED and c.message == message for c in report.checks)
@@ -134,7 +134,7 @@ async def test_run_refuses_a_held_lease_with_no_beat_and_no_trip(stub: StubPlc) 
     report = await run(options(stub), checks=upto("CHK-07"))
     assert report.exit_code == 3
     assert re.fullmatch(
-        r"LeaseOwner \(C\+9 = 9\) = 1 is held and WatchdogFault \(C\+10 = 10\) = 0: no beat and no trip "
+        r"LeaseOwner \(C\+9 = holding 9\) = 1 is held and WatchdogFault \(C\+10 = holding 10\) = 0: no beat and no trip "
         r"within 1\.[67] s — a live commander, or a PLC without a working watchdog; release LeaseOwner by hand only if "
         r"no commander runs",
         report.checks[0].message,
@@ -173,7 +173,7 @@ async def test_run_catches_a_plc_without_the_watchdog() -> None:
     assert results["CHK-08"][0] == FAIL
     assert re.match(
         r"Protocol/ProtocolMismatch: stalled beat: no trip within 1\.5 s of the last beat \(last read 15\d\d ms\)\. "
-        r"Read State \(S\+0 = 100\) = 0, ",
+        r"Read State \(S\+0 = input 100\) = 0, ",
         results["CHK-08"][1],
     ), results["CHK-08"][1]
     assert results["CHK-09"][0] == SKIPPED
@@ -187,7 +187,7 @@ async def test_run_catches_swapped_word_order_in_chk03() -> None:
     chk03 = report.checks[2]
     assert chk03.result == FAIL
     assert chk03.message.startswith("Protocol/ProtocolMismatch: limits not sane: TravelMin is not < TravelMax")
-    assert "Read TravelMin (S+8 = 108) = 0, TravelMax (S+10 = 110) = " in chk03.message
+    assert "Read TravelMin (S+8 = input 108) = 0, TravelMax (S+10 = input 110) = " in chk03.message
     assert num(chk03.observed, "travelMax") < 0
 
 
@@ -198,8 +198,8 @@ async def test_run_catches_unpublished_limits_in_chk03() -> None:
     chk03 = report.checks[2]
     assert chk03.result == FAIL
     assert chk03.message == (
-        "Protocol/ProtocolMismatch: limits not published (all zero). Read TravelMin (S+8 = 108) = 0, "
-        "TravelMax (S+10 = 110) = 0, MaxVelocity (S+12 = 112) = 0."
+        "Protocol/ProtocolMismatch: limits not published (all zero). Read TravelMin (S+8 = input 108) = 0, "
+        "TravelMax (S+10 = input 110) = 0, MaxVelocity (S+12 = input 112) = 0."
     )
 
 
@@ -255,7 +255,7 @@ async def test_run_refuses_a_second_tool_beating_under_the_checkers_own_id(stub:
         await beat.stop()
         other.close()
     assert report.exit_code == 3
-    assert "LeaseOwner (C+9 = 9) = 65535" in report.checks[0].message
+    assert "LeaseOwner (C+9 = holding 9) = 65535" in report.checks[0].message
 
 
 async def test_every_failure_path_reports_only_listed_observed_keys() -> None:
@@ -327,7 +327,7 @@ async def test_run_whose_preflight_read_fails_fails_chk01_skips_the_rest_and_wri
     assert chk01.result == FAIL
     assert chk01.error_class == "Transport"
     assert chk01.message.startswith(
-        "Transport/CommunicationLost: pre-flight did not complete, nothing was written: read C+8…C+10"
+        "Transport/CommunicationLost: pre-flight did not complete, nothing was written: FC03 read C+8…C+10 = holding 8…10"
     )
     assert chk01.observed["retries"] == 1
     assert all(c.result == SKIPPED and c.message == "needs CHK-01, which FAILED" for c in report.checks[1:])
@@ -350,7 +350,7 @@ async def test_run_reports_a_dead_beat_during_homing_as_transport_not_a_watchdog
     assert chk12.result == FAIL
     assert chk12.error_class == "Transport"
     assert chk12.message.startswith(
-        "Transport/CommunicationLost: Heartbeat (C+8) write failed, the beat stopped: write C+8"
+        "Transport/CommunicationLost: Heartbeat (C+8 = holding 8) write failed, the beat stopped: FC06 write C+8 = holding 8"
     ), chk12.message
     assert "WatchdogTripped" not in chk12.message
 
@@ -368,7 +368,7 @@ async def test_run_reports_a_dead_beat_during_a_wait_even_when_the_plc_never_tri
     report = await run(options(stub, motion=True), checks=tuple(c for c in CHECKS if c.id in wanted))
     chk12 = next(c for c in report.checks if c.id == "CHK-12")
     assert (chk12.result, chk12.error_class) == (FAIL, "Transport"), chk12.message
-    assert "Heartbeat (C+8) write failed, the beat stopped" in chk12.message
+    assert "Heartbeat (C+8 = holding 8) write failed, the beat stopped" in chk12.message
 
 
 @pytest.mark.timeout(120)
@@ -437,7 +437,7 @@ async def test_chk06_fails_an_axis_found_in_error_stop_and_commands_nothing(stub
     assert (chk06.result, chk06.error_class) == (FAIL, "Machine")
     assert chk06.message == (
         "Machine/LimitTripped: precondition: State 0 or 1 expected; reset the axis first. "
-        "Read State (S+0 = 100) = 7, FaultCode (S+6 = 106) = 2."
+        "Read State (S+0 = input 100) = 7, FaultCode (S+6 = input 106) = 2."
     )
     # Lead ruling on #9: a precondition FAIL is a failure to restore: CHK-11 (needs only 02) is SKIPPED too.
     assert by_id(report)["CHK-07"] == (SKIPPED, "restore after CHK-06 failed")
@@ -480,7 +480,7 @@ async def test_run_refuses_a_commander_beating_with_lease_owner_0(stub: StubPlc)
         commander.close()
     assert report.exit_code == 3
     assert report.result == "REFUSED"
-    assert "LeaseOwner (C+9 = 9) = 0;" in report.checks[0].message
+    assert "LeaseOwner (C+9 = holding 9) = 0;" in report.checks[0].message
     assert ours == []
 
 
@@ -593,7 +593,7 @@ async def test_a_lease_taken_by_another_owner_mid_run_fails_the_check_and_stops_
     stub.regs[MAP.lease_owner] = 7
     changed_at = len(stub.writes)
     report = await task
-    reason = "the lease did not hold. Read LeaseOwner (C+9 = 9) = 7, expected 65535."
+    reason = "the lease did not hold. Read LeaseOwner (C+9 = holding 9) = 7, expected 65535."
     chk08 = next(c for c in report.checks if c.id == "CHK-08")
     assert (chk08.result, chk08.error_class) == (FAIL, "Protocol")
     assert chk08.message == f"Protocol/ProtocolMismatch: {reason}"
@@ -657,7 +657,7 @@ async def test_a_dead_commander_whose_watchdog_trips_lets_the_run_proceed_and_it
         report = await run(options(plc, motion=True))
         end = (plc.regs[MAP.watchdog_fault], plc.regs[MAP.lease_owner], plc.axis.state, plc.regs[MAP.command])
     note = (
-        "LeaseOwner (C+9 = 9) = 1 held with no beat and WatchdogFault (C+10 = 10) = 1: the previous commander is dead; "
+        "LeaseOwner (C+9 = holding 9) = 1 held with no beat and WatchdogFault (C+10 = holding 10) = 1: the previous commander is dead; "
         "its trip is left for its operator."
     )
     assert report.preflight == note
@@ -690,7 +690,7 @@ async def test_a_second_tool_started_during_the_firsts_chk03_is_refused(stub: St
     report = await first
     assert second.exit_code == 3
     assert second.result == "REFUSED"
-    assert "LeaseOwner (C+9 = 9) = 65535" in second.checks[0].message
+    assert "LeaseOwner (C+9 = holding 9) = 65535" in second.checks[0].message
     assert second.cleanup == []
     assert report.exit_code == 0
     assert stub.regs[MAP.lease_owner] == 0

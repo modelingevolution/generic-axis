@@ -36,6 +36,7 @@ from .registers import (
     FaultCode,
     RegisterMap,
     next_nonzero,
+    register_ref,
 )
 
 INTERRUPTED = "INTERRUPTED"
@@ -157,13 +158,13 @@ async def preflight(client: PlcClient, registers: RegisterMap) -> Preflight:
         if now_beat != beats[-1]:
             beats.append(now_beat)
     watched_s = time.monotonic() - started  # review #27: messages name the window actually watched
-    owner_at = f"LeaseOwner (C+9 = {registers.lease_owner}) = {owner}"
-    fault_at = f"WatchdogFault (C+10 = {registers.watchdog_fault}) = {fault}"
+    owner_at = f"LeaseOwner ({register_ref(registers, 'LeaseOwner')}) = {owner}"
+    fault_at = f"WatchdogFault ({register_ref(registers, 'WatchdogFault')}) = {fault}"
     if len(beats) > 1:
         seen = " → ".join(str(b) for b in beats)
         return Preflight(
             # Review #28: rule 1's register shape; no "pre-flight:" label (the Markdown line adds "Pre-flight: ").
-            f"another commander is live: Heartbeat (C+8 = {registers.heartbeat}) = {seen} within {watched_s:.1f} s, "
+            f"another commander is live: Heartbeat ({register_ref(registers, 'Heartbeat')}) = {seen} within {watched_s:.1f} s, "
             f"{owner_at}; stop it first"
         )
     if owner == 0:

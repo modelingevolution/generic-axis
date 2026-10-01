@@ -14,7 +14,7 @@ from generic_axis_check.registers import RegisterMap, to_words
 
 from .stub_plc import StubPlc
 
-MAP = RegisterMap()
+MAP = RegisterMap(0, 100)  # the stub still publishes the status block at 100
 
 
 def test_render_decodes_every_register_by_name() -> None:

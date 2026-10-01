@@ -41,7 +41,9 @@ from .registers import (
     AxisState,
     Command,
     FaultCode,
+    Space,
     StatusBlock,
+    describe_range,
     from_words,
 )
 
@@ -371,7 +373,8 @@ async def chk05(ctx: CheckContext) -> Outcome:
         back = await ctx.client.read(address, 2)
         observed[("firstReadBack", "secondReadBack")[index - 1]] = from_words(*back)
         if tuple(back) != words:
-            what = f"wrote {value} as {list(map(hex, words))} to C+2…C+3, read back {list(map(hex, back))}"
+            span = describe_range(ctx.registers, Space.HOLDING, address, 2)
+            what = f"wrote {value} as {list(map(hex, words))} to {span}, read back {list(map(hex, back))}"
             return mismatch(ctx, what, Read("TargetPosition", from_words(*back), value), **observed)
     await asyncio.sleep(OWNERSHIP_WAIT_S)
     back = await ctx.client.read(address, 2)

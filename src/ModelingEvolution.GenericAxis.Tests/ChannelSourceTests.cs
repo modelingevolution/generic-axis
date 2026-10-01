@@ -28,6 +28,8 @@ public class ChannelSourceTests
 
         called.Should().Contain(m => m.DeclaringType!.Namespace == "FluentModbus" && m.Name == "ReadHoldingRegistersAsync",
             "anchor: the walker sees the channel's FluentModbus calls, lambdas included");
+        called.Should().Contain(m => m.DeclaringType!.Namespace == "FluentModbus" && m.Name == "ReadInputRegistersAsync",
+            "anchor: the FC04 status read (ADR-36) is walked too");
 
         var offending = called.Where(m =>
                 (m.DeclaringType!.Namespace == "FluentModbus" && !m.Name.EndsWith("Async") && !AllowedSync.Contains(m.Name))

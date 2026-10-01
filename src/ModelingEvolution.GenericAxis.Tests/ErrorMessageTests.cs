@@ -108,7 +108,7 @@ public class ChannelRetryTests
         using var __ = channel;
         plc.DropNextConnections(1);
 
-        var words = await channel.ReadHoldingAsync(1, 100, 15, "read status block", ChannelPriority.Move)
+        var words = await channel.ReadInputAsync(1, 100, 15, "read status block", ChannelPriority.Move)
             .WaitAsync(LiveRig.T);
 
         words.Should().HaveCount(15);
@@ -117,7 +117,7 @@ public class ChannelRetryTests
         channel.Retries.Should().Be(1, "review #25: the one retry is counted for the checker's `retries`");
         var warnings = logs.GetSnapshot().Where(r => r.Level == LogLevel.Warning).ToArray();
         warnings.Should().ContainSingle().Which.Exception.Should().NotBeNull("the retry is logged with the exception");
-        warnings[0].Message.Should().Contain("read status block (FC03 read holding 100…114)")
+        warnings[0].Message.Should().Contain("read status block (FC04 read S+0…S+14 = input 100…114)")
             .And.Contain($"127.0.0.1:{plc.Port} unit 1");
     }
 
@@ -130,11 +130,11 @@ public class ChannelRetryTests
         using var __ = channel;
         plc.DropNextConnections(2);
 
-        var ex = (await channel.Invoking(c => c.ReadHoldingAsync(1, 100, 15, "read status block").WaitAsync(LiveRig.T))
+        var ex = (await channel.Invoking(c => c.ReadInputAsync(1, 100, 15, "read status block").WaitAsync(LiveRig.T))
             .Should().ThrowAsync<MotionException>()).Which;
 
         ex.Error.Should().Be(MotionError.CommunicationLost);
-        ex.Message.Should().StartWith("carriage: CommunicationLost: read status block (FC03 read holding 100…114) "
+        ex.Message.Should().StartWith("carriage: CommunicationLost: read status block (FC04 read S+0…S+14 = input 100…114) "
                                       + $"on 127.0.0.1:{plc.Port} unit 1 failed twice (reconnected once): ");
         ex.Message.Should().NotEndWith("(reconnected once): .", "the exception's own message is quoted");
         plc.AcceptedConnections.Should().Be(2);
