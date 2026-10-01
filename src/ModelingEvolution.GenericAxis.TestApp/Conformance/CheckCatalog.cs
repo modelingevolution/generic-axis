@@ -116,7 +116,7 @@ internal static class CheckCatalog
     private static async Task<CheckOutcome> Chk05(CheckContext ctx, CancellationToken ct)
     {
         var address = ctx.Map.TargetPosition;
-        var where = ctx.Map.DescribeRange(RegisterField.TargetPosition.Space, address, 2); // the int32 pair C+2…C+3
+        var where = ctx.At(RegisterField.TargetPosition, 2); // the int32 pair C+2…C+3
         async Task<(int Value, ushort[] Words)> ReadBackAsync()
         {
             var words = await ctx.ReadAsync(address, 2, ct);

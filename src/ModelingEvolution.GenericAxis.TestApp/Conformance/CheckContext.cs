@@ -118,6 +118,12 @@ internal sealed class CheckContext : IAsyncDisposable
     /// </summary>
     public string At(RegisterField field) => Map.Describe(field);
 
+    /// <summary>
+    /// <paramref name="count"/> registers from <paramref name="field"/>, e.g. an int32 pair <c>C+2…C+3 = holding 2…3</c>;
+    /// the space is the field's own (#59).
+    /// </summary>
+    public string At(RegisterField field, int count) => Map.DescribeRange(field.Space, Map.Address(field), count);
+
     /// <summary>FC03 of command-block (holding) registers.</summary>
     public async Task<ushort[]> ReadAsync(ushort address, ushort count, CancellationToken ct, ChannelPriority lane = ChannelPriority.Move)
     {

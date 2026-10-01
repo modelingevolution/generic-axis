@@ -124,6 +124,29 @@ public sealed class CheckerAgainstSimulatorTests
         error.ToString().Should().StartWith("Protocol/ProtocolMismatch: ").And.Contain("exception 02");
     }
 
+    /// <summary>
+    /// #59: a PLC that does not keep a written parameter FAILs CHK-05 as Protocol, and the line names the int32 pair in
+    /// the command block's space: "TargetPosition (C+2…C+3 = holding 2…3)". The simulator overwrites C+2 inside the
+    /// served write of −2, so the read-back differs deterministically.
+    /// </summary>
+    [Fact]
+    public async Task Chk05_AParameterThePlcDoesNotKeep_FailsNamingTheHoldingPair()
+    {
+        using var sim = new LiveSimulator();
+        sim.Host.OnClientWrite = addresses =>
+        {
+            if (addresses.Contains(SimRegisters.TargetPosition) && sim.Host.Registers.Holding.Read(SimRegisters.TargetPosition) == 0xFFFE)
+                sim.Host.Registers.Holding.Write(SimRegisters.TargetPosition, 0x1234);
+        };
+
+        var report = await Check(sim, allowMotion: false);
+
+        var chk05 = Get(report, "CHK-05");
+        chk05.Result.Should().Be(CheckResultKind.Fail);
+        chk05.ErrorClass.Should().Be(ErrorClass.Protocol);
+        chk05.Message.Should().Contain("Read TargetPosition (C+2…C+3 = holding 2…3) = [0x1234, 0xFFFF], expected [0xFFFE, 0xFFFF].");
+    }
+
     [Fact]
     public async Task GA_I_31_MotionChecksAreOptIn()
     {
