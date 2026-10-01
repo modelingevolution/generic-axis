@@ -51,14 +51,14 @@ public class ErrorMessageTests
         var byName = rows.ToDictionary(r => r.Name);
 
         rows.Should().HaveCount(19, "one row per protocol field: 9 in the command block, 10 in the status block");
-        byName["Command"].Should().Be(new RegisterRow("C+0 = 0", "Command", "0x0001", "Enable"));
+        byName["Command"].Should().Be(new RegisterRow("C+0 = holding 0", "Command", "0x0001", "Enable", RegisterSpace.Holding, 0));
         byName["CommandSeq"].Value.Should().Be("7");
-        byName["LeaseOwner"].Should().Be(new RegisterRow("C+9 = 9", "LeaseOwner", "0xFFFF", "65535"));
+        byName["LeaseOwner"].Should().Be(new RegisterRow("C+9 = holding 9", "LeaseOwner", "0xFFFF", "65535", RegisterSpace.Holding, 9));
         byName["WatchdogTrips"].Value.Should().Be("2");
-        byName["State"].Should().Be(new RegisterRow("S+0 = 0", "State", "0x0000", "Disabled"));
+        byName["State"].Should().Be(new RegisterRow("S+0 = input 0", "State", "0x0000", "Disabled", RegisterSpace.Input, 0));
         byName["Flags"].Value.Should().Be("DriveReady");
         byName["CommandAck"].Value.Should().Be("6");
-        byName["TravelMax"].Should().Be(new RegisterRow("S+10…S+11 = 10…11", "TravelMax", "0x9680 0x0098", "10000.000"));
+        byName["TravelMax"].Should().Be(new RegisterRow("S+10…S+11 = input 10…11", "TravelMax", "0x9680 0x0098", "10000.000", RegisterSpace.Input, 10));
         byName["MaxVelocity"].Value.Should().Be("500.000");
         byName["MapVersion"].Value.Should().Be("1");
         byName["FaultCode"].Value.Should().Be("None");
@@ -77,13 +77,45 @@ public class ErrorMessageTests
         var byName = RegisterDump.Decode(new RegisterMap(200, 300), command, status).ToDictionary(r => r.Name);
 
         byName["Command"].Value.Should().Be("Enable | Stop");
-        byName["Command"].Address.Should().Be("C+0 = 200");
+        byName["Command"].Address.Should().Be("C+0 = holding 200");
         byName["WatchdogFault"].Value.Should().Be("1 (tripped)");
         byName["State"].Value.Should().Be("42 (undefined)");
         byName["Flags"].Value.Should().Be("Homed | LimitMax");
         byName["ActualPosition"].Value.Should().Be("-0.001");
         byName["FaultCode"].Value.Should().Be("150 (vendor)");
-        byName["MapVersion"].Address.Should().Be("S+14 = 314");
+        byName["MapVersion"].Address.Should().Be("S+14 = input 314");
+    }
+
+    [Fact(DisplayName = "GA-U-140 Every dump row carries its block's space and absolute address (ADR-36)")]
+    public void Decode_EveryRow_SpaceAndAbsoluteAddressFromItsBlock()
+    {
+        ushort[] command = new ushort[RegisterMap.CommandLength];
+        ushort[] status = new ushort[RegisterMap.StatusLength];
+        status[14] = 1;
+
+        foreach (var map in new[] { RegisterMap.Default, new RegisterMap(200, 300) })
+        {
+            var rows = RegisterDump.Decode(map, command, status);
+            var fields = typeof(RegisterField).GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+                .Select(f => (RegisterField)f.GetValue(null)!).ToDictionary(f => f.Name);
+            rows.Select(r => r.Name).Should().BeEquivalentTo(fields.Keys, "one row per declared field");
+            foreach (var row in rows)
+            {
+                var field = fields[row.Name];
+                row.Space.Should().Be(field.Space, row.Name);
+                row.AbsoluteAddress.Should().Be(map.Address(field), row.Name);
+                row.Address.Should().StartWith(map.Describe(field)[..map.Describe(field).IndexOf(' ')], row.Name)
+                    .And.Contain(field.Space == RegisterSpace.Holding ? "= holding " : "= input ", row.Name);
+            }
+
+            rows.Where(r => r.Space == RegisterSpace.Holding).Should().HaveCount(9);
+            rows.Where(r => r.Space == RegisterSpace.Input).Should().HaveCount(10);
+        }
+
+        var zero = RegisterDump.Decode(RegisterMap.Default, command, status).ToDictionary(r => r.Name);
+        zero["Acceleration"].Address.Should().Be("C+6…C+7 = holding 6…7");
+        zero["FaultCode"].Address.Should().Be("S+6 = input 6", "same absolute address, other space");
+        zero["FaultCode"].AbsoluteAddress.Should().Be(zero["Acceleration"].AbsoluteAddress);
     }
 }
 
