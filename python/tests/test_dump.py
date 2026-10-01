@@ -77,6 +77,19 @@ async def test_dump_watch_repeats_at_5_hz_until_cancelled(stub: StubPlc) -> None
     assert stub.writes == []
 
 
+async def test_run_dump_exits_1_on_a_protocol_refusal(stub: StubPlc, capsys: pytest.CaptureFixture[str]) -> None:
+    # GA-U-138.py (ADR-37, rule 4): "--dump exits 1 on a Transport or Protocol error". A PLC answering FC04 with
+    # exception 02 is a Protocol refusal: exit 1, one Protocol/ProtocolMismatch line, the request sent once.
+    stub.exception_if = lambda pdu: 2 if pdu[0] == 4 else None
+    assert await run_dump(Options(host="127.0.0.1", port=stub.port), watch=False) == 1
+    assert capsys.readouterr().err.strip() == (
+        "Protocol/ProtocolMismatch: FC04 read S+0…S+14 = input 0…14 refused: Modbus exception 02 (illegal data "
+        "address) — the PLC does not serve the status block as input registers."
+    )
+    assert stub.requests == 2  # the FC03 command-block read and one FC04: a refusal is not retried
+    assert stub.writes == []
+
+
 async def test_run_dump_exits_1_on_a_transport_error(capsys: pytest.CaptureFixture[str]) -> None:
     async with StubPlc() as plc:
         port = plc.port
