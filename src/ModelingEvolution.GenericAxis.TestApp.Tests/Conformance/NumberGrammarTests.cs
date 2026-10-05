@@ -13,7 +13,8 @@ public sealed partial class NumberGrammarTests
     public static readonly string[] Accepted = ["+5", "5", "5.", ".5", "5e-1", "0.00005", "-12.5", "1E3"];
 
     public static readonly string[] Refused =
-        [" 5", "5 ", "1_0", "0x5", "inf", "-inf", "nan", "NaN", "Infinity", "1e400", "fast", "", ".", "e5", "5e", "+-5", "1,5"];
+        [" 5", "5 ", "1_0", "0x5", "inf", "-inf", "nan", "NaN", "Infinity", "1e400", "fast", "", ".", "e5", "5e", "+-5", "1,5",
+         "\u22125", "5,5"]; // U+2212 minus and the de-DE decimal comma: the grammar is culture-invariant ASCII
 
     /// <summary>Each numeric slot: the argument name the error names, and the command line around the probe.</summary>
     private static readonly (string Arg, Func<string, string[]> Line)[] Slots =

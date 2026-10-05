@@ -179,6 +179,7 @@ public sealed class CommandModeTests
             // 7751649: --for 0 < S is a guard (exit 2, RESULT: GUARD), the text as typed.
             (new(), new VerbRequest(Verb.Jog, Velocity: 5, For: "0"), "jog: Commander/OutOfRange: refused before writing anything: for 0 s outside 0 < S."),
             (new(), new VerbRequest(Verb.Jog, Velocity: 5, For: "-0.5"), "jog: Commander/OutOfRange: refused before writing anything: for -0.5 s outside 0 < S."),
+            (new(), new VerbRequest(Verb.Jog, Velocity: 5, For: "-1"), "jog: Commander/OutOfRange: refused before writing anything: for -1 s outside 0 < S."),
             // #37: the guard is on the RAW value written — 0.0004 unit/s rounds to Velocity 0.
             (new(), new VerbRequest(Verb.Jog, Velocity: 0.0004), "jog: Commander/UnreachableSpeed: refused before writing anything: jog needs 0 < |v| ≤ MaxVelocity, got 0.0004 (raw 0)."),
             (new(), new VerbRequest(Verb.Jog, Velocity: -0.0004), "jog: Commander/UnreachableSpeed: refused before writing anything: jog needs 0 < |v| ≤ MaxVelocity, got -0.0004 (raw 0)."),
