@@ -26,6 +26,15 @@ public sealed class SpeedRoundingTests
         SpeedRounding.Raw(percent, maxVelocityRaw).Should().Be(expected);
 
     [Fact]
+    public void GA_U_147_TheBodyIsTheCheckSkipAndPrintsThePercentInFull()
+    {
+        SpeedRounding.Body(1, 45, "S+12 = input 12").Should().Be(
+            "1 % of MaxVelocity rounds to raw Velocity 0 (round-half-away-from-zero(1 × 45 ÷ 100) = 0); nothing to move with. Read MaxVelocity (S+12 = input 12) = 45.");
+        SpeedRounding.Body(0.00005, 500_000, "S+12 = input 12").Should().StartWith("0.00005 % of MaxVelocity", "the percentage as given, never rounded or in exponent form");
+        SpeedRounding.Body(0.0000001, 100, "S+12 = input 12").Should().StartWith("0.0000001 % of MaxVelocity");
+    }
+
+    [Fact]
     public void GA_U_147_ARawZeroAt49IsRefusedNamingAllThree() =>
         SpeedRounding.Refusal(1, 49, "S+12 = input 12").Should().Be(
             "Commander/UnreachableSpeed: refused before writing anything: 1 % of MaxVelocity rounds to raw Velocity 0 (round-half-away-from-zero(1 × 49 ÷ 100) = 0); nothing to move with. Read MaxVelocity (S+12 = input 12) = 49.");
@@ -46,7 +55,7 @@ public sealed class SpeedRoundingTests
         foreach (var check in new[] { "Chk13", "Chk14", "Chk15", "Chk16" })
         {
             var body = Method(catalog, check);
-            body.Should().Contain("var speed = SpeedRounding.Raw(", check).And.Contain("SpeedRounding.Refusal(", check);
+            body.Should().Contain("var speed = SpeedRounding.Raw(", check).And.Contain("CheckOutcome.Skipped(SpeedRounding.Body(", check);
             body.Should().NotContainAny(["Math.Max(1", "max / 10", "max / 100", "MidpointRounding"], check);
         }
 
@@ -105,7 +114,7 @@ public sealed class SpeedRoundingCheckerTests
             .Should().Be(5, "10 % of 45 = 4.5 rounds half away from zero to 5");
         var chk15 = report.Checks.Single(c => c.Id == "CHK-15");
         chk15.Result.Should().Be(CheckResultKind.Skipped, Dump());
-        chk15.Message.Should().Be(SpeedRounding.Refusal(1, 45, "S+12 = input 12"));
+        chk15.Message.Should().Be(SpeedRounding.Body(1, 45, "S+12 = input 12"), "the check SKIPs with the body alone, no class prefix (e49dd62)");
         chk15.Observed.Should().BeEmpty("a SKIPPED check has observed {}");
         // A machine-property skip, like an unmet precondition — never INCONCLUSIVE, so the release gate (#43) does not count it.
         report.Checks.Should().NotContain(c => c.Message.Contains("INCONCLUSIVE", StringComparison.OrdinalIgnoreCase));
@@ -162,7 +171,7 @@ public sealed class SpeedRoundingCheckerTests
         stateAtChk15.Should().Be(SimAxisState.Disabled, "the restore after CHK-14 had to Reset: CHK-15 is entered from Disabled");
         var chk15 = report.Checks.Single(c => c.Id == "CHK-15");
         chk15.Result.Should().Be(CheckResultKind.Skipped, Dump());
-        chk15.Message.Should().Be(SpeedRounding.Refusal(1, 45, "S+12 = input 12"));
+        chk15.Message.Should().Be(SpeedRounding.Body(1, 45, "S+12 = input 12"), "the check SKIPs with the body alone, no class prefix (e49dd62)");
         writesDuringChk15.Should().BeEmpty("a check that skips itself on a raw-0 speed writes nothing, Enable included");
     }
 }

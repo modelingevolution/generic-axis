@@ -60,8 +60,11 @@ public sealed partial class OneVerbProtocolParityTests
             .Should().BeEquivalentTo(motion, "exactly the protocol's motion verbs need --allow-motion");
     }
 
-    [GeneratedRegex(@"`(?<line>Commander/UnreachableSpeed: refused before writing anything: <pct>[^`]*)`")]
-    private static partial Regex RefusalLine();
+    [GeneratedRegex(@"`(?<body><pct> % of MaxVelocity[^`]*)`")]
+    private static partial Regex RefusalBody();
+
+    [GeneratedRegex(@"`(?<lead>Commander/UnreachableSpeed:\s+refused\s+before\s+writing\s+anything:\s+)<body>`")]
+    private static partial Regex GuardLine();
 
     [GeneratedRegex(@"`needs CHK-n, which (?<word>[A-Z]+)`")]
     private static partial Regex NeedsPhrase();
@@ -69,14 +72,22 @@ public sealed partial class OneVerbProtocolParityTests
     [GeneratedRegex(@"\s+")]
     private static partial Regex Spaces();
 
-    /// <summary>#66 (e60d73a): the raw-0 speed refusal — one-verb guard and check SKIP alike — is the protocol's line.</summary>
+    /// <summary>
+    /// #66 (e49dd62): the raw-0 refusal body is the protocol's (the check's SKIP message), and the one-verb guard prints
+    /// the protocol's lead before it.
+    /// </summary>
     [Fact]
     public void GA_U_146_TheSpeedRefusalIsTheProtocolsLine()
     {
-        var line = Spaces().Replace(RefusalLine().Match(Protocol()).Groups["line"].Value, " ");
-        line.Should().NotBeEmpty("protocol.md states the refusal once (Speed rounding)");
-        var expected = line.Replace("<pct>", "1", StringComparison.Ordinal).Replace("<raw>", "45", StringComparison.Ordinal);
-        SpeedRounding.Refusal(1, 45, "S+12 = input 12").Should().Be(expected);
+        var text = Protocol();
+        var body = Spaces().Replace(RefusalBody().Match(text).Groups["body"].Value, " ");
+        body.Should().NotBeEmpty("protocol.md states the refusal body once (Speed rounding)");
+        var expected = body.Replace("<pct>", "1", StringComparison.Ordinal).Replace("<raw>", "45", StringComparison.Ordinal);
+        SpeedRounding.Body(1, 45, "S+12 = input 12").Should().Be(expected);
+
+        var lead = Spaces().Replace(GuardLine().Match(text).Groups["lead"].Value, " ");
+        lead.Should().NotBeEmpty("protocol.md states the guard's form");
+        SpeedRounding.Refusal(1, 45, "S+12 = input 12").Should().Be(lead + expected);
     }
 
     /// <summary>#66 (e60d73a): the dependant SKIP phrase of § Rules, Order.</summary>

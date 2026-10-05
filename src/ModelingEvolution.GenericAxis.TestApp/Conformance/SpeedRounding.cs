@@ -15,12 +15,15 @@ public static class SpeedRounding
         (int)(Math.Round(maxVelocityRaw * percent / 100.0, MidpointRounding.AwayFromZero) + 0.0);
 
     /// <summary>
-    /// The refusal of a raw 0, exactly the protocol's line (§ One-verb mode step 3, e60d73a), used by both modes: the
-    /// one-verb guard prints it after "&lt;verb&gt;: ", and a check SKIPs itself with it (the <c>Commander/</c> prefix stays;
-    /// errorClass stays null on the SKIP).
+    /// The one-verb guard's refusal of a raw 0 (protocol § One-verb mode step 3, e49dd62):
+    /// <c>Commander/UnreachableSpeed: refused before writing anything: &lt;body&gt;</c>. A check SKIPs itself with
+    /// <see cref="Body"/> alone, no class prefix.
     /// </summary>
     public static string Refusal(double percent, int maxVelocityRaw, string maxVelocityAt) =>
         $"{ErrorClass.Commander}/{RefusalName}: {RefusalLead}{Body(percent, maxVelocityRaw, maxVelocityAt)}";
+
+    /// <summary>A percentage as given, in full: no exponent, no display rounding (0.00005 stays 0.00005).</summary>
+    public static string Percent(double percent) => percent.ToString("0.############################", CultureInfo.InvariantCulture);
 
     /// <summary>The SDK MotionError name of the refusal.</summary>
     public const string RefusalName = "UnreachableSpeed";
@@ -28,10 +31,13 @@ public static class SpeedRounding
     /// <summary>The phrase every Commander refusal of the one-verb mode starts its text with.</summary>
     public const string RefusalLead = "refused before writing anything: ";
 
-    /// <summary>The refusal's text after the lead: the percentage, the arithmetic, and the register read.</summary>
+    /// <summary>
+    /// The refusal body, exactly the protocol's (e49dd62): the percentage as given, printed in full and never rounded for
+    /// display, the arithmetic, and the register read. Both modes: the check's SKIP message, and the guard after its lead.
+    /// </summary>
     public static string Body(double percent, int maxVelocityRaw, string maxVelocityAt)
     {
-        var pct = percent.ToString("0.######", CultureInfo.InvariantCulture);
+        var pct = Percent(percent);
         return $"{pct} % of MaxVelocity rounds to raw Velocity 0 (round-half-away-from-zero({pct} × {maxVelocityRaw} ÷ 100) = 0); "
                + $"nothing to move with. Read MaxVelocity ({maxVelocityAt}) = {maxVelocityRaw}.";
     }
