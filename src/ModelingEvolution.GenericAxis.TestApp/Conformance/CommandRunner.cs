@@ -286,19 +286,36 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
                     "ContinuousMotion", fromAck: true) is { } entry) return entry;
             JogObserved = true;
 
-            // Keep printing until --for elapses (or Ctrl-C, which ends the run as a completed jog with cleanup's Stop).
-            var watch = await ctx.WaitForAsync(v => v.State != ContinuousMotion, request.For ?? TimeSpan.FromDays(1), CheckContext.Now(), ct);
-            if (watch.Met)
+            // Keep printing until --for elapses or Ctrl-C; either way the verb itself sends the Stop (protocol step 5), on its
+            // own budget so the operator's Ctrl-C cannot cancel it, and cleanup finds nothing moving.
+            PlcView? endedByPlc = null;
+            long elapsed = 0;
+            var byOperator = false;
+            try
             {
-                if (Unexpected(watch.View) is { } fault) return fault;
-                _done = $"{Name}: the PLC ended the jog itself after {watch.ElapsedMs} ms (State {watch.View.State} {RegisterDump.StateName(watch.View.State)}).";
+                var watch = await ctx.WaitForAsync(v => v.State != ContinuousMotion, request.For ?? TimeSpan.FromDays(1), CheckContext.Now(), ct);
+                if (watch.Met) (endedByPlc, elapsed) = (watch.View, watch.ElapsedMs);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                byOperator = true;
+            }
+
+            if (endedByPlc is { } plc)
+            {
+                if (Unexpected(plc) is { } fault) return fault;
+                _done = $"{Name}: the PLC ended the jog itself after {elapsed} ms (State {plc.State} {RegisterDump.StateName(plc.State)}).";
                 return null;
             }
 
-            if (await SendAsync(CommandBits.Enable | CommandBits.Stop, "Stop", ct, ChannelPriority.Stop) is { } stop) return stop;
-            var halted = await AwaitAsync(v => v.State is Standstill or Disabled, StateBudget, ct,
+            using var stopBudget = new CancellationTokenSource(StateBudget + TimeSpan.FromSeconds(2));
+            if (await SendAsync(CommandBits.Enable | CommandBits.Stop, "Stop", stopBudget.Token, ChannelPriority.Stop) is { } stop) return stop;
+            var halted = await AwaitAsync(v => v.State is Standstill or Disabled, StateBudget, stopBudget.Token,
                 v => Failure.Machine("MotionFailed", $"still moving 5 s after Stop. Read State ({ctx.At(RegisterField.State)}) = {v.State}, expected 0 or 1."), "Standstill");
-            if (halted is null) _done = $"{Name}: done — ContinuousMotion for {request.For!.Value.TotalSeconds:0.###} s (--for), then Stop: halted.";
+            if (halted is null)
+                _done = byOperator
+                    ? $"{Name}: ended by the operator after ContinuousMotion was observed; Stop sent: halted."
+                    : $"{Name}: done — ContinuousMotion for {request.For!.Value.TotalSeconds:0.###} s (--for), then Stop: halted.";
             return halted;
         }
 

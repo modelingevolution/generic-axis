@@ -200,8 +200,15 @@ public sealed class CommandModeTests
         var (exit, output) = await run;
 
         exit.Should().Be(0, $"Ctrl-C after ContinuousMotion was observed ends a jog: {output}");
-        output.Should().Contain("jog: ended by the operator after ContinuousMotion was observed.")
-            .And.Contain("Cleanup: C+0 = 0x0011 (Stop)").And.Contain("Cleanup: C+9 = 0 (release lease 65535)");
+        Last(output).Should().Be("RESULT: PASS");
+        // The verb sends the Stop (protocol step 5, lead ruling: same as Python), before its result line; cleanup has
+        // nothing left to stop.
+        var stopAt = output.IndexOf("write Command Enable|Stop (0x0011)", StringComparison.Ordinal);
+        var endedAt = output.IndexOf("jog: ended by the operator after ContinuousMotion was observed; Stop sent: halted.", StringComparison.Ordinal);
+        stopAt.Should().BeGreaterThan(0, output);
+        endedAt.Should().BeGreaterThan(stopAt, output);
+        output.Split('\n').Where(l => l.StartsWith("Cleanup:", StringComparison.Ordinal)).Should().NotContain(l => l.Contains("(Stop)"), output)
+            .And.Contain("Cleanup: C+9 = 0 (release lease 65535)");
         await ShouldEndReleased(sim);
         (await sim.SettledAsync()).State.Should().Be(SimAxisState.Disabled, "the run enabled the drive, so it disables it");
     }
