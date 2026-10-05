@@ -233,7 +233,8 @@ A number that parses but is out of range (`--speed 0`) is a guard (step 3), not 
 2. Read the status block. `MapVersion ≠ 1` or limits not sane → Protocol error, exit 1, nothing written.
 3. Run the guards on that read (Commander class, exit 2; the message names the register and its value): `move` needs
    `Homed` and a target inside `TravelMin..TravelMax`; `--speed` defaults to 10 % of `MaxVelocity` and must be
-   0 < pct ≤ 100. **Speed rounding** (both modes, both tools): a percentage becomes raw = round-half-away-from-zero(pct
+   0 < pct ≤ 100; `--for` must be 0 < S seconds, no upper bound (a parsed S ≤ 0 is this guard, message
+   `for <text> s outside 0 < S.`, nothing written). **Speed rounding** (both modes, both tools): a percentage becomes raw = round-half-away-from-zero(pct
    × `MaxVelocity` raw ÷ 100); a raw 0 is refused, never floored. The refusal body is exactly
    `<pct> % of MaxVelocity rounds to raw Velocity 0 (round-half-away-from-zero(<pct> × <raw> ÷ 100) = 0); nothing to
    move with. Read MaxVelocity (S+12 = input 12) = <raw>.` (the address renders as rule 1; `input 12` at the default
