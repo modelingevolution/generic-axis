@@ -6,11 +6,12 @@ import asyncio
 import contextlib
 import logging
 import os
+import re
 import time
 from collections.abc import Awaitable, Callable
 
 from pymodbus.client import AsyncModbusTcpClient
-from pymodbus.exceptions import ModbusException
+from pymodbus.exceptions import ModbusException, ModbusIOException
 from pymodbus.pdu import ModbusPDU
 
 from .registers import STATUS_LENGTH, RegisterMap, Space, StatusBlock, describe_range
@@ -35,6 +36,12 @@ log = logging.getLogger(__name__)
 
 class PlcError(Exception):
     """A Modbus request failed: no connection, timeout, or a Modbus exception response (Transport)."""
+
+    def __init__(self, message: str, cause: str | None = None) -> None:
+        super().__init__(message)
+        self.cause = cause
+        """The cause in plain words ("Connection refused", "timed out (no answer within 500 ms)"), for a message
+        that reports the failure after the one retry (review #49)."""
 
 
 PROTOCOL_EXCEPTIONS = {1: "illegal function", 2: "illegal data address", 3: "illegal data value"}
@@ -85,13 +92,23 @@ async def _open(client: AsyncModbusTcpClient) -> None:
     ctx.transport, _protocol = await ctx.call_create()
 
 
+_PYMODBUS_PREFIX = re.compile(r"^Modbus Error: \[[^\]]*\]\s*")
+
+
 def _reason(exc: BaseException) -> str:
-    """The exception as rule 1 wants it: the OS's words for an errno ("Connection refused"), else its text."""
+    """The cause in plain words (rule 1; review #49): the OS's words for an errno ("Connection refused"), "timed out"
+    for a request without an answer, never pymodbus's "No response received after 0 retries" (the tool's own retry is
+    the one that counts)."""
+    if isinstance(exc, PlcError) and exc.cause is not None:
+        return exc.cause
     if isinstance(exc, TimeoutError):
-        return "no answer (connect timed out)"
+        return "timed out"
     if isinstance(exc, OSError) and exc.errno is not None:
-        return f"{os.strerror(exc.errno)} ({exc})"
-    return str(exc) or type(exc).__name__
+        return os.strerror(exc.errno)
+    text = str(exc)
+    if isinstance(exc, ModbusIOException) and "No response received" in text:
+        return f"timed out (no answer within {round(REQUEST_TIMEOUT_S * 1000)} ms)"
+    return _PYMODBUS_PREFIX.sub("", text).rstrip(". ") or type(exc).__name__
 
 
 async def _complete_on_the_wire(pending: Awaitable[ModbusPDU]) -> ModbusPDU:
@@ -178,11 +195,15 @@ class PlcClient:
             self._client = client
             self._generation += 1
             return
-        reason = f": {_reason(last)}" if last is not None else ""
-        raise PlcError(
-            f"connect to {self.host}:{self.port} failed ({attempts} attempt{'s' if attempts > 1 else ''} in "
-            f"{time.monotonic() - started:.1f} s){reason}"
-        )
+        cause = _reason(last) if last is not None else "no attempt"
+        if attempts > 1:
+            # Review #49 (C#'s words): two attempts, the second after a fresh connection.
+            message = f"connect on {self.host}:{self.port} failed twice (reconnected once): {cause}"
+        else:
+            message = (
+                f"connect to {self.host}:{self.port} failed (1 attempt in {time.monotonic() - started:.1f} s): {cause}"
+            )
+        raise PlcError(message, cause=cause)
 
     def close(self) -> None:
         if self._client is not None:
@@ -227,21 +248,29 @@ class PlcClient:
                     if code in PROTOCOL_EXCEPTIONS:
                         raise PlcRefusedError(operation, space, code)
                     name = TRANSPORT_EXCEPTIONS.get(code, "unexpected code")
-                    raise PlcError(f"{where} failed: Modbus exception {code:02X} ({name})")
+                    cause = f"Modbus exception {code:02X} ({name})"
+                    raise PlcError(f"{where} failed: {cause}", cause=cause)
                 return response
             except PlcRefusedError:
                 raise  # the PLC answered: Protocol, no reconnect-and-retry (ADR-37)
             except (OSError, ModbusException, PlcError) as exc:
                 failure = exc if isinstance(exc, PlcError) else _failure(f"{where} failed", exc)
-                if isinstance(failure, asyncio.CancelledError) or retried or not retry:
-                    raise failure from exc
-                log.warning("%s; reconnecting and retrying once", failure)
+                if isinstance(failure, asyncio.CancelledError) or not retry:
+                    raise failure from exc  # a single attempt reports as it is
+                cause = _reason(exc)
+                if retried:
+                    # Review #49: the protocol's shape for the failure after the one retry.
+                    raise PlcError(f"{where} failed twice (reconnected once): {cause}", cause=cause) from exc
+                log.warning("%s failed: %s; reconnecting and retrying once", where, cause)
                 self.retries += 1
                 retried = True
                 try:
                     await self._reconnect(generation)
                 except PlcError as again:
-                    raise PlcError(f"{failure}; reconnect failed: {again}") from exc
+                    # The reconnect is the second attempt's start: its failure is that attempt's cause.
+                    raise PlcError(
+                        f"{where} failed twice (reconnected once): {_reason(again)}", cause=_reason(again)
+                    ) from exc
 
     async def read(self, address: int, count: int) -> list[int]:
         """FC03: holding registers (the command block)."""

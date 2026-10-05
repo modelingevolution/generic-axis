@@ -94,7 +94,9 @@ async def test_run_dump_exits_1_on_a_transport_error(capsys: pytest.CaptureFixtu
     async with StubPlc() as plc:
         port = plc.port
     assert await run_dump(Options(host="127.0.0.1", port=port), watch=False) == 1
-    assert capsys.readouterr().err.startswith(f"Transport/CommunicationLost: connect to 127.0.0.1:{port}")
+    assert capsys.readouterr().err.startswith(
+        f"Transport/CommunicationLost: connect on 127.0.0.1:{port} failed twice (reconnected once): "
+    )
 
 
 async def test_run_dump_exits_0_when_both_blocks_were_read(stub: StubPlc) -> None:
