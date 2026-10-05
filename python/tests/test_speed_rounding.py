@@ -21,6 +21,8 @@ MOVE_VEL = 8
     [
         (49, 1, 0),  # 0.49 → 0: refused, never floored to 1
         (50, 1, 1),  # 0.5 → 1: half away from zero (truncation gives 0)
+        (149, 1, 1),  # 1.49 → 1 (reviewer-python-2 #43)
+        (150, 1, 2),  # 1.5 → 2 (truncation gives 1)
         (250, 1, 3),  # 2.5 → 3: half away from zero (banker's gives 2)
         (55, 10, 6),  # 5.5 → 6 (truncation gives 5)
         (500_000, 10, 50_000),
@@ -60,6 +62,12 @@ async def test_a_1_percent_that_rounds_to_raw_0_skips_chk15_writing_nothing_whil
         "nothing to move with. Read MaxVelocity (S+12 = input 12) = 49."
     )
     assert chk15.observed == {}
+    # A machine-property skip, not a timing one: the release gate (.github/scripts/inconclusive.py) counts results whose
+    # message starts with "INCONCLUSIVE", and tests_target skips with this message verbatim. It never carries the
+    # simulator cadence line.
+    assert not chk15.message.startswith("INCONCLUSIVE")
+    assert "cadence" not in chk15.message
+    assert "scan gap" not in chk15.message
     assert results["CHK-16"].result == SKIPPED
     assert results["CHK-16"].message == "needs CHK-15, which SKIPPED"
     # Zero motion writes for the refused speed: no MoveVelocity command ever, no Velocity 0 parameter.
