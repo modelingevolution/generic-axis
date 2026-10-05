@@ -114,4 +114,55 @@ public sealed class SpeedRoundingCheckerTests
         moveVelocityWrites.Should().Be(0, "a speed that rounds to raw 0 is refused, never written");
         report.ExitCode.Should().Be(0, "SKIPPED is allowed");
     }
+
+    /// <summary>
+    /// GA-I-86 (#67): the raw-0 skip writes nothing even when the check is entered from Disabled — where a skip placed
+    /// after EnsureEnabled would write Enable. Path: a drive fault injected at CHK-14's MoveAbsolute fails CHK-14
+    /// (Machine), the restore Resets the axis to Disabled (the fault clears as that Reset lands), and CHK-15 starts from
+    /// Disabled. The sim's write journal records every client write while CHK-15 runs; the beat loop's Heartbeat (C+8)
+    /// is not the check's write and is excluded.
+    /// </summary>
+    [Fact]
+    public async Task GA_I_86_ASelfSkippingCheckEnteredFromDisabledWritesNothing()
+    {
+        using var sim = new LiveSimulator(new SimulatedAxisOptions { MaxVelocity = 0.045, InitialPosition = 9.98, HomeSensorPosition = 9.98 });
+        string? running = null;
+        var injected = false;
+        SimAxisState? stateAtChk15 = null;
+        var writesDuringChk15 = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        sim.Host.OnClientWrite = addresses =>
+        {
+            if (Volatile.Read(ref running) == "CHK-15")
+                foreach (var a in addresses.Where(a => a != SimRegisters.Heartbeat))
+                    writesDuringChk15.Enqueue($"holding {a} = {sim.Host.Registers.Holding.Read(a)}");
+            if (!addresses.Contains(SimRegisters.Command)) return;
+            var command = (SimCommandBits)sim.Host.Registers.Holding.Read(SimRegisters.Command);
+            if (Volatile.Read(ref running) == "CHK-14" && !injected && command.HasFlag(SimCommandBits.MoveAbsolute))
+            {
+                injected = true;
+                sim.Host.Faults = new SimFaults { DriveFault = true };
+            }
+            else if (injected && command.HasFlag(SimCommandBits.Reset))
+            {
+                sim.Host.Faults = SimFaults.None;
+            }
+        };
+
+        var report = await new ConformanceRunner(NullLoggerFactory.Instance).RunAsync(
+            new CheckerOptions { Host = "127.0.0.1", Port = sim.Port, AllowMotion = true }, CancellationToken.None,
+            r =>
+            {
+                if (r.Running == "CHK-15") stateAtChk15 = sim.Snapshot.State;
+                Volatile.Write(ref running, r.Running);
+            });
+
+        string Dump() => string.Join("\n", report.Checks.Select(c => $"{c.Id} {c.Result} {c.Message}"));
+        injected.Should().BeTrue(Dump());
+        report.Checks.Single(c => c.Id == "CHK-14").Message.Should().StartWith("Machine/DriveFault", Dump());
+        stateAtChk15.Should().Be(SimAxisState.Disabled, "the restore after CHK-14 had to Reset: CHK-15 is entered from Disabled");
+        var chk15 = report.Checks.Single(c => c.Id == "CHK-15");
+        chk15.Result.Should().Be(CheckResultKind.Skipped, Dump());
+        chk15.Message.Should().Be(SpeedRounding.Refusal(1, 45, "S+12 = input 12"));
+        writesDuringChk15.Should().BeEmpty("a check that skips itself on a raw-0 speed writes nothing, Enable included");
+    }
 }
