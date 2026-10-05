@@ -16,6 +16,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -337,11 +338,17 @@ async def test_ga_i_40_dump_reads_without_touching(simulator: START) -> None:
         if "MapVersion" in line:
             seen = 1
             break
+    # Drain stdout while the window runs: a pipe can hold as little as 8 KB (a user over fs.pipe-user-pages-soft gets
+    # 2 pages per new pipe), and an undrained pipe blocks the dump after four dumps, which reads as a slow --watch.
+    drained: list[str] = []
+    reader = threading.Thread(target=lambda: drained.extend(watch.stdout or ()), daemon=True)
+    reader.start()
     await asyncio.sleep(2.0)
     watch.send_signal(signal.SIGINT)
-    out, err = watch.communicate(timeout=30)
+    _out, err = watch.communicate(timeout=30)
+    reader.join(timeout=30)
     assert watch.returncode == 0, err
-    assert seen + out.count("MapVersion") >= 10
+    assert seen + "".join(drained).count("MapVersion") >= 10
     assert await registers(sim.port, MAP.command, COMMAND_LENGTH) == before  # LeaseOwner included (C+9)
 
     closed = dump_process(free_port())
