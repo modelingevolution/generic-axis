@@ -42,7 +42,8 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
             CommanderSession.Preflight preflight;
             try
             {
-                preflight = await CommanderSession.PreflightAsync(ctx, _log, ct);
+                preflight = await CommanderSession.PreflightAsync(ctx, _log, ct,
+                    deadHolder: "its trip is cleared at attach as the driver does; FaultCode 4 is left for reset.");
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -75,7 +76,7 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
 
         output.WriteLine(result);
         // protocol step 6: Stop if moving, clear edges, Enable 0 only if this run set Enable 1, release the lease.
-        await CommanderSession.CleanupAsync(ctx, _log, disableOnExit: run.EnabledByRun);
+        await CommanderSession.CleanupAsync(ctx, _log, disableOnExit: run.DisableOnExit);
         foreach (var entry in ctx.CleanupLog) output.WriteLine($"Cleanup: {entry}");
         return Result(output, exit switch
         {
@@ -121,17 +122,23 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
     {
         private Stopwatch? _clock;
         private long _writtenAt;
-        private bool _levelAtStart;
+        private bool _bit;
+        private bool _foundEnergised;
+        private bool _wroteEnable1;
 
-        /// <summary>This run set Enable 1 on an axis it found with Enable 0: cleanup writes Enable 0.</summary>
-        public bool EnabledByRun { get; private set; }
+        /// <summary>
+        /// Protocol § One-verb mode step 4 (#61): cleanup writes Enable 0 if and only if the axis was found not energised
+        /// (decided from State at step 2, never from the command bit) and this run wrote Enable 1.
+        /// </summary>
+        public bool DisableOnExit => !_foundEnergised && _wroteEnable1;
 
         /// <summary>A jog reached ContinuousMotion: an operator's Ctrl-C after this point is the jog's normal end.</summary>
         public bool JogObserved { get; private set; }
 
         private string Name => request.Name;
 
-        private CommandBits Level => _levelAtStart || EnabledByRun ? CommandBits.Enable : CommandBits.None;
+        /// <summary>The Enable level the command word holds now, kept on Stop writes.</summary>
+        private CommandBits Level => _bit ? CommandBits.Enable : CommandBits.None;
 
         public async Task<(int Exit, string Line)> ExecuteAsync(CancellationToken ct)
         {
@@ -140,8 +147,8 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
             if (s.MapVersion != RegisterMap.Version)
                 return Fail(Failure.Protocol($"wrong map version. Read MapVersion ({ctx.At(RegisterField.MapVersion)}) = {s.MapVersion}, expected {RegisterMap.Version}; nothing written."));
             if (s.LimitsPublished && !s.LimitsValid)
-                return Fail(Failure.Protocol($"limits not sane. Read TravelMin ({ctx.At(RegisterField.TravelMin)}) = {U(s.TravelMin)}, TravelMax ({ctx.At(RegisterField.TravelMax)}) = {U(s.TravelMax)}, "
-                                             + $"MaxVelocity ({ctx.At(RegisterField.MaxVelocity)}) = {U(s.MaxVelocity)}, expected TravelMin < TravelMax and MaxVelocity > 0; nothing written."));
+                return Fail(Failure.Protocol($"limits not sane. Read TravelMin ({ctx.At(RegisterField.TravelMin)}) = {s.TravelMin}, TravelMax ({ctx.At(RegisterField.TravelMax)}) = {s.TravelMax}, "
+                                             + $"MaxVelocity ({ctx.At(RegisterField.MaxVelocity)}) = {s.MaxVelocity}, expected TravelMin < TravelMax and MaxVelocity > 0; nothing written."));
 
             // Step 3: guards, before any write — the lease included.
             if (Guard(s) is { } refused) return (ConformanceExitCodes.Usage, $"{Name}: {refused.Render()}");
@@ -151,11 +158,12 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
             {
                 // Step 1: a dead holder's trip — proceed as the driver does at attach; ErrorStop and FaultCode 4 stay for reset.
                 await ctx.ClearWatchdogFaultAsync(ct);
-                output.WriteLine($"{ctx.At(RegisterField.WatchdogFault)} = 0 written: the previous commander's trip (ErrorStop, FaultCode 4 stays for reset)");
+                output.WriteLine($"{ctx.At(RegisterField.WatchdogFault)} = 0 written at attach, as the driver does (ErrorStop and FaultCode 4 stay for reset)");
             }
 
             await ctx.Beater.StartAsync(ct);
-            _levelAtStart = ((await ctx.ReadAsync(ctx.Map.Command, 1, ct))[0] & (ushort)CommandBits.Enable) != 0;
+            _bit = (await ctx.Commands.ReadCommandWordAsync(ct) & (ushort)CommandBits.Enable) != 0;
+            _foundEnergised = s.State is not (Disabled or ErrorStop);
             ctx.Observer = v => output.WriteLine(StatusLine(_clock is { } c ? (long)c.Elapsed.TotalMilliseconds : 0, v));
 
             var failure = request.Verb switch
@@ -189,14 +197,14 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
                     return Commander("NotHomed", $"move needs Homed. Read Flags ({ctx.At(RegisterField.Flags)}) = 0x{(ushort)s.Flags:X4}, expected bit 0 (Homed) set.");
                 var target = request.Target!.Value;
                 if (target < Words.FromRaw(s.TravelMin) || target > Words.FromRaw(s.TravelMax))
-                    return Commander("OutOfRange", $"target {target.ToString("0.000", Inv)} is outside TravelMin..TravelMax. Read TravelMin ({ctx.At(RegisterField.TravelMin)}) = {U(s.TravelMin)}, "
-                                                   + $"TravelMax ({ctx.At(RegisterField.TravelMax)}) = {U(s.TravelMax)}.");
+                    return Commander("OutOfRange", $"target {target.ToString("0.000", Inv)} is outside TravelMin..TravelMax. Read TravelMin ({ctx.At(RegisterField.TravelMin)}) = {s.TravelMin}, "
+                                                   + $"TravelMax ({ctx.At(RegisterField.TravelMax)}) = {s.TravelMax}.");
                 return null;
             }
 
             var v = request.Velocity!.Value;
             if (v == 0 || Math.Abs(v) > Words.FromRaw(s.MaxVelocity))
-                return Commander("UnreachableSpeed", $"jog needs 0 < |v| ≤ MaxVelocity, got {v.ToString("0.000", Inv)}. Read MaxVelocity ({ctx.At(RegisterField.MaxVelocity)}) = {U(s.MaxVelocity)}.");
+                return Commander("UnreachableSpeed", $"jog needs 0 < |v| ≤ MaxVelocity, got {v.ToString("0.000", Inv)}. Read MaxVelocity ({ctx.At(RegisterField.MaxVelocity)}) = {s.MaxVelocity}.");
             return null;
         }
 
@@ -206,6 +214,10 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
 
         private async Task<Failure?> EnableAsync(CancellationToken ct)
         {
+            // #61: bit 0 already 1 while Disabled (a pendant Reset after a trip) — Enable 0 first, acked, so the Enable is
+            // a fresh 0→1 edge, as the driver's EnergiseAsync does.
+            if (CommandWriter.NeedsFreshEdge(await ctx.Commands.ReadCommandWordAsync(ct), (await ctx.ReadStatusAsync(ct)).State)
+                && await SendAsync(CommandBits.None, "Enable 0 (before a fresh Enable edge)", ct) is { } fresh) return fresh;
             if (await SendAsync(CommandBits.Enable, "Enable 1", ct) is { } f) return f;
             return await AwaitAsync(v => v.State == Standstill, StateBudget, ct,
                 v => Failure.Machine("DriveFault", $"no Standstill 5 s after Enable 1. Read State ({ctx.At(RegisterField.State)}) = {v.State}, expected 1."), "Standstill");
@@ -231,7 +243,7 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
         {
             if (await SendAsync(Level | CommandBits.Stop, "Stop", ct, ChannelPriority.Stop) is { } f) return f;
             return await AwaitAsync(v => v.State is Standstill or Disabled, StateBudget, ct,
-                v => Failure.Machine("MotionFailed", $"still moving 5 s after Stop. Read State ({ctx.At(RegisterField.State)}) = {v.State}, ActualVelocity ({ctx.At(RegisterField.ActualVelocity)}) = {U(v.Status.ActualVelocity)}, expected 0 or 1."),
+                v => Failure.Machine("MotionFailed", $"still moving 5 s after Stop. Read State ({ctx.At(RegisterField.State)}) = {v.State}, ActualVelocity ({ctx.At(RegisterField.ActualVelocity)}) = {v.Status.ActualVelocity}, expected 0 or 1."),
                 "Standstill or Disabled");
         }
 
@@ -244,12 +256,7 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
                 output.WriteLine($"{ctx.At(RegisterField.WatchdogFault)} = 0 written before the Reset");
             }
 
-            if (Level != CommandBits.None)
-            {
-                if (await SendAsync(CommandBits.None, "Enable 0", ct) is { } off) return off;
-                _levelAtStart = false;
-                EnabledByRun = false;
-            }
+            if (Level != CommandBits.None && await SendAsync(CommandBits.None, "Enable 0", ct) is { } off) return off;
 
             if (await SendAsync(CommandBits.Reset, "Reset", ct) is { } f) return f;
             return await AwaitAsync(v => v.State != ErrorStop, StateBudget, ct,
@@ -271,7 +278,7 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
             if (await SendAsync(CommandBits.Enable | CommandBits.MoveAbsolute, "MoveAbsolute", ct) is { } m) return m;
             return await AwaitAsync(v => v.State == Standstill && v.Status.InPosition, budget, ct,
                 v => Failure.Machine("MotionFailed", $"not arrived within {budget.TotalSeconds:0.0} s (2 × |target − start| ÷ velocity + 5 s). Read State ({ctx.At(RegisterField.State)}) = {v.State}, "
-                                                     + $"Flags.InPosition = {(v.Status.InPosition ? 1 : 0)}, ActualPosition ({ctx.At(RegisterField.ActualPosition)}) = {U(v.Status.ActualPosition)}, expected 1, 1, {U(target)}."),
+                                                     + $"Flags.InPosition = {(v.Status.InPosition ? 1 : 0)}, ActualPosition ({ctx.At(RegisterField.ActualPosition)}) = {v.Status.ActualPosition}, expected 1, 1, {target}."),
                 "Standstill + InPosition");
         }
 
@@ -333,9 +340,9 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
         private async Task<Failure?> SendAsync(CommandBits bits, string what, CancellationToken ct, ChannelPriority lane = ChannelPriority.Move)
         {
             _clock ??= Stopwatch.StartNew();
-            if ((bits & CommandBits.Enable) != 0 && !_levelAtStart) EnabledByRun = true;
-            if ((bits & CommandBits.Enable) == 0) EnabledByRun = false;
-            output.WriteLine($"+{(long)_clock.Elapsed.TotalMilliseconds,6} ms  write Command {(bits == CommandBits.None ? "None" : bits.ToString().Replace(", ", "|", StringComparison.Ordinal))} (0x{(ushort)bits:X4})");
+            _bit = (bits & CommandBits.Enable) != 0;
+            _wroteEnable1 |= _bit;
+            output.WriteLine($"+{(long)_clock.Elapsed.TotalMilliseconds,6} ms  write Command {(bits == CommandBits.None ? "none" : bits.ToString().Replace(", ", "|", StringComparison.Ordinal))} (0x{(ushort)bits:X4})");
             var ack = await ctx.Commands.SendAsync(bits, ct, lane);
             _writtenAt = ack.WrittenAt;
             return ack.Acked ? null : Failure.NotAcknowledged(what, ack.Seq, ack.View.Status.CommandAck, ack.View.State);

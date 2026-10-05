@@ -149,6 +149,13 @@ internal static class CheckCatalog
         await ctx.TakeLeaseAsync(ct);
         await ctx.Beater.StartAsync(ct);
 
+        // #61: bit 0 already 1 while Disabled — write [0, seq+1] first so the Enable is a fresh 0→1 edge.
+        if (CommandWriter.NeedsFreshEdge(await ctx.Commands.ReadCommandWordAsync(ct), s.State))
+        {
+            var fresh = await ctx.Commands.SendAsync(CommandBits.None, ct);
+            if (!fresh.Acked) return NotAcked("Enable 0 (before a fresh Enable edge)", fresh);
+        }
+
         var on = await ctx.Commands.SendAsync(CommandBits.Enable, ct);
         if (!on.Acked) return NotAcked("Enable 1", on);
         var standstill = await ctx.WaitForAsync(v => v.State == Standstill, StateTimeout, on.WrittenAt, ct);

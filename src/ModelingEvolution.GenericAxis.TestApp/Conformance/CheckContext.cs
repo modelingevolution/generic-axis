@@ -354,6 +354,17 @@ internal sealed class CommandWriter(CheckContext ctx)
     }
 
     /// <summary>
+    /// Protocol § Command semantics, Enable (#61, f52c9e0): an Enable is a fresh 0→1 edge. When <c>Command</c> bit 0
+    /// already reads 1 while <c>State</c> is Disabled (a pendant Reset after a trip leaves it so), an Enable 0 command
+    /// must be written and acknowledged first, as the driver's EnergiseAsync does.
+    /// </summary>
+    public static bool NeedsFreshEdge(ushort commandWord, ushort state) =>
+        (commandWord & (ushort)CommandBits.Enable) != 0 && state == 0;
+
+    /// <summary><c>Command</c> (C+0) as the PLC holds it now.</summary>
+    public async Task<ushort> ReadCommandWordAsync(CancellationToken ct) => (await ctx.ReadAsync(ctx.Map.Command, 1, ct))[0];
+
+    /// <summary>
     /// Clears edge bits still set in <c>Command</c> (an ack wait cut short), keeping the Enable level and the sequence:
     /// the protocol's edge-clear write, not a command write. Returns the journal entry, or null when nothing was set.
     /// </summary>
