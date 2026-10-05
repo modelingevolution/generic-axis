@@ -565,7 +565,7 @@ public sealed class CheckerAgainstSimulatorTests
     // ---- Review #35: a held lease is watched to 1.6 s ----------------------------------------------------------------
 
     /// <summary>A raw commander: takes the lease as owner 1 and beats every 100 ms until told to pause or stop.</summary>
-    private sealed class RawCommander : IDisposable
+    internal sealed class RawCommander : IDisposable
     {
         private readonly FluentModbus.ModbusTcpClient _client = new() { ConnectTimeout = 2000, ReadTimeout = 2000, WriteTimeout = 2000 };
         private readonly Lock _io = new();

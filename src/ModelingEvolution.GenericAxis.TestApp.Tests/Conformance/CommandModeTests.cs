@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 using ModelingEvolution.GenericAxis.TestApp.Conformance;
 using ModelingEvolution.GenericAxis.TestApp.Simulation;
+using ModelingEvolution.GenericAxis.TestApp.Tests.Support;
 using RocketWelder.SDK.Abstractions;
 
 namespace ModelingEvolution.GenericAxis.TestApp.Tests.Conformance;
@@ -256,6 +257,32 @@ public sealed class CommandModeTests
         output.Should().Contain("enable: Protocol/ProtocolMismatch: wrong map version. Read MapVersion (S+14 = input 14) = 2, expected 1; nothing written.");
         (await sim.SettledAsync()).CommandBlock.Should().Equal(before.CommandBlock);
         writes.Should().BeEmpty("a PLC on another map version is never written, not even the lease");
+    }
+
+    /// <summary>
+    /// GA-I-81 (ADR-38 step 1): after a dead holder's trip the mode proceeds as the driver does at attach — it takes the
+    /// lease and writes WatchdogFault = 0 — and leaves ErrorStop with FaultCode 4 for <c>reset</c>.
+    /// </summary>
+    [Fact]
+    public async Task GA_I_81_ADeadHoldersTripIsTakenOverAsAtAttachAndLeftForReset()
+    {
+        using var sim = new LiveSimulator();
+        using (var commander = new CheckerAgainstSimulatorTests.RawCommander(sim.Port)) await commander.BeatAsync(TimeSpan.FromSeconds(0.5)); // then dies
+
+        var (exit, output) = await Command(sim, new VerbRequest(Verb.Enable));
+
+        Cadence.Budget(sim.MaxScanGap, () => exit.Should().Be(1, output));
+        output.Should().Contain("Pre-flight: LeaseOwner (C+9 = holding 9) = 1 held with no beat and WatchdogFault (C+10 = holding 10) = 1")
+            .And.Contain("C+10 = holding 10 = 0 written: the previous commander's trip")
+            .And.Contain("enable: Machine/WatchdogTripped: the PLC reports ErrorStop. Read FaultCode (S+6 = input 6) = 4.");
+        var after = await sim.SettledAsync();
+        after.WatchdogFault.Should().Be(0, "cleared at attach, as the driver does");
+        after.State.Should().Be(SimAxisState.ErrorStop, "ErrorStop and FaultCode 4 stay for reset");
+        after.LeaseOwner.Should().Be(0);
+
+        var (resetExit, resetOutput) = await Command(sim, new VerbRequest(Verb.Reset));
+        resetExit.Should().Be(0, resetOutput);
+        (await sim.SettledAsync()).State.Should().Be(SimAxisState.Disabled);
     }
 
     // ---- the command line (GA-U-145) -------------------------------------------------------------------------------
