@@ -109,7 +109,7 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
     private static string Describe(VerbRequest r) => r.Verb switch
     {
         Verb.Move => $"move {r.Target!.Value.ToString("0.######", Inv)} --speed {r.Speed}",
-        Verb.Jog => $"jog {r.Velocity!.Value.ToString("0.######", Inv)}{(r.For is { } f ? $" --for {f.TotalSeconds.ToString("0.###", Inv)}" : "")}",
+        Verb.Jog => $"jog {r.Velocity!.Value.ToString("0.######", Inv)}{(r.For is { } f ? $" --for {f}" : "")}",
         _ => r.Name,
     };
 
@@ -216,6 +216,9 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
                 return null;
             }
 
+            if (request.ForSeconds is { } seconds && !(seconds > 0))
+                return Commander("OutOfRange", $"for {request.For} s outside 0 < S.");
+
             var v = request.Velocity!.Value;
             var raw = Raw(v);
             if (raw == 0 || Math.Abs(raw) > s.MaxVelocity)
@@ -318,7 +321,7 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
             var byOperator = false;
             try
             {
-                var watch = await ctx.WaitForAsync(v => v.State != ContinuousMotion, request.For ?? TimeSpan.FromDays(1), CheckContext.Now(), ct);
+                var watch = await ctx.WaitForAsync(v => v.State != ContinuousMotion, request.ForDuration ?? TimeSpan.FromDays(1), CheckContext.Now(), ct);
                 if (watch.Met) (endedByPlc, elapsed) = (watch.View, watch.ElapsedMs);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -340,7 +343,7 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
             if (halted is null)
                 _done = byOperator
                     ? $"{Name}: ended by the operator after ContinuousMotion was observed; Stop sent: halted."
-                    : $"{Name}: done — ContinuousMotion for {request.For!.Value.TotalSeconds:0.###} s (--for), then Stop: halted.";
+                    : $"{Name}: done — ContinuousMotion for {request.For} s (--for), then Stop: halted.";
             return halted;
         }
 

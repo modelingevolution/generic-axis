@@ -117,7 +117,7 @@ public sealed class CommandModeTests
 
         var found = await sim.SettledAsync();
 
-        var (exit, output) = await Command(sim, new VerbRequest(Verb.Jog, Velocity: -50, For: TimeSpan.FromSeconds(1)));
+        var (exit, output) = await Command(sim, new VerbRequest(Verb.Jog, Velocity: -50, For: "1"));
 
         exit.Should().Be(0, output);
         output.Should().Contain("State 4 ContinuousMotion").And.Contain("write Command Enable|Stop (0x0011)")
@@ -176,6 +176,9 @@ public sealed class CommandModeTests
                 "jog: Commander/UnreachableSpeed: refused before writing anything: jog needs 0 < |v| ≤ MaxVelocity, got 500.001 (raw 500001). Read MaxVelocity (S+12 = input 12) = 500000."),
             (new(), new VerbRequest(Verb.Jog, Velocity: -500.001), "jog: Commander/UnreachableSpeed: refused before writing anything: jog needs 0 < |v| ≤ MaxVelocity, got -500.001 (raw -500001)."),
             (new(), new VerbRequest(Verb.Jog, Velocity: 0), "jog: Commander/UnreachableSpeed:"),
+            // 7751649: --for 0 < S is a guard (exit 2, RESULT: GUARD), the text as typed.
+            (new(), new VerbRequest(Verb.Jog, Velocity: 5, For: "0"), "jog: Commander/OutOfRange: refused before writing anything: for 0 s outside 0 < S."),
+            (new(), new VerbRequest(Verb.Jog, Velocity: 5, For: "-0.5"), "jog: Commander/OutOfRange: refused before writing anything: for -0.5 s outside 0 < S."),
             // #37: the guard is on the RAW value written — 0.0004 unit/s rounds to Velocity 0.
             (new(), new VerbRequest(Verb.Jog, Velocity: 0.0004), "jog: Commander/UnreachableSpeed: refused before writing anything: jog needs 0 < |v| ≤ MaxVelocity, got 0.0004 (raw 0)."),
             (new(), new VerbRequest(Verb.Jog, Velocity: -0.0004), "jog: Commander/UnreachableSpeed: refused before writing anything: jog needs 0 < |v| ≤ MaxVelocity, got -0.0004 (raw 0)."),
@@ -484,7 +487,7 @@ public sealed class CommandModeTests
         move.Should().Be(new VerbRequest(Verb.Move, Target: -12.5, Speed: "20"));
         CheckCommandLine.Parse(["--command", "move", "100", "plc", "--allow-motion"]).Options!.Command!.SpeedPercent.Should().Be(10);
         var jog = CheckCommandLine.Parse(["--command", "jog", "-50", "plc", "--for", "2", "--allow-motion"]).Options!.Command!;
-        jog.Should().Be(new VerbRequest(Verb.Jog, Velocity: -50, For: TimeSpan.FromSeconds(2)));
+        jog.Should().Be(new VerbRequest(Verb.Jog, Velocity: -50, For: "2"));
     }
 
     [Theory]
@@ -498,7 +501,6 @@ public sealed class CommandModeTests
     [InlineData("--command", "move", "100", "plc", "--allow-motion", "--speed", "fast")]
     [InlineData("--command", "enable", "plc", "--speed", "20")]
     [InlineData("--command", "enable", "plc", "--for", "2")]
-    [InlineData("--command", "jog", "5", "plc", "--allow-motion", "--for", "0")]
     [InlineData("--command", "enable", "plc", "--dump")]
     [InlineData("--command", "enable", "plc", "--report", "r.md")]
     [InlineData("--command", "enable", "--command", "stop", "plc")]

@@ -54,8 +54,17 @@ public enum Verb
 /// typed (#68): it is what every message prints; <see cref="SpeedPercent"/> is its value, parsed once, for arithmetic only.
 /// </summary>
 public sealed record VerbRequest(Verb Verb, double? Target = null, string Speed = VerbRequest.DefaultSpeed,
-    double? Velocity = null, TimeSpan? For = null)
+    double? Velocity = null, string? For = null)
 {
+    /// <summary>
+    /// <c>--for</c> as a duration — arithmetic only, never printed (print <see cref="For"/>, as typed). The grammar makes it
+    /// finite; a value past TimeSpan's range is "until Ctrl-C" in practice and is held at <see cref="TimeSpan.MaxValue"/>.
+    /// </summary>
+    public TimeSpan? ForDuration => For is null ? null : ForSeconds >= TimeSpan.MaxValue.TotalSeconds ? TimeSpan.MaxValue : TimeSpan.FromSeconds(ForSeconds!.Value);
+
+    /// <summary><c>--for</c> in seconds, parsed from the typed text.</summary>
+    public double? ForSeconds => For is null ? null : double.Parse(For, NumberStyles.Float, CultureInfo.InvariantCulture);
+
     public const string DefaultSpeed = "10";
 
     /// <summary>The <c>--speed</c> percentage as a number — arithmetic only, never printed (print <see cref="Speed"/>).</summary>
@@ -101,7 +110,7 @@ public static class CheckCommandLine
         Verb? verb = null;
         double? verbNumber = null;
         string? speed = null;
-        double? forSeconds = null;
+        string? forText = null;
 
         for (var i = 0; i < args.Count; i++)
         {
@@ -153,24 +162,18 @@ public static class CheckCommandLine
                         if (verb is Verb.Move or Verb.Jog)
                         {
                             var n = i + 1 < args.Count ? args[++i] : throw new FormatException($"--command {name} needs a number");
-                            verbNumber = double.TryParse(n, NumberStyles.Float, CultureInfo.InvariantCulture, out var x) && double.IsFinite(x)
-                                ? x
-                                : throw new FormatException($"--command {name} needs a number, got '{n}'");
+                            verbNumber = double.Parse(NumberText(name, n), NumberStyles.Float, CultureInfo.InvariantCulture);
                         }
 
                         break;
                     case "--speed":
                         var sp = Value();
                         // A number is the parser's business; its range (0 < pct ≤ 100) is a guard (protocol step 3, #39).
-                        speed = double.TryParse(sp, NumberStyles.Float, CultureInfo.InvariantCulture, out var pct) && double.IsFinite(pct)
-                            ? sp // kept as typed (#68)
-                            : throw new FormatException($"--speed needs a number, got '{sp}'");
+                        speed = NumberText("--speed", sp); // kept as typed (#68)
                         break;
                     case "--for":
                         var fs = Value();
-                        forSeconds = double.TryParse(fs, NumberStyles.Float, CultureInfo.InvariantCulture, out var sec) && sec > 0 && double.IsFinite(sec)
-                            ? sec
-                            : throw new FormatException($"--for must be a positive number of seconds, got '{fs}'");
+                        forText = NumberText("--for", fs); // its range (0 < S) is a guard (protocol step 3, 7751649)
                         break;
                     default:
                         if (arg.StartsWith('-')) throw new FormatException($"unknown argument '{arg}'");
@@ -203,11 +206,11 @@ public static class CheckCommandLine
         {
             if (dump || report is not null) return (null, "--command runs one verb; it takes no --dump or --report");
             if (speed is not null && vb != Verb.Move) return (null, "--speed belongs to --command move");
-            if (forSeconds is not null && vb != Verb.Jog) return (null, "--for belongs to --command jog");
+            if (forText is not null && vb != Verb.Jog) return (null, "--for belongs to --command jog");
             if (new VerbRequest(vb).Moves && !allowMotion) // the one list, bound to protocol.md by GA-U-146
                 return (null, $"--command {vb.ToString().ToLowerInvariant()} moves the axis: it needs --allow-motion (an operator at the machine, the travel clear)");
         }
-        else if (speed is not null || forSeconds is not null)
+        else if (speed is not null || forText is not null)
         {
             return (null, "--speed and --for belong to --command");
         }
@@ -232,11 +235,31 @@ public static class CheckCommandLine
             {
                 null => null,
                 Verb.Move => new VerbRequest(Verb.Move, Target: verbNumber, Speed: speed ?? VerbRequest.DefaultSpeed),
-                Verb.Jog => new VerbRequest(Verb.Jog, Velocity: verbNumber, For: forSeconds is { } f ? TimeSpan.FromSeconds(f) : null),
+                Verb.Jog => new VerbRequest(Verb.Jog, Velocity: verbNumber, For: forText),
                 var other => new VerbRequest(other.Value),
             },
         }, null);
     }
+
+    /// <summary>
+    /// protocol § One-verb mode (dcae45b, #48): every numeric argument matches <c>[+-]?</c> then decimal digits with an
+    /// optional fraction and an optional exponent — no whitespace, underscores, hex, inf or nan — and its value is finite.
+    /// </summary>
+    internal static readonly System.Text.RegularExpressions.Regex NumberGrammar =
+        new(@"^[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// The typed text of a numeric argument when it is a number by the grammar, else a usage error
+    /// <c>&lt;arg&gt; &lt;text&gt;: not a number</c>. The grammar is the one gate: it runs before the parse, so the parser's
+    /// leniency (trimming, "Infinity", "NaN", thousands) never decides; the parse supplies only the value for the finiteness
+    /// check (1e400).
+    /// </summary>
+    internal static string NumberText(string arg, string text) =>
+        NumberGrammar.IsMatch(text)
+        && double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var value)
+        && double.IsFinite(value)
+            ? text
+            : throw new FormatException($"{arg} {text}: not a number");
 
     private static int Int(string name, string value, int min, int max) =>
         int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n) && n >= min && n <= max
