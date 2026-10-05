@@ -246,7 +246,8 @@ public static class CheckCommandLine
     /// optional fraction and an optional exponent — no whitespace, underscores, hex, inf or nan — and its value is finite.
     /// </summary>
     internal static readonly System.Text.RegularExpressions.Regex NumberGrammar =
-        new(@"^[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        new(@"\A[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?\z", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    // \A…\z, not ^…$: in .NET `$` also matches just before a final "\n", which TryParse then trims (#71).
 
     /// <summary>
     /// The typed text of a numeric argument when it is a number by the grammar, else a usage error

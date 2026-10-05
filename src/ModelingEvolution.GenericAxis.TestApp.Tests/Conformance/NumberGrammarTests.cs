@@ -14,7 +14,8 @@ public sealed partial class NumberGrammarTests
 
     public static readonly string[] Refused =
         [" 5", "5 ", "1_0", "0x5", "inf", "-inf", "nan", "NaN", "Infinity", "1e400", "fast", "", ".", "e5", "5e", "+-5", "1,5",
-         "\u22125", "5,5"]; // U+2212 minus and the de-DE decimal comma: the grammar is culture-invariant ASCII
+         "\u22125", "5,5", // U+2212 minus and the de-DE decimal comma: the grammar is culture-invariant ASCII
+         "5\n", "\n5", "5\r\n", "5\r"]; // #71: no whitespace — a regex `$` would let a final "\n" through
 
     /// <summary>Each numeric slot: the argument name the error names, and the command line around the probe.</summary>
     private static readonly (string Arg, Func<string, string[]> Line)[] Slots =
@@ -83,6 +84,7 @@ public sealed partial class NumberGrammarTests
     [InlineData("move", " 5")]
     [InlineData("--speed", "1e400")]
     [InlineData("jog", "Infinity")]
+    [InlineData("move", "5\n")]
     public async Task GA_U_149_ARefusedNumberExitsTwoWithNoResultLineAndNoContact(string arg, string probe)
     {
         using var sim = new LiveSimulator();
