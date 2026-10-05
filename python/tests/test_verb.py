@@ -647,3 +647,16 @@ def test_raw_rounds_half_away_from_zero_as_the_csharp_tool() -> None:
     # Review #37: guards judge the raw value written, rounded half away from zero (0.0625 × 1000 = 62.5 exactly).
     assert (raw(0.0625), raw(-0.0625)) == (63, -63)
     assert (raw(0.0004), raw(-0.0004), raw(500.001)) == (0, 0, 500_001)
+
+
+async def test_stop_over_a_bit_left_at_1_writes_no_enable_0_and_leaves_c0_as_found(stub: StubPlc) -> None:
+    # Review #42 (f52c9e0 cleanup rule, second half): cleanup writes Enable 0 only if THIS run wrote Enable 1. Found
+    # Disabled with bit 0 = 1, `stop` keeps the level it found ([Enable|Stop], then the edge clear [Enable]) and never
+    # writes Enable 0: not in the verb, not in cleanup. Pinned on the write journal, not the end state.
+    pendant_reset(stub)
+    result = await verb(stub, Verb("stop"))
+    assert (result.result, result.exit_code) == ("PASS", 0), result.message
+    words = [values[0] for values in command_writes(stub)]
+    assert words == [ENABLE | STOP, ENABLE], words
+    assert not any("(Enable 0)" in line for line in result.cleanup), result.cleanup
+    assert stub.regs[MAP.command] == ENABLE  # C+0 bit 0 ends 1, as found
