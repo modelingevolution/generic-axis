@@ -156,6 +156,9 @@ def guard_problem(verb: Verb, s: StatusBlock, registers: RegisterMap) -> str | N
             what = f"{REFUSED_UNWRITTEN}: target {verb.value:.3f} is outside TravelMin..TravelMax"
             return refuse("OutOfRange", what, Read("TravelMin", s.travel_min), Read("TravelMax", s.travel_max))
     if verb.name == "jog" and verb.value is not None:
+        if raw(verb.value) == 0:
+            what = f"{REFUSED_UNWRITTEN}: jog velocity 0 is outside 0 < |v| ≤ MaxVelocity"
+            return refuse("UnreachableSpeed", what, Read("MaxVelocity", s.max_velocity))
         if unpublished:
             return refuse("UnreachableSpeed", f"{REFUSED_UNWRITTEN}: the PLC publishes no limits", *limits)
         if abs(raw(verb.value)) > s.max_velocity:

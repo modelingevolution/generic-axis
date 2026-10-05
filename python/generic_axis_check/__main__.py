@@ -162,8 +162,6 @@ def _verb(a: argparse.Namespace) -> Verb | None:
             value = float(args[0])
         except ValueError as exc:
             raise UsageError(f"--command {name} {args[0]}: not a number") from exc
-    if name == "jog" and value == 0:
-        raise UsageError("--command jog 0: the velocity must not be 0")
     if a.speed is not None and name != "move":
         raise UsageError("--speed applies to --command move")
     if a.speed is not None and not 0 < a.speed <= 100:

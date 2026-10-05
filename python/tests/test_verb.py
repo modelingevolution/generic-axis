@@ -220,6 +220,12 @@ async def test_partial_limits_are_protocol_and_write_nothing(stub: StubPlc) -> N
             "Read MaxVelocity (S+12 = input 12) = 500000.",
         ),
         (
+            Verb("jog", 0, run_for_s=0.2),
+            None,
+            "jog: Commander/UnreachableSpeed: refused before writing anything: jog velocity 0 is outside "
+            "0 < |v| ≤ MaxVelocity. Read MaxVelocity (S+12 = input 12) = 500000.",
+        ),
+        (
             Verb("jog", 1, run_for_s=0.2),
             "unpublished",
             "jog: Commander/UnreachableSpeed: refused before writing anything: the PLC publishes no limits. Read TravelMin (S+8 = input 8) "
@@ -409,7 +415,6 @@ def test_parse_reads_the_verb(argv: list[str], expected: Verb) -> None:
         ["plc", "--command", "enable", "1"],
         ["plc", "--command", "move", "--allow-motion"],
         ["plc", "--command", "move", "x", "--allow-motion"],
-        ["plc", "--command", "jog", "0", "--allow-motion"],
         ["plc", "--command", "move", "10", "--speed", "0", "--allow-motion"],
         ["plc", "--command", "move", "10", "--speed", "101", "--allow-motion"],
         ["plc", "--command", "enable", "--speed", "10"],
