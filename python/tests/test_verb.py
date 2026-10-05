@@ -750,6 +750,10 @@ REFUSED_NUMBERS = (
     "\n5",
     "5\r\n",
     "5\r",
+    "５",  # #51: Unicode decimal digits are no ASCII digits (fullwidth, Arabic-Indic, mixed, Devanagari)
+    "١٠٠",
+    "1٥",
+    "५",
 )
 """The probe list both tools pin (agreed with eng-testapp-3): accepted as numbers / refused as usage errors."""
 

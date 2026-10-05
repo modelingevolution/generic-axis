@@ -57,7 +57,8 @@ def _u16(text: str) -> int:
     return value
 
 
-NUMBER = re.compile(r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?")
+NUMBER = re.compile(r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?", re.ASCII)
+"""re.ASCII (#51): a digit is 0-9 only; without it Python takes any Unicode decimal digit ("５", "١٠٠") where C# refuses."""
 """protocol.md "One-verb mode" (#47, #48): every numeric argument is ``[+-]?`` then decimal digits with an optional
 fraction (``5``, ``5.``, ``.5``) and an optional exponent (``5e-1``); no whitespace, underscores, hex, inf or nan."""
 
