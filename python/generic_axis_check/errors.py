@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
-from .registers import AxisState, FaultCode, RegisterMap, StatusBlock, format_percent, register_ref
+from .registers import AxisState, FaultCode, RegisterMap, StatusBlock, percent_as_given, register_ref
 
 
 class ErrorClass(StrEnum):
@@ -114,16 +114,18 @@ def format_message(
     return " ".join(parts)
 
 
-def speed_zero_refusal(registers: RegisterMap, percent: float, max_velocity: int) -> str:
-    """protocol.md "Speed rounding" (review #66): the one message for a speed that rounds to raw 0, verbatim in a check's
-    SKIP and in the one-verb guard (which prefixes ``move: ``)."""
-    pct = format_percent(percent)
-    what = (
-        f"refused before writing anything: {pct} % of MaxVelocity rounds to raw Velocity 0 "
-        f"(round-half-away-from-zero({pct} × {max_velocity} ÷ 100) = 0); nothing to move with"
-    )
-    return format_message(
-        ErrorClass.COMMANDER, UNREACHABLE_SPEED, what, registers, (Read("MaxVelocity", max_velocity),)
+SPEED_REFUSAL_PREFIX = f"{ErrorClass.COMMANDER}/{UNREACHABLE_SPEED}: refused before writing anything: "
+"""protocol.md "Speed rounding": the one-verb guard prints this before the refusal body; a check's SKIP prints the body
+alone (no class prefix, errorClass null)."""
+
+
+def speed_zero_body(registers: RegisterMap, percent: float, max_velocity: int) -> str:
+    """protocol.md "Speed rounding" (reviews #66, #44, #45; e49dd62): the refusal body, stated once, for a speed that
+    rounds to raw 0: a check's SKIP message as is, the one-verb guard after ``SPEED_REFUSAL_PREFIX``."""
+    pct = percent_as_given(percent)
+    return (
+        f"{pct} % of MaxVelocity rounds to raw Velocity 0 (round-half-away-from-zero({pct} × {max_velocity} ÷ 100) = 0); "
+        f"nothing to move with. Read MaxVelocity ({register_ref(registers, 'MaxVelocity')}) = {max_velocity}."
     )
 
 

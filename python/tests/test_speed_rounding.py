@@ -59,10 +59,11 @@ async def test_a_1_percent_that_rounds_to_raw_0_skips_chk15_writing_nothing_whil
     assert results["CHK-14"].observed["commandedVelocity"] == 5  # 4.9 → 5
     chk15 = results["CHK-15"]
     assert chk15.result == SKIPPED
-    assert chk15.message == (
-        "Commander/UnreachableSpeed: refused before writing anything: 1 % of MaxVelocity rounds to raw Velocity 0 "
-        "(round-half-away-from-zero(1 × 49 ÷ 100) = 0); nothing to move with. Read MaxVelocity (S+12 = input 12) = 49."
+    assert chk15.message == (  # the refusal body alone: no class prefix on a SKIP (protocol e49dd62)
+        "1 % of MaxVelocity rounds to raw Velocity 0 (round-half-away-from-zero(1 × 49 ÷ 100) = 0); nothing to move "
+        "with. Read MaxVelocity (S+12 = input 12) = 49."
     )
+    assert chk15.error_class is None
     assert chk15.observed == {}
     # A machine-property skip, not a timing one: the release gate (.github/scripts/inconclusive.py) counts results whose
     # message starts with "INCONCLUSIVE", and tests_target skips with this message verbatim. It never carries the

@@ -14,7 +14,7 @@ from generic_axis_check.beat import Beater
 from generic_axis_check.checks import CHECKS, FAIL, PASS, SKIPPED
 from generic_axis_check.client import PlcClient
 from generic_axis_check.context import Options
-from generic_axis_check.errors import speed_zero_refusal
+from generic_axis_check.errors import SPEED_REFUSAL_PREFIX, speed_zero_body
 from generic_axis_check.registers import Command, RegisterMap
 from generic_axis_check.runner import CheckResult, prerequisite_problem, run
 from generic_axis_check.verb import MOTION_VERBS, RESULT_EXIT, VERBS, Verb, VerbResult, raw, run_verb
@@ -264,9 +264,9 @@ async def test_partial_limits_are_protocol_and_write_nothing(stub: StubPlc) -> N
         (
             Verb("move", 100, speed_percent=0.00009),  # 0.45 raw rounds to Velocity 0
             None,
-            "move: Commander/UnreachableSpeed: refused before writing anything: 0 % of MaxVelocity rounds to raw "
-            "Velocity 0 (round-half-away-from-zero(0 × 500000 ÷ 100) = 0); nothing to move with. "
-            "Read MaxVelocity (S+12 = input 12) = 500000.",
+            "move: Commander/UnreachableSpeed: refused before writing anything: 0.00009 % of MaxVelocity rounds to "
+            "raw Velocity 0 (round-half-away-from-zero(0.00009 × 500000 ÷ 100) = 0); nothing to move with. "
+            "Read MaxVelocity (S+12 = input 12) = 500000.",  # the percentage as given, never rounded for display
         ),
         (
             Verb("jog", 1, run_for_s=0.2),
@@ -669,10 +669,14 @@ async def test_stop_over_a_bit_left_at_1_writes_no_enable_0_and_leaves_c0_as_fou
 
 def test_the_speed_refusal_and_the_dependant_phrase_match_protocol_md() -> None:
     text = _protocol_text()
-    template = re.search(r"with exactly this message \([^)]*\): `(Commander/UnreachableSpeed: [^`]+)`", text)
-    assert template is not None, "the Speed rounding message is missing from protocol.md"
-    expected = template.group(1).replace("<pct>", "1").replace("<raw>", "49").replace("<raw>", "49")
-    assert speed_zero_refusal(RegisterMap(), 1, 49) == expected
+    body = re.search(r"The refusal body is exactly `([^`]+)`", text)
+    guard = re.search(r"This guard prints `([^`]+)<body>`", text)
+    assert body is not None, "the Speed rounding refusal body is missing from protocol.md"
+    assert guard is not None, "the one-verb guard's prefix is missing from protocol.md"
+    expected = body.group(1).replace("<pct>", "0.00005").replace("<raw>", "49")
+    assert "<" not in expected, expected
+    assert speed_zero_body(RegisterMap(), 0.00005, 49) == expected  # a check's SKIP: the body alone
+    assert guard.group(1) == SPEED_REFUSAL_PREFIX  # the one-verb guard: prefix + body
     order = re.search(r"`(needs CHK-n, which FAILED)` or `(needs CHK-n, which SKIPPED)`", text)
     assert order is not None, "the Order rule's dependant phrases are missing from protocol.md"
     chk16 = next(c for c in CHECKS if c.id == "CHK-16")

@@ -31,7 +31,15 @@ from .checks import (
 from .client import PlcClient, PlcError
 from .context import STATE_TIMEOUT_S, AckTimeout, CheckContext, Options
 from .dump import decode
-from .errors import DRIVE_FAULT, HOME_LATCH_FAILED, ErrorClass, Read, format_message, speed_zero_refusal
+from .errors import (
+    DRIVE_FAULT,
+    HOME_LATCH_FAILED,
+    SPEED_REFUSAL_PREFIX,
+    ErrorClass,
+    Read,
+    format_message,
+    speed_zero_body,
+)
 from .lease import LeaseHeld
 from .poll import ms, wait_for
 from .registers import (
@@ -201,7 +209,7 @@ def guard_problem(verb: Verb, s: StatusBlock, registers: RegisterMap) -> str | N
             what = f"{REFUSED_UNWRITTEN}: target {units(verb.value)} (raw {target}) is outside TravelMin..TravelMax"
             return refuse("OutOfRange", what, Read("TravelMin", s.travel_min), Read("TravelMax", s.travel_max))
         if move_velocity(s, verb.speed_percent) == 0:
-            return speed_zero_refusal(registers, verb.speed_percent, s.max_velocity)  # one message, as a check's SKIP
+            return SPEED_REFUSAL_PREFIX + speed_zero_body(registers, verb.speed_percent, s.max_velocity)
     if verb.name == "jog" and verb.value is not None:
         if unpublished:
             return refuse("UnreachableSpeed", f"{REFUSED_UNWRITTEN}: the PLC publishes no limits", *limits)

@@ -343,9 +343,9 @@ def test_ga_i_39_both_tools_agree_on_the_raw_0_speed_skip(simulator: START, tmp_
             if c["id"] in ("CHK-15", "CHK-16")
         }
 
-    refusal = (
-        "Commander/UnreachableSpeed: refused before writing anything: 1 % of MaxVelocity rounds to raw Velocity 0 "
-        "(round-half-away-from-zero(1 × 45 ÷ 100) = 0); nothing to move with. Read MaxVelocity (S+12 = input 12) = 45."
+    refusal = (  # the refusal body alone on a check's SKIP (protocol e49dd62)
+        "1 % of MaxVelocity rounds to raw Velocity 0 (round-half-away-from-zero(1 × 45 ÷ 100) = 0); nothing to move "
+        "with. Read MaxVelocity (S+12 = input 12) = 45."
     )
     assert skips(py) == {
         "CHK-15": ("SKIPPED", refusal, None, {}),
