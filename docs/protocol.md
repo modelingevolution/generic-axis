@@ -224,7 +224,11 @@ Exit codes: 0 = no FAIL (SKIPPED allowed) · 1 = at least one FAIL · 2 = usage 
 is beating — rw2, a station, or a second tool; see Pre-flight; stop it first) · 4 = interrupted by the operator (Ctrl-C / SIGINT).
 
 **One-verb mode (`--command`)**, for commissioning: send one verb and watch it, with no checklist. It writes no report;
-`--command` with `--dump` or `--report` is a usage error. Both tools do exactly this:
+`--command` with `--dump` or `--report` is a usage error. Every numeric argument (the `move` target, the `jog` velocity,
+`--speed`, `--for`) matches `[+-]?` then decimal digits with an optional fraction (`5`, `5.`, `.5`, `0.00005`) and an
+optional exponent (`5e-1`), with no whitespace, underscores, hex, `inf` or `nan`, and its value is finite; anything else
+is a usage error, `<arg> <text>: not a number` (`<arg>` is `move`, `jog`, `--speed` or `--for`; `<text>` as typed).
+A number that parses but is out of range (`--speed 0`) is a guard (step 3), not a usage error. Both tools do exactly this:
 1. Run the pre-flight of § Rules for every run (exit 3, `RESULT: REFUSED`, if another commander beats).
 2. Read the status block. `MapVersion ≠ 1` or limits not sane → Protocol error, exit 1, nothing written.
 3. Run the guards on that read (Commander class, exit 2; the message names the register and its value): `move` needs
