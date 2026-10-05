@@ -723,3 +723,81 @@ def test_an_out_of_range_speed_is_printed_as_typed() -> None:
     assert guard_problem(verb, s, RegisterMap()) == (
         "Commander/UnreachableSpeed: refused before writing anything: speed 150.0 % outside 0 < pct ≤ 100."
     )
+
+
+# --- GA-U-157.py (#47, #48): one number grammar for every --command number, string by string with C# ---------------
+
+ACCEPTED_NUMBERS = ("+5", "5.", ".5", "5e-1", "0.00005")
+REFUSED_NUMBERS = (" 5", "1_0", "0x5", "inf", "-inf", "nan", "NaN", "1e400", "fast")
+"""The probe list both tools pin (agreed with eng-testapp-3): accepted as numbers / refused as usage errors."""
+
+
+def _argv(position: str, text: str) -> list[str]:
+    return {
+        "move": ["plc", "--command", "move", text, "--allow-motion"],
+        "jog": ["plc", "--command", "jog", text, "--allow-motion"],
+        "--speed": ["plc", "--command", "move", "5", "--speed", text, "--allow-motion"],
+        "--for": ["plc", "--command", "jog", "5", "--for", text, "--allow-motion"],
+    }[position]
+
+
+@pytest.mark.parametrize("position", ["move", "jog", "--speed", "--for"])
+@pytest.mark.parametrize("text", ACCEPTED_NUMBERS)
+def test_every_command_number_accepts_the_grammar(position: str, text: str) -> None:
+    parse(_argv(position, text))  # parses; a value out of range is a guard later, not a usage error
+
+
+@pytest.mark.parametrize("position", ["move", "jog", "--speed", "--for"])
+@pytest.mark.parametrize("text", REFUSED_NUMBERS)
+def test_every_command_number_refuses_anything_else_as_a_usage_error(position: str, text: str) -> None:
+    with pytest.raises(UsageError) as usage:
+        parse(_argv(position, text))
+    assert str(usage.value) == f"{position} {text}: not a number"
+
+
+def test_the_grammar_is_protocol_mds() -> None:
+    text = _protocol_text()
+    sentence = re.search(
+        r"Every numeric argument \(.*?\) matches `\[\+-\]\?` then (.*?); anything else is a usage error", text
+    )
+    assert sentence is not None, "the number grammar sentence is missing from protocol.md"
+    examples = re.findall(r"`([^`]+)`", sentence.group(1))
+    accepted = [e for e in examples if e not in ("inf", "nan")]
+    assert accepted, examples
+    for example in accepted:  # 5, 5., .5, 0.00005, 5e-1
+        parse(_argv("move", example))
+    for word in ("inf", "nan"):  # the sentence's exclusions
+        assert word in examples
+        with pytest.raises(UsageError):
+            parse(_argv("move", word))
+    assert set(ACCEPTED_NUMBERS) >= {"5.", ".5", "0.00005", "5e-1"}
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--command", "move", "inf", "--allow-motion"],
+        ["--command", "jog", "-inf", "--allow-motion"],
+        ["--command", "move", "1e400", "--allow-motion"],
+        ["--command", "move", "5", "--speed", "1_0", "--allow-motion"],
+    ],
+)
+async def test_a_number_outside_the_grammar_exits_2_with_no_result_line_and_no_write(
+    stub: StubPlc, argv: list[str]
+) -> None:
+    # #47: `move inf` crashed with a traceback and exit 1 ("the PLC failed it") for a typo.
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "generic_axis_check",
+        f"127.0.0.1:{stub.port}",
+        *argv,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    assert process.returncode == 2, (stdout, stderr)
+    assert "RESULT:" not in stdout.decode()
+    assert "Traceback" not in stderr.decode()
+    assert stderr.decode().strip().endswith(": not a number"), stderr
+    assert stub.writes == []
