@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -34,7 +35,7 @@ from .dump import decode
 from .errors import DRIVE_FAULT, HOME_LATCH_FAILED, ErrorClass, Read, format_message
 from .lease import LeaseHeld
 from .poll import ms, wait_for
-from .registers import MAP_VERSION, AxisState, Command, RegisterMap, StatusBlock
+from .registers import MAP_VERSION, AxisState, Command, RegisterMap, StatusBlock, register_ref
 from .runner import cleanup, exception_outcome, preflight, to_completion
 
 VERBS = ("enable", "disable", "home", "stop", "reset", "move", "jog")
@@ -68,6 +69,9 @@ REFUSED = "REFUSED"
 INTERRUPTED = "INTERRUPTED"
 GUARD_REFUSED = "GUARD"
 
+RESULT_EXIT = {PASSED: 0, FAILED: 1, GUARD_REFUSED: 2, REFUSED: 3, INTERRUPTED: 4}
+"""protocol.md "One-verb mode": the last line ``RESULT: <word>`` and its exit code (bound by the parity test, #41)."""
+
 
 @dataclass(frozen=True, slots=True)
 class Verb:
@@ -92,9 +96,13 @@ class VerbResult:
     """The outcome of one verb (protocol.md "One-verb mode", exit codes)."""
 
     result: str
-    exit_code: int
     message: str
     cleanup: list[str] = field(default_factory=list)
+
+    @property
+    def exit_code(self) -> int:
+        """The exit code of the ``RESULT`` word, from the one table both bind to (``RESULT_EXIT``)."""
+        return RESULT_EXIT[self.result]
 
 
 Out = Callable[[str], None]
@@ -139,8 +147,27 @@ def map_problem(ctx: CheckContext, s: StatusBlock) -> Outcome | None:
 
 
 def raw(value: float) -> int:
-    """Axis units → raw register units (0.001; protocol.md § Transport)."""
-    return round(value * UNITS)
+    """Axis units → the raw register value that would be written (0.001; protocol.md § Transport), rounded half away
+    from zero, as the C# tool rounds. Guards judge this value, never the typed one (review #37)."""
+    rounded = math.floor(abs(value) * UNITS + 0.5)
+    return -rounded if value < 0 and rounded else rounded
+
+
+def units(value: float) -> str:
+    """An axis-unit value as typed, at least 3 decimals ("0.000######"): 20000 → 20000.000, 0.0004 → 0.0004."""
+    text = f"{value:.9f}".rstrip("0")
+    whole, _, fraction = text.partition(".")
+    return f"{whole}.{fraction.ljust(3, '0')}"
+
+
+def percent(value: float) -> str:
+    """A percentage as "0.###": 150 → 150, 12.5 → 12.5."""
+    return f"{value:.3f}".rstrip("0").rstrip(".")
+
+
+def move_velocity(s: StatusBlock, speed_percent: float) -> int:
+    """``--speed`` → the raw Velocity written for ``move`` (default 10 % of ``MaxVelocity``)."""
+    return raw(s.max_velocity * speed_percent / 100 / UNITS)
 
 
 def guard_problem(verb: Verb, s: StatusBlock, registers: RegisterMap) -> str | None:
@@ -151,24 +178,33 @@ def guard_problem(verb: Verb, s: StatusBlock, registers: RegisterMap) -> str | N
 
     unpublished = s.travel_min == s.travel_max == s.max_velocity == 0
     limits = (Read("TravelMin", s.travel_min), Read("TravelMax", s.travel_max), Read("MaxVelocity", s.max_velocity))
+    max_velocity = Read("MaxVelocity", s.max_velocity)
     if verb.name == "move" and verb.value is not None:
+        if not 0 < verb.speed_percent <= 100:  # review #39: a value the tool would refuse is a guard, not usage
+            what = f"{REFUSED_UNWRITTEN}: speed {percent(verb.speed_percent)} % outside 0 < pct ≤ 100"
+            return refuse("UnreachableSpeed", what)
         if unpublished:
             return refuse("OutOfRange", f"{REFUSED_UNWRITTEN}: the PLC publishes no limits", *limits)
         if not s.homed:
             return refuse("NotHomed", f"{REFUSED_UNWRITTEN}: the axis is not homed", Read("Flags", int(s.flags)))
         target = raw(verb.value)
         if not s.travel_min <= target <= s.travel_max:
-            what = f"{REFUSED_UNWRITTEN}: target {verb.value:.3f} is outside TravelMin..TravelMax"
+            # Review #38: the typed target and the raw value judged, so it compares with the raw Read clauses.
+            what = f"{REFUSED_UNWRITTEN}: target {units(verb.value)} (raw {target}) is outside TravelMin..TravelMax"
             return refuse("OutOfRange", what, Read("TravelMin", s.travel_min), Read("TravelMax", s.travel_max))
+        if move_velocity(s, verb.speed_percent) == 0:
+            what = (
+                f"{REFUSED_UNWRITTEN}: --speed {percent(verb.speed_percent)} % of MaxVelocity rounds to raw Velocity 0; "
+                "nothing to move with"
+            )
+            return refuse("UnreachableSpeed", what, max_velocity)
     if verb.name == "jog" and verb.value is not None:
-        if raw(verb.value) == 0:
-            what = f"{REFUSED_UNWRITTEN}: jog velocity 0 is outside 0 < |v| ≤ MaxVelocity"
-            return refuse("UnreachableSpeed", what, Read("MaxVelocity", s.max_velocity))
         if unpublished:
             return refuse("UnreachableSpeed", f"{REFUSED_UNWRITTEN}: the PLC publishes no limits", *limits)
-        if abs(raw(verb.value)) > s.max_velocity:
-            what = f"{REFUSED_UNWRITTEN}: |{verb.value:.3f}| u/s is above MaxVelocity"
-            return refuse("UnreachableSpeed", what, Read("MaxVelocity", s.max_velocity))
+        velocity = raw(verb.value)
+        if not 0 < abs(velocity) <= s.max_velocity:  # review #37: judged on the raw value written
+            what = f"{REFUSED_UNWRITTEN}: jog needs 0 < |v| ≤ MaxVelocity, got {units(verb.value)} (raw {velocity})"
+            return refuse("UnreachableSpeed", what, max_velocity)
     return None
 
 
@@ -264,7 +300,7 @@ async def _move(ctx: CheckContext, verb: Verb) -> Outcome:
         return not_ready
     start = await ctx.status()
     target = raw(verb.value)
-    velocity = max(1, round(start.max_velocity * verb.speed_percent / 100))
+    velocity = move_velocity(start, verb.speed_percent)  # > 0: the guard refused a speed rounding to raw 0
     await ctx.write_parameters(target, velocity, 0)  # parameters in one FC16, then the command FC16
     ack = await ctx.command(Command.ENABLE | Command.MOVE_ABSOLUTE)
     budget_s = travel_timeout_s(target - start.actual_position, velocity)
@@ -362,12 +398,12 @@ async def run_verb(options: Options, verb: Verb, out: Out) -> VerbResult:
         f"(C = holding {options.command_base}, S = input {options.status_base}), owner {options.owner_id}"
     )
     proven_free = False
-    result = VerbResult(INTERRUPTED, 4, f"interrupted by the operator before {verb.name} completed")
+    result = VerbResult(INTERRUPTED, f"interrupted by the operator before {verb.name} completed")
 
     def finish(outcome: Outcome) -> VerbResult:
         if outcome.result == PASS:
-            return VerbResult(PASSED, 0, f"{verb.name}: done — {outcome.message}")
-        return VerbResult(FAILED, 1, f"{verb.name}: {outcome.message}")
+            return VerbResult(PASSED, f"{verb.name}: done — {outcome.message}")
+        return VerbResult(FAILED, f"{verb.name}: {outcome.message}")
 
     try:
         try:
@@ -376,9 +412,15 @@ async def run_verb(options: Options, verb: Verb, out: Out) -> VerbResult:
         except PlcError as exc:
             return finish(exception_outcome(exc, registers))
         if verdict.refusal is not None:
-            return VerbResult(REFUSED, 3, f"Pre-flight: {verdict.refusal}")
+            return VerbResult(REFUSED, f"Pre-flight: {verdict.refusal}")
         proven_free = True
-        if verdict.note is not None:
+        if verdict.dead_holder is not None:
+            # protocol.md "One-verb mode" step 3 (review #40): the one-verb mode clears the trip at attach.
+            out(
+                f"Pre-flight: {verdict.dead_holder}: the previous commander is dead; its trip is cleared at attach as "
+                "the driver does; FaultCode 4 is left for reset."
+            )
+        elif verdict.note is not None:
             out(f"Pre-flight: {verdict.note}")
         status = await ctx.status()  # step 2
         problem = map_problem(ctx, status)
@@ -386,7 +428,7 @@ async def run_verb(options: Options, verb: Verb, out: Out) -> VerbResult:
             return finish(problem)
         refusal = guard_problem(verb, status, registers)  # step 3: before any write, the lease included
         if refusal is not None:
-            return VerbResult(GUARD_REFUSED, 2, f"{verb.name}: {refusal}")
+            return VerbResult(GUARD_REFUSED, f"{verb.name}: {refusal}")
         (word,) = await client.read(registers.command, 1)
         ctx.found_energised = status.state in ENERGISED  # from State, never from the command bit (#61)
         ctx.command_word = word & int(Command.ENABLE)  # a Stop or Reset keeps (or drops) the Enable it found
@@ -396,6 +438,10 @@ async def run_verb(options: Options, verb: Verb, out: Out) -> VerbResult:
             # Step 1: "proceed as the driver does at attach": the dead holder's trip is cleared; ErrorStop and
             # FaultCode 4 stay for `reset`.
             await ctx.clear_watchdog_fault()
+            out(
+                f"{register_ref(registers, 'WatchdogFault')} = 0 written at attach, as the driver does "
+                "(ErrorStop and FaultCode 4 stay for reset)"
+            )
         client.status_listener = lambda s: out(status_line(since_first_write(), s))
         client.write_listener = on_write
         client.guard = ctx.beater.raise_if_failed  # a dead beat is Transport, never a Machine trip (review #7)
