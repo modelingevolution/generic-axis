@@ -187,6 +187,7 @@ public class ChannelRetryTests
             .Should().ThrowAsync<MotionException>()).Which;
 
         ex.Error.Should().Be(MotionError.CommunicationLost);
-        ex.Message.Should().StartWith($"carriage: CommunicationLost: connect on 127.0.0.1:{port} unit 0 failed twice");
+        ex.Message.Should().StartWith($"carriage: CommunicationLost: connect on 127.0.0.1:{port} failed twice")
+            .And.NotContain("unit", "a TCP connect carries no unit (#70)");
     }
 }

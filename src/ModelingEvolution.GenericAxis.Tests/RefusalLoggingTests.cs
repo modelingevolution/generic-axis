@@ -23,7 +23,7 @@ public class RefusalLoggingTests
         ModbusExceptionCode? refuse = null;
         rig.Plc.ThrowWhen = op => op.IsInputRead && refuse is { } code
             ? ModbusChannel.Refusal("carriage", "read status block", "(FC04 read S+0…S+14 = input 0…14)", code,
-                "fake-plc", 502, 1)
+                "fake-plc:502 unit 1")
             : null;
         rig.Logs.Clear();
 
