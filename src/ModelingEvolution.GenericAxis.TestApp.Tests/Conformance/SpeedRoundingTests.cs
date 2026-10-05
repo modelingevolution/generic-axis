@@ -17,11 +17,18 @@ public sealed class SpeedRoundingTests
     [InlineData(10, 25, 3)]      // 2.5 → 3 (banker's: 2)
     [InlineData(1, 50, 1)]       // 0.5 → 1 (banker's: 0, truncation: 0)
     [InlineData(1, 150, 2)]      // 1.5 → 2 (truncation: 1)
+    [InlineData(1, 149, 1)]      // 1.49 → 1 (reviewer-python-2 #43)
+    [InlineData(1, 250, 3)]      // 2.5 → 3 (banker's: 2)
     [InlineData(1, 49, 0)]       // 0.49 → 0, never floored to 1
     [InlineData(1, 45, 0)]
     [InlineData(10, 4, 0)]       // 0.4 → 0
     public void GA_U_147_RoundsHalfAwayFromZeroWithoutAFloor(double percent, int maxVelocityRaw, int expected) =>
         SpeedRounding.Raw(percent, maxVelocityRaw).Should().Be(expected);
+
+    [Fact]
+    public void GA_U_147_ARawZeroAt49IsRefusedNamingAllThree() =>
+        SpeedRounding.Refusal(1, 49, "S+12 = input 12").Should().Be(
+            "speed 1 % of MaxVelocity rounds to raw Velocity 0 (round-half-away-from-zero(1 × 49 ÷ 100) = 0); refused, never floored. Read MaxVelocity (S+12 = input 12) = 49.");
 
     [Fact]
     public void GA_U_147_TheRefusalNamesMaxVelocityThePercentageAndTheRawResult() =>
@@ -100,6 +107,9 @@ public sealed class SpeedRoundingCheckerTests
         chk15.Result.Should().Be(CheckResultKind.Skipped, Dump());
         chk15.Message.Should().Be(SpeedRounding.Refusal(1, 45, "S+12 = input 12"));
         chk15.Observed.Should().BeEmpty("a SKIPPED check has observed {}");
+        // A machine-property skip, like an unmet precondition — never INCONCLUSIVE, so the release gate (#43) does not count it.
+        report.Checks.Should().NotContain(c => c.Message.Contains("INCONCLUSIVE", StringComparison.OrdinalIgnoreCase));
+        ReportWriter.ToJson(report).Should().NotContain("INCONCLUSIVE");
         report.Checks.Single(c => c.Id == "CHK-16").Message.Should().Be("needs CHK-15, which was SKIPPED");
         moveVelocityWrites.Should().Be(0, "a speed that rounds to raw 0 is refused, never written");
         report.ExitCode.Should().Be(0, "SKIPPED is allowed");
