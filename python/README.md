@@ -69,8 +69,8 @@ python -m generic_axis_check 192.168.58.20 --command reset
 ```
 
 Exit codes: 0 completed · 1 the PLC failed it · 2 usage error or a guard refused (nothing written) · 3 refused by
-pre-flight · 4 interrupted before the verb completed. The last line is `RESULT: COMPLETED`, `FAIL`, `GUARD`,
-`REFUSED` or `INTERRUPTED`.
+pre-flight · 4 interrupted before the verb completed. The last line is `RESULT: PASS`, `FAIL`, `GUARD`,
+`REFUSED` or `INTERRUPTED` (exit 0…4); a usage error prints no `RESULT` line.
 
 ## The same checklist as pytest tests
 

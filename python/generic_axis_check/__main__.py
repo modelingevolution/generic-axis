@@ -228,8 +228,6 @@ def run_one_verb(options: Options, verb: Verb) -> int:
     def out(line: str) -> None:
         print(line, flush=True)
 
-    target = f"{options.host}:{options.port} unit {options.unit}"
-    print(f"generic-axis-check --command {verb} on {target}", file=sys.stderr, flush=True)
     produced: list[VerbResult] = []
 
     async def one() -> None:
@@ -246,7 +244,7 @@ def run_one_verb(options: Options, verb: Verb) -> int:
     result = produced[0]
     out(result.message)
     for line in result.cleanup:
-        out(f"cleanup: {line}")
+        out(f"Cleanup: {line}")
     out(f"RESULT: {result.result}")
     return result.exit_code
 

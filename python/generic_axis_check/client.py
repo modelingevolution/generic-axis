@@ -127,6 +127,8 @@ class PlcClient:
         """Reconnect-and-retries performed so far; each check reports its own delta (§ Observed values)."""
         self._generation = 0
         self._reconnect_lock = asyncio.Lock()
+        self.write_listener: Callable[[int, list[int]], None] | None = None
+        """Called after every holding-register write that the PLC answered (one-verb mode prints command writes)."""
         self.status_listener: Callable[[StatusBlock], None] | None = None
         """Called with every status block read (one-verb mode prints each one, protocol.md "One-verb mode" step 5)."""
         self.guard: Callable[[], None] | None = None
@@ -295,6 +297,8 @@ class PlcClient:
                 space=Space.HOLDING,
             )
         log.debug("wrote %d = %s", address, values)
+        if self.write_listener is not None:
+            self.write_listener(address, values)
 
     async def read_status(self, registers: RegisterMap) -> StatusBlock:
         """One FC04 of S+0…S+14 (protocol.md § Transport, "Consistency")."""
