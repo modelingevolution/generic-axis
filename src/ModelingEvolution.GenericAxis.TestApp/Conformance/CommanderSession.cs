@@ -24,9 +24,10 @@ internal static class CommanderSession
     /// <param name="log">The run's log.</param>
     /// <param name="ct">Ctrl-C.</param>
     /// <param name="deadHolder">What the caller does about a dead holder's trip, for the note (#62): the checklist leaves
-    /// it for its operator; the one-verb mode clears it at attach as the driver does.</param>
+    /// it for its operator (protocol wording). Null: the note states only what was seen (#64) — the one-verb mode may yet
+    /// refuse by a guard and write nothing, and reports the clear on its own line when it happens.</param>
     public static async Task<Preflight> PreflightAsync(CheckContext ctx, ILogger log, CancellationToken ct,
-        string deadHolder = "its trip is left for its operator.")
+        string? deadHolder = "its trip is left for its operator.")
     {
         try
         {
@@ -59,7 +60,9 @@ internal static class CommanderSession
             {
                 ctx.ForeignTrip = true;
                 return new Preflight(null,
-                    $"{ownerAt} held with no beat and {faultAt}: the previous commander is dead; {deadHolder}");
+                    deadHolder is null
+                        ? $"{ownerAt} held with no beat for {watched.Elapsed.TotalSeconds:0.0} s and {faultAt}: the previous commander is dead."
+                        : $"{ownerAt} held with no beat and {faultAt}: the previous commander is dead; {deadHolder}");
             }
 
             return new Preflight(

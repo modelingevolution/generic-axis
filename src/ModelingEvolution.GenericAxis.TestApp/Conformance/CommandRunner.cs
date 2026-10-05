@@ -42,8 +42,8 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
             CommanderSession.Preflight preflight;
             try
             {
-                preflight = await CommanderSession.PreflightAsync(ctx, _log, ct,
-                    deadHolder: "its trip is cleared at attach as the driver does; FaultCode 4 is left for reset.");
+                // #64: the note states what was seen; the clear is reported when written (after the guards and the lease).
+                preflight = await CommanderSession.PreflightAsync(ctx, _log, ct, deadHolder: null);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {

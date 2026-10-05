@@ -311,8 +311,7 @@ public sealed class CommandModeTests
         var (exit, output) = await Command(sim, new VerbRequest(Verb.Enable));
 
         Cadence.Budget(sim.MaxScanGap, () => exit.Should().Be(1, output));
-        output.Should().Contain("Pre-flight: LeaseOwner (C+9 = holding 9) = 1 held with no beat and WatchdogFault (C+10 = holding 10) = 1")
-            .And.Contain("the previous commander is dead; its trip is cleared at attach as the driver does; FaultCode 4 is left for reset.")
+        output.Should().MatchRegex(@"Pre-flight: LeaseOwner \(C\+9 = holding 9\) = 1 held with no beat for \d+\.\d s and WatchdogFault \(C\+10 = holding 10\) = 1: the previous commander is dead\.\r?\n")
             .And.Contain("C+10 = holding 10 = 0 written at attach, as the driver does")
             .And.Contain("enable: Machine/WatchdogTripped: the PLC reports ErrorStop. Read FaultCode (S+6 = input 6) = 4.");
         var after = await sim.SettledAsync();
@@ -339,11 +338,13 @@ public sealed class CommandModeTests
 
         var (exit, output) = await Command(sim, new VerbRequest(Verb.Move, Target: 20_000));
 
-        Cadence.Budget(sim.MaxScanGap, () => output.Should().Contain("held with no beat and WatchdogFault (C+10 = holding 10) = 1"));
+        Cadence.Budget(sim.MaxScanGap, () => output.Should().MatchRegex(@"held with no beat for \d+\.\d s and WatchdogFault \(C\+10 = holding 10\) = 1: the previous commander is dead\."));
         exit.Should().Be(2, output);
         output.Should().Contain("move: Commander/OutOfRange:");
         Last(output).Should().Be("RESULT: GUARD");
         writes.Should().BeEmpty("a refused guard writes nothing: no lease, no beat, no WatchdogFault = 0");
+        output.Should().NotContain("cleared", "#64: the note announces no clear that a refused run never writes")
+            .And.NotContain("written at attach");
         var end = await sim.SettledAsync();
         end.WatchdogFault.Should().Be(1, "the dead holder's trip is untouched by a refused run");
         end.LeaseOwner.Should().Be(1);
