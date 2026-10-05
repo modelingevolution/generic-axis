@@ -60,8 +60,8 @@ async def test_a_1_percent_that_rounds_to_raw_0_skips_chk15_writing_nothing_whil
     chk15 = results["CHK-15"]
     assert chk15.result == SKIPPED
     assert chk15.message == (
-        "Commander/UnreachableSpeed: refused before writing anything: 1 % of MaxVelocity rounds to raw Velocity 0; "
-        "nothing to move with. Read MaxVelocity (S+12 = input 12) = 49."
+        "Commander/UnreachableSpeed: refused before writing anything: 1 % of MaxVelocity rounds to raw Velocity 0 "
+        "(round-half-away-from-zero(1 × 49 ÷ 100) = 0); nothing to move with. Read MaxVelocity (S+12 = input 12) = 49."
     )
     assert chk15.observed == {}
     # A machine-property skip, not a timing one: the release gate (.github/scripts/inconclusive.py) counts results whose
@@ -115,7 +115,10 @@ async def test_a_one_verb_move_whose_speed_rounds_to_0_writes_nothing() -> None:
         result = await run_verb(Options(host="127.0.0.1", port=plc.port, allow_motion=True), Verb("move", 20, 1), print)
         writes = list(plc.writes)
     assert (result.result, result.exit_code) == ("GUARD", 2), result.message
-    assert "--speed 1 % of MaxVelocity rounds to raw Velocity 0" in result.message
+    assert result.message == (
+        "move: Commander/UnreachableSpeed: refused before writing anything: 1 % of MaxVelocity rounds to raw Velocity 0 "
+        "(round-half-away-from-zero(1 × 49 ÷ 100) = 0); nothing to move with. Read MaxVelocity (S+12 = input 12) = 49."
+    )  # review #66: the check's SKIP message, verbatim, after the verb
     assert writes == []
 
 

@@ -200,6 +200,11 @@ def speed_raw(max_velocity: int, percent: float) -> int:
     return round_half_away(percent * max_velocity / 100)
 
 
+def format_percent(value: float) -> str:
+    """A percentage as "0.###" (both tools): 150 → 150, 12.5 → 12.5, 0.00009 → 0."""
+    return f"{value:.3f}".rstrip("0").rstrip(".")
+
+
 def next_nonzero(value: int) -> int:
     """The next ``Heartbeat`` or ``CommandSeq`` value: never 0, 65535 wraps to 1 (protocol.md § Command block)."""
     return 1 if value >= WORD_MASK else value + 1

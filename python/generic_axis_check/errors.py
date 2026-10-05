@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
-from .registers import AxisState, FaultCode, RegisterMap, StatusBlock, register_ref
+from .registers import AxisState, FaultCode, RegisterMap, StatusBlock, format_percent, register_ref
 
 
 class ErrorClass(StrEnum):
@@ -112,6 +112,19 @@ def format_message(
             cited.append(text)
         parts.append(_sentence("Read " + ", ".join(cited)))
     return " ".join(parts)
+
+
+def speed_zero_refusal(registers: RegisterMap, percent: float, max_velocity: int) -> str:
+    """protocol.md "Speed rounding" (review #66): the one message for a speed that rounds to raw 0, verbatim in a check's
+    SKIP and in the one-verb guard (which prefixes ``move: ``)."""
+    pct = format_percent(percent)
+    what = (
+        f"refused before writing anything: {pct} % of MaxVelocity rounds to raw Velocity 0 "
+        f"(round-half-away-from-zero({pct} × {max_velocity} ÷ 100) = 0); nothing to move with"
+    )
+    return format_message(
+        ErrorClass.COMMANDER, UNREACHABLE_SPEED, what, registers, (Read("MaxVelocity", max_velocity),)
+    )
 
 
 def machine_error(status: StatusBlock) -> tuple[ErrorClass, str]:
