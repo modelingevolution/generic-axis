@@ -225,15 +225,14 @@ is beating — rw2, a station, or a second tool; see Pre-flight; stop it first) 
 
 **One-verb mode (`--command`)**, for commissioning: send one verb and watch it, with no checklist. It writes no report;
 `--command` with `--dump` or `--report` is a usage error. Both tools do exactly this:
-1. Run the pre-flight of § Rules for every run (exit 3, `RESULT: REFUSED`, if another commander beats). After a dead
-   holder's trip, proceed as the driver does at attach: take the lease and write `WatchdogFault = 0`, leaving
-   ErrorStop and `FaultCode = 4` for `reset`.
-2. Read the status block. `MapVersion ≠ 1` or limits not sane → Protocol error, exit 1, nothing written. Take the lease
-   under the tool's id and beat every 100 ms.
-3. Guards, before any write (Commander class, exit 2, nothing written; the message names the register and its
-   value): `move` needs `Homed` and a target inside `TravelMin..TravelMax`; `--speed` defaults to 10 % of
-   `MaxVelocity` and must be 0 < pct ≤ 100; `jog` needs 0 < |v| ≤ `MaxVelocity`, v in axis units/s. Unpublished
-   limits (all zero) refuse `move` and `jog`.
+1. Run the pre-flight of § Rules for every run (exit 3, `RESULT: REFUSED`, if another commander beats).
+2. Read the status block. `MapVersion ≠ 1` or limits not sane → Protocol error, exit 1, nothing written.
+3. Run the guards on that read (Commander class, exit 2; the message names the register and its value): `move` needs
+   `Homed` and a target inside `TravelMin..TravelMax`; `--speed` defaults to 10 % of `MaxVelocity` and must be
+   0 < pct ≤ 100; `jog` needs 0 < |v| ≤ `MaxVelocity`, v in axis units/s. Unpublished limits (all zero) refuse `move`
+   and `jog`. A refused guard writes nothing at all: no lease, no beat. Only then take the lease under the tool's id
+   and beat every 100 ms. After a dead holder's trip, also write `WatchdogFault = 0`, as the driver does at attach,
+   leaving ErrorStop and `FaultCode = 4` for `reset`.
 4. Send the verb through the handshake of § Command semantics: parameters in one FC16, then `Command` + `CommandSeq`
    in a second FC16; ack ≤ 500 ms; the edge cleared after the ack. `home`, `move` and `jog` from Disabled set Enable
    first, as the driver's Home does. `reset` writes `WatchdogFault = 0` if set and Enable 0 before the Reset edge.
@@ -241,13 +240,16 @@ is beating — rw2, a station, or a second tool; see Pre-flight; stop it first) 
    until the verb completes: enable → Standstill (5 s) · disable → Disabled (5 s) · home → Standstill + `Homed`
    (120 s) · stop → Standstill or Disabled (5 s) · reset → not ErrorStop (5 s) · move → Standstill + `InPosition`
    (2 × |Δ| ÷ v + 5 s) · jog → ContinuousMotion observed (500 ms after the ack), then printing continues until
-   `--for` elapses or Ctrl-C, and the tool sends Stop.
+   `--for` elapses or Ctrl-C, and the tool sends Stop. Each budget is measured from the completion of the verb's write
+   (jog's 500 ms from the ack), as in § Rules for every run › Timing.
 6. Clean up as § Rules for every run: Stop if moving, clear edges, Enable 0 only if this run set Enable 1, release
    the lease. A run leaves the axis no more energised than it found it: `enable` proves the handshake and ends Disabled.
 
 Exit codes: 0 = the verb completed (a jog ended by `--for` or Ctrl-C after ContinuousMotion was observed included) ·
 1 = the PLC failed it (Transport, Protocol or Machine, in the shape of § Errors and debugging rule 1) · 2 = usage error
-or a guard refused · 3 = refused by pre-flight · 4 = interrupted by the operator before the verb completed.
+or a guard refused · 3 = refused by pre-flight · 4 = interrupted by the operator before the verb completed. The last line is `RESULT: PASS` (exit 0), `RESULT: FAIL`
+(exit 1), `RESULT: GUARD` (exit 2, a guard refused), `RESULT: REFUSED` (exit 3) or `RESULT: INTERRUPTED` (exit 4); a
+usage error prints no `RESULT` line.
 
 ### Rules for every run
 
