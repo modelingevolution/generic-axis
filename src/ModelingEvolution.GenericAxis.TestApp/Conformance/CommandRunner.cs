@@ -201,6 +201,9 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
                 if (targetRaw < s.TravelMin || targetRaw > s.TravelMax)
                     return Commander("OutOfRange", $"target {target.ToString("0.000", Inv)} is outside TravelMin..TravelMax. Read TravelMin ({ctx.At(RegisterField.TravelMin)}) = {s.TravelMin}, "
                                                    + $"TravelMax ({ctx.At(RegisterField.TravelMax)}) = {s.TravelMax}.");
+                var pct = request.SpeedPercent;
+                if (!(pct > 0 && pct <= 100))
+                    return Commander("UnreachableSpeed", $"speed {pct.ToString("0.###", Inv)} % outside 0 < pct ≤ 100.");
                 var speedRaw = MoveSpeedRaw(s);
                 if (speedRaw <= 0)
                     return Commander("UnreachableSpeed", $"--speed {request.SpeedPercent.ToString("0.###", Inv)} % of MaxVelocity rounds to raw Velocity 0; nothing to move with. "

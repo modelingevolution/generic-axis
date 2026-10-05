@@ -157,9 +157,10 @@ public static class CheckCommandLine
                         break;
                     case "--speed":
                         var sp = Value();
-                        speed = double.TryParse(sp, NumberStyles.Float, CultureInfo.InvariantCulture, out var pct) && pct > 0 && pct <= 100
+                        // A number is the parser's business; its range (0 < pct ≤ 100) is a guard (protocol step 3, #39).
+                        speed = double.TryParse(sp, NumberStyles.Float, CultureInfo.InvariantCulture, out var pct) && double.IsFinite(pct)
                             ? pct
-                            : throw new FormatException($"--speed must be 0 < pct ≤ 100, got '{sp}'");
+                            : throw new FormatException($"--speed needs a number, got '{sp}'");
                         break;
                     case "--for":
                         var fs = Value();

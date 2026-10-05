@@ -179,6 +179,10 @@ public sealed class CommandModeTests
             // #37: the guard is on the RAW value written — 0.0004 unit/s rounds to Velocity 0.
             (new(), new VerbRequest(Verb.Jog, Velocity: 0.0004), "jog: Commander/UnreachableSpeed: refused before writing anything: jog needs 0 < |v| ≤ MaxVelocity"),
             (new(), new VerbRequest(Verb.Jog, Velocity: -0.0004), "jog: Commander/UnreachableSpeed: refused before writing anything: jog needs 0 < |v| ≤ MaxVelocity"),
+            // #39: --speed out of 0 < pct ≤ 100 is a guard (exit 2, RESULT: GUARD), not a usage error.
+            (new(), new VerbRequest(Verb.Move, Target: 600, SpeedPercent: 150), "move: Commander/UnreachableSpeed: refused before writing anything: speed 150 % outside 0 < pct ≤ 100."),
+            (new(), new VerbRequest(Verb.Move, Target: 600, SpeedPercent: 0), "move: Commander/UnreachableSpeed: refused before writing anything: speed 0 % outside 0 < pct ≤ 100."),
+            (new(), new VerbRequest(Verb.Move, Target: 600, SpeedPercent: 100.001), "move: Commander/UnreachableSpeed: refused before writing anything: speed 100.001 % outside 0 < pct ≤ 100."),
             (new(), new VerbRequest(Verb.Move, Target: 600, SpeedPercent: 0.00005),
                 "move: Commander/UnreachableSpeed: refused before writing anything: --speed 0 % of MaxVelocity rounds to raw Velocity 0"),
             (new() { PublishLimits = false }, new VerbRequest(Verb.Jog, Velocity: 10),
@@ -450,6 +454,8 @@ public sealed class CommandModeTests
     [Fact]
     public void GA_U_145_MoveAndJogTakeNumbersIncludingNegativeOnes()
     {
+        CheckCommandLine.Parse(["--command", "move", "100", "plc", "--speed", "150", "--allow-motion"]).Options!.Command!.SpeedPercent
+            .Should().Be(150, "the range is the guard's (exit 2, RESULT: GUARD), not a usage error (#39)");
         var move = CheckCommandLine.Parse(["--command", "move", "-12.5", "plc", "--speed", "20", "--allow-motion"]).Options!.Command!;
         move.Should().Be(new VerbRequest(Verb.Move, Target: -12.5, SpeedPercent: 20));
         CheckCommandLine.Parse(["--command", "move", "100", "plc", "--allow-motion"]).Options!.Command!.SpeedPercent.Should().Be(10);
@@ -465,8 +471,7 @@ public sealed class CommandModeTests
     [InlineData("--command", "3", "plc")]
     [InlineData("--command", "fly", "plc")]
     [InlineData("--command", "move", "plc", "--allow-motion")]
-    [InlineData("--command", "move", "100", "plc", "--allow-motion", "--speed", "0")]
-    [InlineData("--command", "move", "100", "plc", "--allow-motion", "--speed", "101")]
+    [InlineData("--command", "move", "100", "plc", "--allow-motion", "--speed", "fast")]
     [InlineData("--command", "enable", "plc", "--speed", "20")]
     [InlineData("--command", "enable", "plc", "--for", "2")]
     [InlineData("--command", "jog", "5", "plc", "--allow-motion", "--for", "0")]
