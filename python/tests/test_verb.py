@@ -801,6 +801,7 @@ def test_the_grammar_is_protocol_mds() -> None:
         ["--command", "jog", "-inf", "--allow-motion"],
         ["--command", "move", "1e400", "--allow-motion"],
         ["--command", "move", "5", "--speed", "1_0", "--allow-motion"],
+        ["--command", "move", "5\n", "--allow-motion"],  # #71: a trailing newline reaches no simulator
     ],
 )
 async def test_a_number_outside_the_grammar_exits_2_with_no_result_line_and_no_write(
@@ -822,6 +823,7 @@ async def test_a_number_outside_the_grammar_exits_2_with_no_result_line_and_no_w
     assert "Traceback" not in stderr.decode()
     assert stderr.decode().strip().endswith(": not a number"), stderr
     assert stub.writes == []
+    assert stub.requests == 0  # refused at parse time: no Modbus request at all
 
 
 @pytest.mark.parametrize("typed", ["0", "-1", "0.0"])
