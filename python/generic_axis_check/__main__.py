@@ -180,14 +180,12 @@ def _verb(a: argparse.Namespace) -> Verb | None:
         raise UsageError("--speed applies to --command move")
     if a.run_for is not None and name != "jog":
         raise UsageError("--for applies to --command jog")
-    run_for = parse_number("--for", a.run_for) if a.run_for is not None else None
-    if run_for is not None and run_for <= 0:
-        raise UsageError(f"--for {a.run_for}: must be > 0")
+    run_for = parse_number("--for", a.run_for) if a.run_for is not None else None  # S ≤ 0 is a guard (step 3)
     if a.speed is None:
         default_text = "10" if name == "move" else None  # the default --speed, shown only where move shows it
-        return Verb(name, value, DEFAULT_SPEED_PERCENT, run_for, speed_text=default_text)
+        return Verb(name, value, DEFAULT_SPEED_PERCENT, run_for, speed_text=default_text, run_for_text=a.run_for)
     speed = parse_number("--speed", a.speed)  # the number, for the guard and the rounding only
-    return Verb(name, value, speed, run_for, speed_text=a.speed)  # review #68: printed as typed
+    return Verb(name, value, speed, run_for, speed_text=a.speed, run_for_text=a.run_for)  # #68: printed as typed
 
 
 async def run_dump(options: Options, watch: bool) -> int:

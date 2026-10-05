@@ -487,7 +487,6 @@ def test_parse_reads_the_verb(argv: list[str], expected: Verb) -> None:
         ["plc", "--command", "move", "x", "--allow-motion"],
         ["plc", "--command", "enable", "--speed", "10"],
         ["plc", "--command", "move", "10", "--for", "1", "--allow-motion"],
-        ["plc", "--command", "jog", "5", "--for", "0", "--allow-motion"],
         ["plc", "--command", "enable", "--dump"],
         ["plc", "--command", "enable", "--report", "r.md"],
         ["plc", "--for", "1"],
@@ -727,8 +726,26 @@ def test_an_out_of_range_speed_is_printed_as_typed() -> None:
 
 # --- GA-U-157.py (#47, #48): one number grammar for every --command number, string by string with C# ---------------
 
-ACCEPTED_NUMBERS = ("+5", "5.", ".5", "5e-1", "0.00005")
-REFUSED_NUMBERS = (" 5", "1_0", "0x5", "inf", "-inf", "nan", "NaN", "1e400", "fast")
+ACCEPTED_NUMBERS = ("+5", "5", "5.", ".5", "5e-1", "0.00005", "-12.5", "1E3")
+REFUSED_NUMBERS = (
+    " 5",
+    "5 ",
+    "1_0",
+    "0x5",
+    "inf",
+    "-inf",
+    "nan",
+    "NaN",
+    "Infinity",
+    "1e400",
+    "fast",
+    "",
+    ".",
+    "e5",
+    "5e",
+    "+-5",
+    "1,5",
+)
 """The probe list both tools pin (agreed with eng-testapp-3): accepted as numbers / refused as usage errors."""
 
 
@@ -801,3 +818,22 @@ async def test_a_number_outside_the_grammar_exits_2_with_no_result_line_and_no_w
     assert "Traceback" not in stderr.decode()
     assert stderr.decode().strip().endswith(": not a number"), stderr
     assert stub.writes == []
+
+
+@pytest.mark.parametrize("typed", ["0", "-1", "0.0"])
+async def test_a_for_that_parses_but_is_not_above_0_is_a_guard(stub: StubPlc, typed: str) -> None:
+    # protocol 7751649 step 3: --for must be 0 < S seconds; a parsed S ≤ 0 is a GUARD with the typed text, nothing
+    # written (it was a usage error before). Text that is no number stays the grammar's usage error.
+    invocation = parse([f"127.0.0.1:{stub.port}", "--command", "jog", "5", "--for", typed, "--allow-motion"])
+    assert invocation.verb is not None
+    lines: list[str] = []
+    result = await run_verb(invocation.options, invocation.verb, lines.append)
+    assert (result.result, result.exit_code) == ("GUARD", 2)
+    assert result.message == f"jog: Commander/OutOfRange: refused before writing anything: for {typed} s outside 0 < S."
+    assert lines[0].startswith(f"--command jog 5 --for {typed} on "), lines[0]
+    assert stub.writes == []
+
+
+def test_a_for_that_is_no_number_stays_a_usage_error() -> None:
+    with pytest.raises(UsageError, match=r"^--for 0x5: not a number$"):
+        parse(["plc", "--command", "jog", "5", "--for", "0x5", "--allow-motion"])

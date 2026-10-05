@@ -102,6 +102,9 @@ class Verb:
     refusal body); ``speed_percent`` is its number, used only by the guard and the rounding. The command line always
     sets it; a Verb built in code without it shows its number."""
 
+    run_for_text: str | None = None
+    """``--for`` exactly as typed: printed in the header and in its guard."""
+
     @property
     def speed_shown(self) -> str:
         return self.speed_text if self.speed_text is not None else f"{self.speed_percent:g}"
@@ -111,7 +114,7 @@ class Verb:
         if self.name == "move":
             text += f" --speed {self.speed_shown}"
         if self.run_for_s is not None:
-            text += f" --for {self.run_for_s:g}"
+            text += f" --for {self.run_for_text if self.run_for_text is not None else f'{self.run_for_s:g}'}"
         return text
 
 
@@ -197,6 +200,10 @@ def guard_problem(verb: Verb, s: StatusBlock, registers: RegisterMap) -> str | N
     unpublished = s.travel_min == s.travel_max == s.max_velocity == 0
     limits = (Read("TravelMin", s.travel_min), Read("TravelMax", s.travel_max), Read("MaxVelocity", s.max_velocity))
     max_velocity = Read("MaxVelocity", s.max_velocity)
+    if verb.run_for_s is not None and not verb.run_for_s > 0:
+        # protocol.md step 3 (7751649): --for must be 0 < S seconds, no upper bound; a parsed S ≤ 0 is a guard.
+        shown = verb.run_for_text if verb.run_for_text is not None else f"{verb.run_for_s:g}"
+        return refuse("OutOfRange", f"{REFUSED_UNWRITTEN}: for {shown} s outside 0 < S")
     if verb.name == "move" and verb.value is not None:
         if not 0 < verb.speed_percent <= 100:  # review #39: a value the tool would refuse is a guard, not usage
             what = f"{REFUSED_UNWRITTEN}: speed {verb.speed_shown} % outside 0 < pct ≤ 100"
