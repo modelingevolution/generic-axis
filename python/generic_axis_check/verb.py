@@ -40,6 +40,11 @@ from .runner import cleanup, exception_outcome, preflight, to_completion
 VERBS = ("enable", "disable", "home", "stop", "reset", "move", "jog")
 """protocol.md "One-verb mode": the verbs, in the Command line row's order."""
 
+ENERGISED = frozenset(
+    {AxisState.STANDSTILL, AxisState.HOMING, AxisState.DISCRETE_MOTION, AxisState.CONTINUOUS_MOTION, AxisState.STOPPING}
+)
+"""States in which the drive is energised (step 4: "found energised" is decided from State)."""
+
 MOTION_VERBS = frozenset({"home", "move", "jog"})
 """Need ``--allow-motion``."""
 
@@ -185,7 +190,7 @@ async def _until(
 
 
 async def _enable(ctx: CheckContext, _verb: Verb) -> Outcome:
-    ack = await ctx.command(Command.ENABLE)
+    ack = await ctx.enable()  # a fresh 0→1 edge even if bit 0 already reads 1 (#61)
     s, met, took = await _until(ctx, lambda s: s.state == AxisState.STANDSTILL, STATE_TIMEOUT_S, ack.written_at)
     if met:
         return passed(f"Standstill after {took} ms.")
@@ -383,7 +388,7 @@ async def run_verb(options: Options, verb: Verb, out: Out) -> VerbResult:
         if refusal is not None:
             return VerbResult(GUARD_REFUSED, 2, f"{verb.name}: {refusal}")
         (word,) = await client.read(registers.command, 1)
-        ctx.found_enabled = bool(word & Command.ENABLE)
+        ctx.found_energised = status.state in ENERGISED  # from State, never from the command bit (#61)
         ctx.command_word = word & int(Command.ENABLE)  # a Stop or Reset keeps (or drops) the Enable it found
         await ctx.take_lease()
         await ctx.beater.start()

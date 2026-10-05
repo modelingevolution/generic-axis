@@ -281,9 +281,10 @@ async def beat_for(ctx: CheckContext, seconds: float) -> None:
 async def ensure_enabled(ctx: CheckContext) -> Outcome | None:
     """Enable and wait for Standstill (CHK-06's 5 s budget). Returns a failure, or None when the axis is ready."""
     status = await ctx.status()
-    if status.state == AxisState.STANDSTILL and ctx.enabled:
+    if status.state == AxisState.STANDSTILL:
+        ctx.command_word |= int(Command.ENABLE)  # energised is read from State (#61); keep Enable in later words
         return None
-    ack = await ctx.command(Command.ENABLE)
+    ack = await ctx.enable()
     poll = await wait_for(
         ctx.client,
         ctx.registers,
@@ -413,7 +414,7 @@ async def chk06(ctx: CheckContext) -> Outcome:
         await ctx.clear_watchdog_fault()  # FR-11 "At attach": a latched trip belongs to a dead predecessor
     await ctx.beater.start()
 
-    on = await ctx.command(Command.ENABLE)
+    on = await ctx.enable()  # a fresh 0→1 edge even if bit 0 already reads 1 (#61)
     on_state = await wait_for(
         ctx.client, ctx.registers, lambda s: s.state == AxisState.STANDSTILL, STATE_TIMEOUT_S, since=on.written_at
     )

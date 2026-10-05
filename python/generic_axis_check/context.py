@@ -112,9 +112,12 @@ class CheckContext:
     session_lease: bool = False
     """CHK-06 established the lease; every later check restores it."""
     caused_trip: bool = False
-    found_enabled: bool = False
-    """C+0 already held Enable when the tool attached (one-verb mode): cleanup's Enable 0 is only for an Enable this run
-    set, so a run leaves the axis no more energised than it found it, and no less (protocol.md "One-verb mode" step 6)."""
+    found_energised: bool = False
+    """The axis was energised when the tool attached, decided from State, never from the command bit (one-verb mode,
+    protocol.md "One-verb mode" step 4; #61)."""
+    wrote_enable: bool = False
+    """This run energised the axis through ``enable()``. Cleanup writes Enable 0 only then, and only if the axis was
+    not found energised: a run leaves the axis no more energised than it found it, and no less."""
     foreign_trip: bool = False
     """Pre-flight found a dead lease holder's watchdog trip: it is left for its operator, never cleared (#35)."""
     connect_ms: int | None = None
@@ -181,6 +184,17 @@ class CheckContext:
         if word & EDGE_BITS:
             await self.clear_edges()
         return Ack(seq, poll, written_at)
+
+    async def enable(self) -> Ack:
+        """Enable 1 as a fresh 0→1 edge (protocol.md CHK-06 and "One-verb mode" step 4; #61): if ``Command`` bit 0
+        already reads 1 while State is 0 (a pendant reset after a trip leaves it so), write Enable 0 first, as its own
+        acknowledged command write, then Enable 1. Writing 1 over 1 is no edge: the PLC rightly stays Disabled."""
+        (word,) = await self.client.read(self.registers.command, 1)
+        if word & Command.ENABLE and (await self.status()).state == AxisState.DISABLED:
+            await self.command(Command.NONE)
+        ack = await self.command(Command.ENABLE)
+        self.wrote_enable = True
+        return ack
 
     async def clear_edges(self) -> None:
         """Clear edge bits, keep Enable, keep the seq (protocol.md: this write does not increment ``CommandSeq``)."""

@@ -11,9 +11,11 @@ import pytest
 
 from generic_axis_check.__main__ import UsageError, main, parse
 from generic_axis_check.beat import Beater
+from generic_axis_check.checks import CHECKS
 from generic_axis_check.client import PlcClient
 from generic_axis_check.context import Options
 from generic_axis_check.registers import Command, RegisterMap
+from generic_axis_check.runner import run
 from generic_axis_check.verb import Verb, VerbResult, run_verb
 
 from .stub_plc import StubOptions, StubPlc
@@ -64,10 +66,9 @@ async def test_enable_reaches_standstill_and_ends_disabled(stub: StubPlc) -> Non
             row,
         ), row
     assert any("State 1 Standstill  Flags Homed|DriveReady  " in row and "FaultCode 0 None" in row for row in rows)
-    # ms count from the completion of the verb's first write: the read that shows Standstill comes after it.
-    standstill_ms = next(int(row[1:7]) for row in rows if "State 1 Standstill" in row)
+    # ms count from the completion of the verb's first write: the read that shows Standstill comes after it (it can be
+    # +0 ms when the scan lands between the write's apply and its answer, so only the sign is pinned here).
     assert row_sign(rows, "State 1 Standstill") == "+"
-    assert standstill_ms > 0, rows
 
 
 async def test_disable_reaches_disabled(stub: StubPlc) -> None:
@@ -116,7 +117,12 @@ async def test_home_enables_first_and_ends_homed_and_disabled() -> None:
 
 
 async def test_move_writes_parameters_then_the_command_and_arrives(stub: StubPlc) -> None:
-    result = await verb(stub, Verb("move", 600, speed_percent=20))
+    lines: list[str] = []
+    result = await verb(stub, Verb("move", 600, speed_percent=20), lines)
+    # ms count from the verb's first write, not from the start of the run: the 100 mm move takes about 1 s.
+    rows = [line for line in lines if " ms  State " in line]
+    assert rows[-1].startswith("+"), rows[-1]
+    assert 800 < int(rows[-1][1:7]) < 1800, rows[-1]  # 100 mm at 100 mm/s, 1 m/s² ramps: about 1.05 s
     assert (result.result, result.exit_code) == ("PASS", 0), result.message
     assert re.fullmatch(
         r"move: done — Standstill \+ InPosition after \d+ ms, ActualPosition 600\.000\.", result.message
@@ -485,3 +491,65 @@ def test_command_bits_match_the_protocol() -> None:
             Command.RESET,
         )
     ) == (ENABLE, HOME, MOVE_ABS, MOVE_VEL, STOP, RESET)
+
+
+# --- GA-U-152.py (#61): Enable is a fresh 0→1 edge; "found energised" is read from State ----------------------------
+
+
+def pendant_reset(plc: StubPlc) -> None:
+    """After a trip, a Reset with Enable bit 0 kept (a pendant reset): Disabled, C+0 bit 0 = 1, energising blocked
+    until a fresh 0→1 (protocol.md § Command semantics, Enable)."""
+    plc.regs[MAP.command] = ENABLE
+    plc.axis.state = DISABLED
+    plc.axis.enable_blocked = True
+
+
+def command_writes(plc: StubPlc, since: int = 0) -> list[list[int]]:
+    """Every write to C+0…C+1 in the stub's journal (not the end state)."""
+    return [values for address, values in plc.writes[since:] if address == MAP.command]
+
+
+async def test_enable_over_a_set_enable_bit_writes_the_0_edge_first_and_ends_disabled(stub: StubPlc) -> None:
+    pendant_reset(stub)
+    result = await verb(stub, Verb("enable"))
+    assert (result.result, result.exit_code) == ("PASS", 0), result.message
+    # Enable 0 as its own acknowledged command write (seq 1), then Enable 1 (seq 2), then cleanup's Enable 0 (seq 3).
+    assert command_writes(stub) == [[0, 1], [ENABLE, 2], [0, 3]]
+    assert stub.accepted == [0, ENABLE, 0]
+    assert stub.axis.state == DISABLED
+
+
+async def test_chk06_over_a_set_enable_bit_passes_with_the_0_edge_first(stub: StubPlc) -> None:
+    pendant_reset(stub)
+    wanted = {"CHK-01", "CHK-02", "CHK-06"}
+    report = await run(Options(host="127.0.0.1", port=stub.port), checks=tuple(c for c in CHECKS if c.id in wanted))
+    chk06 = next(c for c in report.checks if c.id == "CHK-06")
+    assert chk06.result == "PASS", chk06.message
+    assert command_writes(stub) == [[0, 1], [ENABLE, 2], [0, 3]]  # the later numbers shift by one
+
+
+async def test_found_standstill_home_ends_standstill_with_no_enable_0(stub: StubPlc) -> None:
+    stub.regs[MAP.command] = ENABLE
+    stub.axis.state = STANDSTILL
+    stub.axis.homed = False
+    result = await verb(stub, Verb("home"))
+    assert (result.result, result.exit_code) == ("PASS", 0), result.message
+    words = [values[0] for values in command_writes(stub)]
+    assert 0 not in words, words  # no Enable 0 anywhere, cleanup included
+    assert not any("(Enable 0)" in line for line in result.cleanup), result.cleanup
+    assert stub.axis.state == STANDSTILL
+
+
+async def test_found_standstill_enable_ends_standstill_with_no_enable_0(stub: StubPlc) -> None:
+    stub.regs[MAP.command] = ENABLE
+    stub.axis.state = STANDSTILL
+    result = await verb(stub, Verb("enable"))
+    assert (result.result, result.exit_code) == ("PASS", 0), result.message
+    assert command_writes(stub) == [[ENABLE, 1]]  # Enable 1 (no edge needed), no cleanup Enable 0
+    assert stub.axis.state == STANDSTILL
+
+
+async def test_found_disabled_with_bit_0_clear_gets_no_0_edge(stub: StubPlc) -> None:
+    result = await verb(stub, Verb("enable"))
+    assert result.exit_code == 0, result.message
+    assert command_writes(stub) == [[ENABLE, 1], [0, 2]]  # Enable 1 at once; only cleanup's Enable 0

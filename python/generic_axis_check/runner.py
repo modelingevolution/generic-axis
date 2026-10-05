@@ -318,7 +318,7 @@ async def cleanup(ctx: CheckContext) -> None:
 
     async def enable_off() -> None:
         (word,) = await ctx.client.read(registers.command, 1)
-        if commanded and word & Command.ENABLE and not ctx.found_enabled:
+        if commanded and word & Command.ENABLE and ctx.wrote_enable and not ctx.found_energised:
             ctx.seq = next_nonzero(ctx.seq if ctx.seq is not None else (await ctx.status()).command_ack)
             await ctx.client.write(registers.command, [0, ctx.seq])
             ctx.command_word = 0
