@@ -1,5 +1,5 @@
 """One-verb mode (``--command``, protocol.md § Conformance checks › Command line, "One-verb mode"; ADR-38) against
-the stub PLC: GA-U-139.py … GA-U-145.py."""
+the stub PLC: GA-U-145.py … GA-U-151.py (C# GA-I-71…80 and GA-U-145 against the simulator)."""
 
 from __future__ import annotations
 
@@ -34,14 +34,14 @@ def released(plc: StubPlc) -> bool:
     return plc.regs[MAP.lease_owner] == 0
 
 
-# --- GA-U-139.py: each verb's happy path, through the handshake, printing every status read ------------------------
+# --- GA-U-146.py: each verb's happy path, through the handshake, printing every status read ------------------------
 
 
 async def test_enable_reaches_standstill_and_ends_disabled(stub: StubPlc) -> None:
     lines: list[str] = []
     result = await verb(stub, Verb("enable"), lines)
     assert (result.result, result.exit_code) == ("COMPLETED", 0), result.message
-    assert result.message.startswith("enable: Standstill ")
+    assert result.message.startswith("enable: done — Standstill ")
     assert stub.accepted == [ENABLE, 0]  # Enable 1, then cleanup's Enable 0: no more energised than found
     assert result.cleanup == ["C+0 = 0x0000, C+1 = 2 (Enable 0)", "C+9 = 0 (release lease)"]
     assert released(stub)
@@ -64,7 +64,7 @@ async def test_disable_reaches_disabled(stub: StubPlc) -> None:
     stub.regs[MAP.command] = ENABLE
     stub.axis.state = STANDSTILL  # an axis found energised, at rest
     result = await verb(stub, Verb("disable"))
-    assert (result.result, result.exit_code, result.message) == ("COMPLETED", 0, "disable: Disabled")
+    assert (result.result, result.exit_code, result.message) == ("COMPLETED", 0, "disable: done — Disabled")
     assert stub.axis.state == DISABLED
     assert result.cleanup == ["C+9 = 0 (release lease)"]
 
@@ -75,7 +75,7 @@ async def test_stop_keeps_the_enable_it_found_and_cleanup_leaves_it(stub: StubPl
     stub.axis.state = STANDSTILL
     result = await verb(stub, Verb("stop"))
     assert (result.result, result.exit_code) == ("COMPLETED", 0), result.message
-    assert result.message == "stop: State 1 Standstill"
+    assert result.message == "stop: done — State 1 Standstill"
     assert stub.accepted == [ENABLE | STOP]
     assert stub.regs[MAP.command] == ENABLE  # the edge cleared after the ack, Enable kept
     assert result.cleanup == ["C+9 = 0 (release lease)"]
@@ -96,7 +96,7 @@ async def test_home_enables_first_and_ends_homed_and_disabled() -> None:
     async with StubPlc(StubOptions(homing_velocity=5_000_000)) as plc:
         plc.axis.homed = False
         result = await verb(plc, Verb("home"))
-    assert (result.result, result.exit_code, result.message) == ("COMPLETED", 0, "home: homed")
+    assert (result.result, result.exit_code, result.message) == ("COMPLETED", 0, "home: done — homed")
     assert plc.accepted[:2] == [ENABLE, ENABLE | HOME]  # "from Disabled set Enable first"
     assert plc.axis.homed
     assert plc.axis.state == DISABLED  # cleanup's Enable 0
@@ -106,7 +106,7 @@ async def test_home_enables_first_and_ends_homed_and_disabled() -> None:
 async def test_move_writes_parameters_then_the_command_and_arrives(stub: StubPlc) -> None:
     result = await verb(stub, Verb("move", 600, speed_percent=20))
     assert (result.result, result.exit_code) == ("COMPLETED", 0), result.message
-    assert result.message == "move: in position at 600.000"
+    assert result.message == "move: done — in position at 600.000"
     # Handshake: parameters C+2…C+7 in one FC16 (target 600 000, 20 % of 500 000), then C+0…C+1 in a second FC16.
     params = [(a, v) for a, v in stub.writes if a == MAP.target_position]
     assert params == [(2, [0x27C0, 0x0009, 0x86A0, 0x0001, 0, 0])]
@@ -121,7 +121,7 @@ async def test_jog_for_runs_continuous_motion_then_stops() -> None:
         result = await verb(plc, Verb("jog", -50, run_for_s=0.4))
         start, end = 500_000, plc.axis.p
     assert (result.result, result.exit_code) == ("COMPLETED", 0), result.message
-    assert result.message == "jog: ContinuousMotion observed; after the jog, Stop: State 1 Standstill"
+    assert result.message == "jog: done — ContinuousMotion observed; after the jog, Stop: State 1 Standstill"
     assert not any(line.endswith("(Stop)") for line in result.cleanup), result.cleanup  # the verb stopped, not cleanup
     assert ENABLE | MOVE_VEL in plc.accepted
     assert ENABLE | STOP in plc.accepted
@@ -131,7 +131,7 @@ async def test_jog_for_runs_continuous_motion_then_stops() -> None:
     assert released(plc)
 
 
-# --- GA-U-140.py: the PLC fails the verb → exit 1 in rule 1's shape ------------------------------------------------
+# --- GA-U-147.py: the PLC fails the verb → exit 1 in rule 1's shape ------------------------------------------------
 
 
 async def test_a_verb_never_acknowledged_is_protocol_not_acknowledged() -> None:
@@ -174,7 +174,7 @@ async def test_partial_limits_are_protocol_and_write_nothing(stub: StubPlc) -> N
     assert stub.writes == []
 
 
-# --- GA-U-141.py: guards refuse before any write (Commander, exit 2), naming the register --------------------------
+# --- GA-U-148.py: guards refuse before any write (Commander, exit 2), naming the register --------------------------
 
 
 @pytest.mark.parametrize(
@@ -225,7 +225,7 @@ async def test_a_guard_refuses_before_any_write(stub: StubPlc, v: Verb, setup: s
         stub.o.publish_limits = False
     await asyncio.sleep(0.03)  # one scan publishes the change
     result = await verb(stub, v)
-    assert (result.result, result.exit_code, result.message) == ("NOT SENT", 2, expected)
+    assert (result.result, result.exit_code, result.message) == ("GUARD", 2, expected)
     assert stub.writes == []
     assert result.cleanup == []
 
@@ -239,7 +239,7 @@ async def test_the_guards_allow_the_limits_themselves(stub: StubPlc) -> None:
     assert result.exit_code == 0, result.message
 
 
-# --- GA-U-142.py: Ctrl-C ---------------------------------------------------------------------------------------------
+# --- GA-U-149.py: Ctrl-C ---------------------------------------------------------------------------------------------
 
 
 async def test_ctrl_c_mid_jog_stops_and_releases_and_counts_as_completed() -> None:
@@ -278,7 +278,7 @@ async def test_ctrl_c_before_the_verb_completes_is_exit_4_and_cleanup_stops() ->
     assert released(plc)
 
 
-# --- GA-U-143.py: pre-flight, dead holder, exit 3 --------------------------------------------------------------------
+# --- GA-U-150.py: pre-flight, dead holder, exit 3 --------------------------------------------------------------------
 
 
 async def test_a_live_commander_refuses_with_exit_3_and_nothing_written(stub: StubPlc) -> None:
@@ -346,7 +346,7 @@ async def test_after_a_dead_holders_trip_watchdog_fault_is_cleared_at_attach_bef
     assert end == (0, ERROR_STOP, 4)
 
 
-# --- GA-U-144.py: the command line -----------------------------------------------------------------------------------
+# --- GA-U-145.py: the command line -----------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -382,6 +382,8 @@ def test_parse_reads_the_verb(argv: list[str], expected: Verb) -> None:
         ["plc", "--command", "enable", "--dump"],
         ["plc", "--command", "enable", "--report", "r.md"],
         ["plc", "--for", "1"],
+        ["plc", "--command", "Home", "--allow-motion"],  # verbs are lower case
+        ["plc", "--command", "enable", "--command", "disable"],
     ],
 )
 def test_parse_refuses_a_malformed_verb(argv: list[str]) -> None:
@@ -410,12 +412,12 @@ async def test_cli_guard_refusal_prints_and_exits_2(stub: StubPlc) -> None:
     stdout, _ = await process.communicate()
     out = stdout.decode().splitlines()
     assert process.returncode == 2
-    assert out[-1] == "RESULT: NOT SENT"
+    assert out[-1] == "RESULT: GUARD"
     assert out[-2].startswith("move: Commander/OutOfRange: move refused: target 20000")
     assert stub.writes == []
 
 
-# --- GA-U-145.py: a jog whose ContinuousMotion never comes is Machine, and Stop still runs ---------------------------
+# --- GA-U-151.py: a jog whose ContinuousMotion never comes is Machine, and Stop still runs ---------------------------
 
 
 async def test_a_jog_without_continuous_motion_fails_machine() -> None:

@@ -80,6 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--command",
         nargs="+",
+        action="append",
         metavar="VERB",
         help=f"run one verb instead of the checks: {', '.join(VERBS[:5])}, move <target>, jog <signed velocity>",
     )
@@ -142,7 +143,9 @@ def _verb(a: argparse.Namespace) -> Verb | None:
         if a.speed is not None or a.run_for is not None:
             raise UsageError("--speed and --for apply to --command move and --command jog")
         return None
-    name, *args = a.command
+    if len(a.command) > 1:
+        raise UsageError("one --command per run")
+    name, *args = a.command[0]
     if name not in VERBS:
         raise UsageError(f"--command {name}: the verb must be one of {', '.join(VERBS)}")
     if a.dump or a.report is not None:
@@ -152,7 +155,7 @@ def _verb(a: argparse.Namespace) -> Verb | None:
     wanted = 1 if name in VERBS_WITH_VALUE else 0
     if len(args) != wanted:
         shape = {"move": "move <target>", "jog": "jog <signed velocity>"}.get(name, name)
-        raise UsageError(f"--command {shape}: got {' '.join(a.command)}")
+        raise UsageError(f"--command {shape}: got {' '.join(a.command[0])}")
     value: float | None = None
     if args:
         try:
