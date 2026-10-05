@@ -285,6 +285,30 @@ public sealed class CommandModeTests
         (await sim.SettledAsync()).State.Should().Be(SimAxisState.Disabled);
     }
 
+    /// <summary>
+    /// GA-I-78 with a dead holder's trip (protocol 00f2499 step 3): a refused guard writes nothing at all — not the lease,
+    /// not the beat, and not the attach-time WatchdogFault = 0, which comes only after the guards and the lease.
+    /// </summary>
+    [Fact]
+    public async Task GA_I_78_ADeadHoldersTripAndARefusedGuardWriteNothing()
+    {
+        using var sim = new LiveSimulator();
+        using (var commander = new CheckerAgainstSimulatorTests.RawCommander(sim.Port)) await commander.BeatAsync(TimeSpan.FromSeconds(0.5)); // then dies
+        var writes = new System.Collections.Concurrent.ConcurrentQueue<int>();
+        sim.Host.OnClientWrite = addresses => { foreach (var a in addresses) writes.Enqueue(a); };
+
+        var (exit, output) = await Command(sim, new VerbRequest(Verb.Move, Target: 20_000));
+
+        Cadence.Budget(sim.MaxScanGap, () => output.Should().Contain("held with no beat and WatchdogFault (C+10 = holding 10) = 1"));
+        exit.Should().Be(2, output);
+        output.Should().Contain("move: Commander/OutOfRange:");
+        Last(output).Should().Be("RESULT: GUARD");
+        writes.Should().BeEmpty("a refused guard writes nothing: no lease, no beat, no WatchdogFault = 0");
+        var end = await sim.SettledAsync();
+        end.WatchdogFault.Should().Be(1, "the dead holder's trip is untouched by a refused run");
+        end.LeaseOwner.Should().Be(1);
+    }
+
     // ---- the command line (GA-U-145) -------------------------------------------------------------------------------
 
     [Theory]
