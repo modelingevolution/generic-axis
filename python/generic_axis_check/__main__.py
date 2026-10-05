@@ -7,6 +7,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import math
+import re
 import signal
 import sys
 from collections.abc import Coroutine
@@ -55,11 +57,28 @@ def _u16(text: str) -> int:
     return value
 
 
+NUMBER = re.compile(r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?")
+"""protocol.md "One-verb mode" (#47, #48): every numeric argument is ``[+-]?`` then decimal digits with an optional
+fraction (``5``, ``5.``, ``.5``) and an optional exponent (``5e-1``); no whitespace, underscores, hex, inf or nan."""
+
+
+def parse_number(arg: str, text: str) -> float:
+    """A ``--command`` number by the protocol's grammar, finite; anything else is a usage error,
+    ``<arg> <text>: not a number`` (``float()`` alone would take ``1_0``, `` 5``, ``inf``, ``nan`` and ``1e400``)."""
+    value = float(text) if NUMBER.fullmatch(text) else math.nan
+    if not math.isfinite(value):
+        raise UsageError(f"{arg} {text}: not a number")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m generic_axis_check",
         description="Run the generic-axis PLC conformance checklist (docs/protocol.md).",
     )
+    # A single-dash word that is no option is a value ("jog -inf"), so the number grammar, not argparse, refuses it with
+    # the protocol's message. Registered options (-h) are recognised before this matcher is consulted.
+    p._negative_number_matcher = re.compile(r"^-[^-]")
     p.add_argument("target", metavar="host[:port]", help=f"the PLC; port {DEFAULT_PORT} by default")
     p.add_argument("--unit", type=_u16, default=1, help="Modbus unit id (default 1)")
     p.add_argument("--command-base", type=_u16, default=0, help="command block base C, holding registers (default 0)")
@@ -85,7 +104,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"run one verb instead of the checks: {', '.join(VERBS[:5])}, move <target>, jog <signed velocity>",
     )
     p.add_argument("--speed", help="move: percent of MaxVelocity (default 10)")
-    p.add_argument("--for", dest="run_for", type=float, help="jog: end the jog after this many seconds")
+    p.add_argument("--for", dest="run_for", help="jog: end the jog after this many seconds")
     p.add_argument("--report", type=Path, help="*.md: Markdown there plus JSON next to it; *.json: JSON only")
     return p
 
@@ -156,26 +175,19 @@ def _verb(a: argparse.Namespace) -> Verb | None:
     if len(args) != wanted:
         shape = {"move": "move <target>", "jog": "jog <signed velocity>"}.get(name, name)
         raise UsageError(f"--command {shape}: got {' '.join(a.command[0])}")
-    value: float | None = None
-    if args:
-        try:
-            value = float(args[0])
-        except ValueError as exc:
-            raise UsageError(f"--command {name} {args[0]}: not a number") from exc
+    value = parse_number(name, args[0]) if args else None  # at parse time, before any guard (#47, #48)
     if a.speed is not None and name != "move":
         raise UsageError("--speed applies to --command move")
     if a.run_for is not None and name != "jog":
         raise UsageError("--for applies to --command jog")
-    if a.run_for is not None and a.run_for <= 0:
-        raise UsageError(f"--for {a.run_for:g}: must be > 0")
+    run_for = parse_number("--for", a.run_for) if a.run_for is not None else None
+    if run_for is not None and run_for <= 0:
+        raise UsageError(f"--for {a.run_for}: must be > 0")
     if a.speed is None:
         default_text = "10" if name == "move" else None  # the default --speed, shown only where move shows it
-        return Verb(name, value, DEFAULT_SPEED_PERCENT, a.run_for, speed_text=default_text)
-    try:
-        speed = float(a.speed)  # the number, for the guard and the rounding only
-    except ValueError as exc:
-        raise UsageError(f"--speed {a.speed}: not a number") from exc
-    return Verb(name, value, speed, a.run_for, speed_text=a.speed)  # review #68: printed as typed
+        return Verb(name, value, DEFAULT_SPEED_PERCENT, run_for, speed_text=default_text)
+    speed = parse_number("--speed", a.speed)  # the number, for the guard and the rounding only
+    return Verb(name, value, speed, run_for, speed_text=a.speed)  # review #68: printed as typed
 
 
 async def run_dump(options: Options, watch: bool) -> int:
