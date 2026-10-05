@@ -101,8 +101,8 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
 
     private static string Describe(VerbRequest r) => r.Verb switch
     {
-        Verb.Move => $"move {r.Target!.Value.ToString("0.###", Inv)} --speed {r.SpeedPercent.ToString("0.###", Inv)}",
-        Verb.Jog => $"jog {r.Velocity!.Value.ToString("0.###", Inv)}{(r.For is { } f ? $" --for {f.TotalSeconds.ToString("0.###", Inv)}" : "")}",
+        Verb.Move => $"move {r.Target!.Value.ToString("0.######", Inv)} --speed {r.SpeedPercent.ToString("0.###", Inv)}",
+        Verb.Jog => $"jog {r.Velocity!.Value.ToString("0.######", Inv)}{(r.For is { } f ? $" --for {f.TotalSeconds.ToString("0.###", Inv)}" : "")}",
         _ => r.Name,
     };
 
@@ -199,7 +199,7 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
                 var target = request.Target!.Value;
                 var targetRaw = Raw(target);
                 if (targetRaw < s.TravelMin || targetRaw > s.TravelMax)
-                    return Commander("OutOfRange", $"target {target.ToString("0.000", Inv)} is outside TravelMin..TravelMax. Read TravelMin ({ctx.At(RegisterField.TravelMin)}) = {s.TravelMin}, "
+                    return Commander("OutOfRange", $"target {target.ToString("0.000######", Inv)} (raw {targetRaw.ToString("0", Inv)}) is outside TravelMin..TravelMax. Read TravelMin ({ctx.At(RegisterField.TravelMin)}) = {s.TravelMin}, "
                                                    + $"TravelMax ({ctx.At(RegisterField.TravelMax)}) = {s.TravelMax}.");
                 var pct = request.SpeedPercent;
                 if (!(pct > 0 && pct <= 100))
@@ -214,13 +214,13 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
             var v = request.Velocity!.Value;
             var raw = Raw(v);
             if (raw == 0 || Math.Abs(raw) > s.MaxVelocity)
-                return Commander("UnreachableSpeed", $"jog needs 0 < |v| ≤ MaxVelocity, got {v.ToString("0.000", Inv)}. Read MaxVelocity ({ctx.At(RegisterField.MaxVelocity)}) = {s.MaxVelocity}.");
+                return Commander("UnreachableSpeed", $"jog needs 0 < |v| ≤ MaxVelocity, got {v.ToString("0.000######", Inv)} (raw {raw.ToString("0", Inv)}). Read MaxVelocity ({ctx.At(RegisterField.MaxVelocity)}) = {s.MaxVelocity}.");
             return null;
         }
 
         /// <summary>The register value <paramref name="units"/> is written as (0.001 per count, half away from zero, as
         /// <see cref="Words.ToRaw"/>), as a double so an over-range value is judged, not thrown.</summary>
-        private static double Raw(double units) => Math.Round(units * Words.Scale, MidpointRounding.AwayFromZero);
+        private static double Raw(double units) => Math.Round(units * Words.Scale, MidpointRounding.AwayFromZero) + 0.0; // + 0.0: no "-0"
 
         /// <summary>move's resolved speed: <c>--speed</c> % of <c>MaxVelocity</c>, as the raw value written.</summary>
         private double MoveSpeedRaw(StatusBlock s) => Math.Round(s.MaxVelocity * request.SpeedPercent / 100.0, MidpointRounding.AwayFromZero);
