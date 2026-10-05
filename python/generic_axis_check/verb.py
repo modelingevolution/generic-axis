@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import math
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -35,7 +34,16 @@ from .dump import decode
 from .errors import DRIVE_FAULT, HOME_LATCH_FAILED, ErrorClass, Read, format_message
 from .lease import LeaseHeld
 from .poll import ms, wait_for
-from .registers import MAP_VERSION, AxisState, Command, RegisterMap, StatusBlock, register_ref
+from .registers import (
+    MAP_VERSION,
+    AxisState,
+    Command,
+    RegisterMap,
+    StatusBlock,
+    register_ref,
+    round_half_away,
+    speed_raw,
+)
 from .runner import cleanup, exception_outcome, preflight, to_completion
 
 VERBS = ("enable", "disable", "home", "stop", "reset", "move", "jog")
@@ -149,8 +157,7 @@ def map_problem(ctx: CheckContext, s: StatusBlock) -> Outcome | None:
 def raw(value: float) -> int:
     """Axis units → the raw register value that would be written (0.001; protocol.md § Transport), rounded half away
     from zero, as the C# tool rounds. Guards judge this value, never the typed one (review #37)."""
-    rounded = math.floor(abs(value) * UNITS + 0.5)
-    return -rounded if value < 0 and rounded else rounded
+    return round_half_away(value * UNITS)
 
 
 def units(value: float) -> str:
@@ -167,7 +174,7 @@ def percent(value: float) -> str:
 
 def move_velocity(s: StatusBlock, speed_percent: float) -> int:
     """``--speed`` → the raw Velocity written for ``move`` (default 10 % of ``MaxVelocity``)."""
-    return raw(s.max_velocity * speed_percent / 100 / UNITS)
+    return speed_raw(s.max_velocity, speed_percent)
 
 
 def guard_problem(verb: Verb, s: StatusBlock, registers: RegisterMap) -> str | None:

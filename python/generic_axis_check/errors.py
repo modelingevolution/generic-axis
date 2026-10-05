@@ -32,6 +32,7 @@ WATCHDOG_TRIPPED = "WatchdogTripped"
 HOME_LATCH_FAILED = "HomeLatchFailed"
 SAFETY_STOP = "SafetyStop"
 LEASE_HELD = "LeaseHeld"
+UNREACHABLE_SPEED = "UnreachableSpeed"
 
 MOTION_ERROR_CLASSES: dict[str, ErrorClass] = {
     # protocol.md § Errors and debugging, class table: every SDK 2.30.0 MotionError member in exactly one row.
@@ -47,7 +48,7 @@ MOTION_ERROR_CLASSES: dict[str, ErrorClass] = {
     "Busy": ErrorClass.COMMANDER,
     "NotHomed": ErrorClass.COMMANDER,
     "OutOfRange": ErrorClass.COMMANDER,
-    "UnreachableSpeed": ErrorClass.COMMANDER,
+    UNREACHABLE_SPEED: ErrorClass.COMMANDER,
     "UnsupportedSense": ErrorClass.COMMANDER,
     LEASE_HELD: ErrorClass.COMMANDER,
     "UnknownAxis": ErrorClass.COMMANDER,

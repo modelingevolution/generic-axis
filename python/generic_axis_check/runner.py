@@ -451,6 +451,14 @@ async def run(options: Options, progress: Progress | None = None, checks: tuple[
             try:
                 ctx.evidence = None
                 outcome = await _run_one(check, ctx)
+                if outcome.result == SKIPPED:
+                    # protocol.md "Speed rounding" (review #65): the check refused before writing anything; it is
+                    # SKIPPED with the refusal (observed {}), no restore is needed, and the later checks still run.
+                    results[check.id] = CheckResult(
+                        check.id, check.title, check.section, SKIPPED, ms(time.monotonic() - began), outcome.message
+                    )
+                    say(f"{check.id} SKIPPED {outcome.message}")
+                    continue
                 if outcome.result == FAIL:
                     # § Error class of a FAIL, "lastRead": the read the check took at detection, before any write
                     # of its own undid the evidence (an edge clear, CHK-11's recovery); else a fresh read now.
