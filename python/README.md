@@ -54,6 +54,24 @@ Exit codes: 0 no FAIL · 1 at least one FAIL · 2 usage error · 3 refused to st
 station, or a second tool) is beating. Stop it first; the report says `RESULT: REFUSED` · 4 interrupted. Ctrl-C stops the run, stops the axis, drops
 Enable and releases the lease; the running check and the rest are reported SKIPPED.
 
+## One verb at a time (commissioning)
+
+`--command` sends one verb and prints every status read (State, Flags, ActualPosition, ActualVelocity, FaultCode,
+CommandAck) until it completes, then cleans up as a run does (protocol.md "One-verb mode"):
+
+```bash
+python -m generic_axis_check 192.168.58.20 --command enable          # proves the handshake; ends Disabled
+python -m generic_axis_check 192.168.58.20 --command home --allow-motion
+python -m generic_axis_check 192.168.58.20 --command move 1500 --speed 20 --allow-motion   # axis units, % of MaxVelocity
+python -m generic_axis_check 192.168.58.20 --command jog -50 --for 2 --allow-motion        # axis units/s; Ctrl-C also ends it
+python -m generic_axis_check 192.168.58.20 --command stop
+python -m generic_axis_check 192.168.58.20 --command reset
+```
+
+Exit codes: 0 completed · 1 the PLC failed it · 2 usage error or a guard refused (nothing written) · 3 refused by
+pre-flight · 4 interrupted before the verb completed. The last line is `RESULT: COMPLETED`, `FAIL`, `NOT SENT`,
+`REFUSED` or `INTERRUPTED`.
+
 ## The same checklist as pytest tests
 
 `tests_target/` runs the checklist once and reports one pytest test per CHK id, against whatever is connected:
