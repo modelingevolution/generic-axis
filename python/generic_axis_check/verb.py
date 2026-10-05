@@ -59,7 +59,7 @@ COMPLETED = "COMPLETED"
 FAILED = "FAIL"
 REFUSED = "REFUSED"
 INTERRUPTED = "INTERRUPTED"
-GUARD_REFUSED = "NOT SENT"
+GUARD_REFUSED = "GUARD"
 
 
 @dataclass(frozen=True, slots=True)
@@ -319,8 +319,9 @@ async def run_verb(options: Options, verb: Verb, out: Out) -> VerbResult:
     result = VerbResult(INTERRUPTED, 4, f"interrupted by the operator before {verb.name} completed")
 
     def finish(outcome: Outcome) -> VerbResult:
-        code = 0 if outcome.result == PASS else 1
-        return VerbResult(COMPLETED if code == 0 else FAILED, code, f"{verb.name}: {outcome.message}")
+        if outcome.result == PASS:
+            return VerbResult(COMPLETED, 0, f"{verb.name}: done — {outcome.message}")
+        return VerbResult(FAILED, 1, f"{verb.name}: {outcome.message}")
 
     try:
         try:
