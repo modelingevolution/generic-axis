@@ -745,6 +745,10 @@ REFUSED_NUMBERS = (
     "5e",
     "+-5",
     "1,5",
+    "5\n",  # #71: a newline is no part of a number (re's $ also matches before a final \n; fullmatch does not)
+    "\n5",
+    "5\r\n",
+    "5\r",
 )
 """The probe list both tools pin (agreed with eng-testapp-3): accepted as numbers / refused as usage errors."""
 
