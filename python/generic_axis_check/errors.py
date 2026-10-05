@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
-from .registers import AxisState, FaultCode, RegisterMap, StatusBlock, percent_as_given, register_ref
+from .registers import AxisState, FaultCode, RegisterMap, StatusBlock, register_ref
 
 
 class ErrorClass(StrEnum):
@@ -119,10 +119,10 @@ SPEED_REFUSAL_PREFIX = f"{ErrorClass.COMMANDER}/{UNREACHABLE_SPEED}: refused bef
 alone (no class prefix, errorClass null)."""
 
 
-def speed_zero_body(registers: RegisterMap, percent: float, max_velocity: int) -> str:
+def speed_zero_body(registers: RegisterMap, percent: str, max_velocity: int) -> str:
     """protocol.md "Speed rounding" (reviews #66, #44, #45; e49dd62): the refusal body, stated once, for a speed that
     rounds to raw 0: a check's SKIP message as is, the one-verb guard after ``SPEED_REFUSAL_PREFIX``."""
-    pct = percent_as_given(percent)
+    pct = percent  # as given: `--speed` as typed, or a check's 10 / 1 (review #68: never re-rendered from a float)
     return (
         f"{pct} % of MaxVelocity rounds to raw Velocity 0 (round-half-away-from-zero({pct} × {max_velocity} ÷ 100) = 0); "
         f"nothing to move with. Read MaxVelocity ({register_ref(registers, 'MaxVelocity')}) = {max_velocity}."

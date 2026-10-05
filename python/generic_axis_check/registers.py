@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from decimal import Decimal
 from enum import IntEnum, IntFlag, StrEnum
 
 MAP_VERSION = 1
@@ -199,17 +198,6 @@ def speed_raw(max_velocity: int, percent: float) -> int:
     """protocol.md § One-verb mode step 3, "Speed rounding" (both modes, review #65): raw = round-half-away-from-zero(
     pct × MaxVelocity raw ÷ 100). A 0 is refused by the caller, never floored to 1."""
     return round_half_away(percent * max_velocity / 100)
-
-
-def format_percent(value: float) -> str:
-    """A percentage as "0.###" (both tools): 150 → 150, 12.5 → 12.5, 0.00009 → 0."""
-    return f"{value:.3f}".rstrip("0").rstrip(".")
-
-
-def percent_as_given(value: float) -> str:
-    """protocol.md "Speed rounding" (e49dd62): the percentage as given, printed in full and never rounded for display:
-    10 → 10, 12.5 → 12.5, 0.00005 → 0.00005 (no exponent)."""
-    return format(Decimal(repr(value)).normalize(), "f")
 
 
 def next_nonzero(value: int) -> int:
