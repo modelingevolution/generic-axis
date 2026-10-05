@@ -230,8 +230,10 @@ is beating — rw2, a station, or a second tool; see Pre-flight; stop it first) 
 3. Run the guards on that read (Commander class, exit 2; the message names the register and its value): `move` needs
    `Homed` and a target inside `TravelMin..TravelMax`; `--speed` defaults to 10 % of `MaxVelocity` and must be
    0 < pct ≤ 100. **Speed rounding** (both modes, both tools): a percentage becomes raw = round-half-away-from-zero(pct
-   × `MaxVelocity` raw ÷ 100); a raw 0 is refused, never floored, naming `MaxVelocity`, the percentage and the raw
-   result. `jog` needs 0 < |v| ≤ `MaxVelocity`, v in axis units/s. Unpublished limits (all zero) refuse `move`
+   × `MaxVelocity` raw ÷ 100); a raw 0 is refused, never floored, with exactly this message (the address renders as
+   rule 1; `input 12` at the default base): `Commander/UnreachableSpeed: refused before writing anything: <pct> % of
+   MaxVelocity rounds to raw Velocity 0 (round-half-away-from-zero(<pct> × <raw> ÷ 100) = 0); nothing to move with.
+   Read MaxVelocity (S+12 = input 12) = <raw>.` `jog` needs 0 < |v| ≤ `MaxVelocity`, v in axis units/s. Unpublished limits (all zero) refuse `move`
    and `jog`. A refused guard writes nothing at all: no lease, no beat. Only then take the lease under the tool's id
    and beat every 100 ms. After a dead holder's trip, also write `WatchdogFault = 0`, as the driver does at attach,
    leaving ErrorStop and `FaultCode = 4` for `reset`.
@@ -278,8 +280,8 @@ usage error prints no `RESULT` line.
   CHK-01, which FAILED"), and nothing is written.
 - **Isolation.** Each tool run uses its own working directory for logs and reports. A run against a simulator uses a
   simulator on its own port. Two concurrent runs never share a PLC, a simulator or a report path.
-- **Order.** Checks run in id order. A check whose prerequisite FAILED or was SKIPPED is SKIPPED, and its message names
-  the prerequisite.
+- **Order.** Checks run in id order. A check whose prerequisite FAILED or was SKIPPED is SKIPPED with the message
+  `needs CHK-n, which FAILED` or `needs CHK-n, which SKIPPED`, naming the first such prerequisite in Needs order.
 - **Timing.** Timing checks poll the status block every **20 ms**. Every duration is measured from the completion of
   the triggering write to the first read that shows the effect, and is reported in ms. A window's bounds are judged at
   that read cadence: an effect happened between the last read without it and the first read with it, so it is early
@@ -337,7 +339,8 @@ Every FAIL carries one class (a checker error carries none, § Report schema), d
 | An accepted command whose effect never came: no Standstill after Enable 1 or no Disabled after Enable 0 (CHK-06) → `DriveFault`; not homed within 120 s (CHK-12) → `HomeLatchFailed`; not arrived, outside `--tolerance`, left ContinuousMotion, no velocity, or a halt over 200 ms (CHK-13…16) → `MotionFailed` | Machine |
 
 There is no Commander class in a checker FAIL: the checker writes raw registers and refuses nothing, except a speed that
-rounds to raw 0 (Speed rounding), which SKIPs that check with the refusal message, writing nothing.
+rounds to raw 0, which SKIPs that check with the refusal message (Speed rounding), writing nothing. The `Commander/`
+prefix stays on that SKIP message; `errorClass` stays `null`, as on every SKIP.
 
 - **The one retry.** A checker performs the one reconnect-and-retry the driver performs, logs it at Warning, and
   counts it in that check's `retries` (§ Observed values). A second failure is a Transport FAIL. A Protocol refusal is not retried.
