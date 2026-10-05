@@ -50,12 +50,16 @@ public enum Verb
 
 /// <summary>
 /// One verb with its arguments, in axis units: <c>move &lt;target&gt; [--speed &lt;pct&gt;]</c> (pct of <c>MaxVelocity</c>,
-/// default 10) and <c>jog &lt;signed velocity&gt; [--for S]</c>.
+/// default 10) and <c>jog &lt;signed velocity&gt; [--for S]</c>. <paramref name="Speed"/> is the <c>--speed</c> argument as
+/// typed (#68): it is what every message prints; <see cref="SpeedPercent"/> is its value, parsed once, for arithmetic only.
 /// </summary>
-public sealed record VerbRequest(Verb Verb, double? Target = null, double SpeedPercent = VerbRequest.DefaultSpeedPercent,
+public sealed record VerbRequest(Verb Verb, double? Target = null, string Speed = VerbRequest.DefaultSpeed,
     double? Velocity = null, TimeSpan? For = null)
 {
-    public const double DefaultSpeedPercent = 10;
+    public const string DefaultSpeed = "10";
+
+    /// <summary>The <c>--speed</c> percentage as a number — arithmetic only, never printed (print <see cref="Speed"/>).</summary>
+    public double SpeedPercent => double.Parse(Speed, NumberStyles.Float, CultureInfo.InvariantCulture);
 
     /// <summary><c>home</c>, <c>move</c> and <c>jog</c> need <c>--allow-motion</c>.</summary>
     public bool Moves => Verb is Verb.Home or Verb.Move or Verb.Jog;
@@ -96,7 +100,7 @@ public static class CheckCommandLine
         var watch = false;
         Verb? verb = null;
         double? verbNumber = null;
-        double? speed = null;
+        string? speed = null;
         double? forSeconds = null;
 
         for (var i = 0; i < args.Count; i++)
@@ -159,7 +163,7 @@ public static class CheckCommandLine
                         var sp = Value();
                         // A number is the parser's business; its range (0 < pct ≤ 100) is a guard (protocol step 3, #39).
                         speed = double.TryParse(sp, NumberStyles.Float, CultureInfo.InvariantCulture, out var pct) && double.IsFinite(pct)
-                            ? pct
+                            ? sp // kept as typed (#68)
                             : throw new FormatException($"--speed needs a number, got '{sp}'");
                         break;
                     case "--for":
@@ -227,7 +231,7 @@ public static class CheckCommandLine
             Command = verb switch
             {
                 null => null,
-                Verb.Move => new VerbRequest(Verb.Move, Target: verbNumber, SpeedPercent: speed ?? VerbRequest.DefaultSpeedPercent),
+                Verb.Move => new VerbRequest(Verb.Move, Target: verbNumber, Speed: speed ?? VerbRequest.DefaultSpeed),
                 Verb.Jog => new VerbRequest(Verb.Jog, Velocity: verbNumber, For: forSeconds is { } f ? TimeSpan.FromSeconds(f) : null),
                 var other => new VerbRequest(other.Value),
             },

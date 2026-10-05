@@ -100,7 +100,7 @@ public sealed class CommandModeTests
 
         var found = await sim.SettledAsync();
 
-        var (exit, output) = await Command(sim, new VerbRequest(Verb.Move, Target: 600, SpeedPercent: 20));
+        var (exit, output) = await Command(sim, new VerbRequest(Verb.Move, Target: 600, Speed: "20"));
 
         exit.Should().Be(0, output);
         output.Should().Contain("move: done — Standstill + InPosition after");
@@ -180,11 +180,11 @@ public sealed class CommandModeTests
             (new(), new VerbRequest(Verb.Jog, Velocity: 0.0004), "jog: Commander/UnreachableSpeed: refused before writing anything: jog needs 0 < |v| ≤ MaxVelocity, got 0.0004 (raw 0)."),
             (new(), new VerbRequest(Verb.Jog, Velocity: -0.0004), "jog: Commander/UnreachableSpeed: refused before writing anything: jog needs 0 < |v| ≤ MaxVelocity, got -0.0004 (raw 0)."),
             // #39: --speed out of 0 < pct ≤ 100 is a guard (exit 2, RESULT: GUARD), not a usage error.
-            (new(), new VerbRequest(Verb.Move, Target: 600, SpeedPercent: 150), "move: Commander/UnreachableSpeed: refused before writing anything: speed 150 % outside 0 < pct ≤ 100."),
-            (new(), new VerbRequest(Verb.Move, Target: 600, SpeedPercent: 0), "move: Commander/UnreachableSpeed: refused before writing anything: speed 0 % outside 0 < pct ≤ 100."),
-            (new(), new VerbRequest(Verb.Move, Target: 600, SpeedPercent: 100.001), "move: Commander/UnreachableSpeed: refused before writing anything: speed 100.001 % outside 0 < pct ≤ 100."),
-            (new(), new VerbRequest(Verb.Move, Target: 600, SpeedPercent: 0.00005),
-                "move: " + SpeedRounding.Refusal(0.00005, 500_000, "S+12 = input 12")),
+            (new(), new VerbRequest(Verb.Move, Target: 600, Speed: "150"), "move: Commander/UnreachableSpeed: refused before writing anything: speed 150 % outside 0 < pct ≤ 100."),
+            (new(), new VerbRequest(Verb.Move, Target: 600, Speed: "0"), "move: Commander/UnreachableSpeed: refused before writing anything: speed 0 % outside 0 < pct ≤ 100."),
+            (new(), new VerbRequest(Verb.Move, Target: 600, Speed: "100.001"), "move: Commander/UnreachableSpeed: refused before writing anything: speed 100.001 % outside 0 < pct ≤ 100."),
+            (new(), new VerbRequest(Verb.Move, Target: 600, Speed: "0.00005"),
+                "move: " + SpeedRounding.Refusal("0.00005", 500_000, "S+12 = input 12")),
             (new() { PublishLimits = false }, new VerbRequest(Verb.Jog, Velocity: 10),
                 "jog: Commander/OutOfRange: refused before writing anything: the PLC publishes no limits; jog needs them."),
         };
@@ -250,7 +250,7 @@ public sealed class CommandModeTests
         using var sim = new LiveSimulator();
         using var cts = new CancellationTokenSource();
         var found = await sim.SettledAsync();
-        var run = Command(sim, new VerbRequest(Verb.Move, Target: 3000, SpeedPercent: 20), cts.Token);
+        var run = Command(sim, new VerbRequest(Verb.Move, Target: 3000, Speed: "20"), cts.Token);
         await CheckerAgainstSimulatorTests.Until(() => sim.Snapshot.State == SimAxisState.DiscreteMotion, "the move runs");
 
         await cts.CancelAsync();
@@ -348,6 +348,29 @@ public sealed class CommandModeTests
         var end = await sim.SettledAsync();
         end.WatchdogFault.Should().Be(1, "the dead holder's trip is untouched by a refused run");
         end.LeaseOwner.Should().Be(1);
+    }
+
+    /// <summary>
+    /// GA-I-87 (#68): the --speed argument prints as typed in the header and in the refusal — through the parser, as an
+    /// operator runs it. 0.00005 and 1e-30 both round to raw 0 and are refused naming the percentage as typed.
+    /// </summary>
+    [Theory]
+    [InlineData("0.00005")]
+    [InlineData("1e-30")]
+    public async Task GA_I_87_TheSpeedPrintsAsTypedInTheHeaderAndTheRefusal(string typed)
+    {
+        using var sim = new LiveSimulator();
+        var (options, error) = CheckCommandLine.Parse(["--command", "move", "600", $"127.0.0.1:{sim.Port}", "--speed", typed, "--allow-motion"]);
+        error.Should().BeNull();
+        var text = new StringWriter();
+
+        var exit = await new CommandRunner(NullLoggerFactory.Instance).RunAsync(options!, TextWriter.Synchronized(text), CancellationToken.None);
+
+        var output = text.ToString();
+        exit.Should().Be(2, output);
+        output.Should().StartWith($"--command move 600 --speed {typed} on ")
+            .And.Contain($"move: Commander/UnreachableSpeed: refused before writing anything: {typed} % of MaxVelocity rounds to raw Velocity 0 "
+                         + $"(round-half-away-from-zero({typed} × 500000 ÷ 100) = 0); nothing to move with.");
     }
 
     // ---- #61: Enable is a fresh 0→1 edge; "found energised" comes from State ------------------------------------------
@@ -458,7 +481,7 @@ public sealed class CommandModeTests
         CheckCommandLine.Parse(["--command", "move", "100", "plc", "--speed", "150", "--allow-motion"]).Options!.Command!.SpeedPercent
             .Should().Be(150, "the range is the guard's (exit 2, RESULT: GUARD), not a usage error (#39)");
         var move = CheckCommandLine.Parse(["--command", "move", "-12.5", "plc", "--speed", "20", "--allow-motion"]).Options!.Command!;
-        move.Should().Be(new VerbRequest(Verb.Move, Target: -12.5, SpeedPercent: 20));
+        move.Should().Be(new VerbRequest(Verb.Move, Target: -12.5, Speed: "20"));
         CheckCommandLine.Parse(["--command", "move", "100", "plc", "--allow-motion"]).Options!.Command!.SpeedPercent.Should().Be(10);
         var jog = CheckCommandLine.Parse(["--command", "jog", "-50", "plc", "--for", "2", "--allow-motion"]).Options!.Command!;
         jog.Should().Be(new VerbRequest(Verb.Jog, Velocity: -50, For: TimeSpan.FromSeconds(2)));

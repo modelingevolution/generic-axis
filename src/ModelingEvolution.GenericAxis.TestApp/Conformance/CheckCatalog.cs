@@ -366,7 +366,7 @@ internal static class CheckCatalog
         var (min, _, max) = ctx.Limits ?? throw new InvalidOperationException("CHK-03 passed without recording the limits");
         var target = checked(min + 10_000);
         var speed = SpeedRounding.Raw(10, max);
-        if (speed == 0) return CheckOutcome.Skipped(SpeedRounding.Body(10, max, ctx.At(RegisterField.MaxVelocity))); // nothing written
+        if (speed == 0) return CheckOutcome.Skipped(SpeedRounding.Body("10", max, ctx.At(RegisterField.MaxVelocity))); // nothing written
 
         var enable = await EnsureEnabledAsync(ctx, ct);
         if (enable is not null) return CheckOutcome.Fail(enable);
@@ -399,7 +399,7 @@ internal static class CheckCatalog
         var (min, travelMax, max) = ctx.Limits!.Value;
         var target = checked((int)(min + ((long)travelMax - min) / 2));
         var speed = SpeedRounding.Raw(10, max);
-        if (speed == 0) return CheckOutcome.Skipped(SpeedRounding.Body(10, max, ctx.At(RegisterField.MaxVelocity))); // nothing written
+        if (speed == 0) return CheckOutcome.Skipped(SpeedRounding.Body("10", max, ctx.At(RegisterField.MaxVelocity))); // nothing written
 
         var enable = await EnsureEnabledAsync(ctx, ct);
         if (enable is not null) return CheckOutcome.Fail(enable);
@@ -428,7 +428,7 @@ internal static class CheckCatalog
     {
         var (_, _, max) = ctx.Limits!.Value;
         var speed = SpeedRounding.Raw(1, max);
-        if (speed == 0) return CheckOutcome.Skipped(SpeedRounding.Body(1, max, ctx.At(RegisterField.MaxVelocity))); // nothing written
+        if (speed == 0) return CheckOutcome.Skipped(SpeedRounding.Body("1", max, ctx.At(RegisterField.MaxVelocity))); // nothing written
 
         var enable = await EnsureEnabledAsync(ctx, ct);
         if (enable is not null) return CheckOutcome.Fail(enable);
@@ -460,7 +460,7 @@ internal static class CheckCatalog
     {
         var (_, _, max) = ctx.Limits!.Value;
         var speed = SpeedRounding.Raw(1, max);
-        if (speed == 0) return CheckOutcome.Skipped(SpeedRounding.Body(1, max, ctx.At(RegisterField.MaxVelocity))); // nothing written
+        if (speed == 0) return CheckOutcome.Skipped(SpeedRounding.Body("1", max, ctx.At(RegisterField.MaxVelocity))); // nothing written
 
         var enable = await EnsureEnabledAsync(ctx, ct);
         if (enable is not null) return CheckOutcome.Fail(enable);

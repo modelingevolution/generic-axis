@@ -19,11 +19,8 @@ public static class SpeedRounding
     /// <c>Commander/UnreachableSpeed: refused before writing anything: &lt;body&gt;</c>. A check SKIPs itself with
     /// <see cref="Body"/> alone, no class prefix.
     /// </summary>
-    public static string Refusal(double percent, int maxVelocityRaw, string maxVelocityAt) =>
+    public static string Refusal(string percent, int maxVelocityRaw, string maxVelocityAt) =>
         $"{ErrorClass.Commander}/{RefusalName}: {RefusalLead}{Body(percent, maxVelocityRaw, maxVelocityAt)}";
-
-    /// <summary>A percentage as given, in full: no exponent, no display rounding (0.00005 stays 0.00005).</summary>
-    public static string Percent(double percent) => percent.ToString("0.############################", CultureInfo.InvariantCulture);
 
     /// <summary>The SDK MotionError name of the refusal.</summary>
     public const string RefusalName = "UnreachableSpeed";
@@ -35,9 +32,13 @@ public static class SpeedRounding
     /// The refusal body, exactly the protocol's (e49dd62): the percentage as given, printed in full and never rounded for
     /// display, the arithmetic, and the register read. Both modes: the check's SKIP message, and the guard after its lead.
     /// </summary>
-    public static string Body(double percent, int maxVelocityRaw, string maxVelocityAt)
+    /// <param name="percent">The percentage as given — the <c>--speed</c> argument as typed, or the check's "10" / "1" —
+    /// printed verbatim, never re-rendered from a number (#68: 1e-30 stays 1e-30, 33.3333333333333333 stays whole).</param>
+    /// <param name="maxVelocityRaw">MaxVelocity as read, raw.</param>
+    /// <param name="maxVelocityAt">MaxVelocity's address in the protocol's form, e.g. <c>S+12 = input 12</c>.</param>
+    public static string Body(string percent, int maxVelocityRaw, string maxVelocityAt)
     {
-        var pct = Percent(percent);
+        var pct = percent;
         return $"{pct} % of MaxVelocity rounds to raw Velocity 0 (round-half-away-from-zero({pct} × {maxVelocityRaw} ÷ 100) = 0); "
                + $"nothing to move with. Read MaxVelocity ({maxVelocityAt}) = {maxVelocityRaw}.";
     }

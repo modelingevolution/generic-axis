@@ -83,11 +83,11 @@ public sealed partial class OneVerbProtocolParityTests
         var body = Spaces().Replace(RefusalBody().Match(text).Groups["body"].Value, " ");
         body.Should().NotBeEmpty("protocol.md states the refusal body once (Speed rounding)");
         var expected = body.Replace("<pct>", "1", StringComparison.Ordinal).Replace("<raw>", "45", StringComparison.Ordinal);
-        SpeedRounding.Body(1, 45, "S+12 = input 12").Should().Be(expected);
+        SpeedRounding.Body("1", 45, "S+12 = input 12").Should().Be(expected);
 
         var lead = Spaces().Replace(GuardLine().Match(text).Groups["lead"].Value, " ");
         lead.Should().NotBeEmpty("protocol.md states the guard's form");
-        SpeedRounding.Refusal(1, 45, "S+12 = input 12").Should().Be(lead + expected);
+        SpeedRounding.Refusal("1", 45, "S+12 = input 12").Should().Be(lead + expected);
     }
 
     /// <summary>#66 (e60d73a): the dependant SKIP phrase of § Rules, Order.</summary>

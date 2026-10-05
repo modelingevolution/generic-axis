@@ -108,7 +108,7 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
 
     private static string Describe(VerbRequest r) => r.Verb switch
     {
-        Verb.Move => $"move {r.Target!.Value.ToString("0.######", Inv)} --speed {r.SpeedPercent.ToString("0.###", Inv)}",
+        Verb.Move => $"move {r.Target!.Value.ToString("0.######", Inv)} --speed {r.Speed}",
         Verb.Jog => $"jog {r.Velocity!.Value.ToString("0.######", Inv)}{(r.For is { } f ? $" --for {f.TotalSeconds.ToString("0.###", Inv)}" : "")}",
         _ => r.Name,
     };
@@ -210,9 +210,9 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
                                                    + $"TravelMax ({ctx.At(RegisterField.TravelMax)}) = {s.TravelMax}.");
                 var pct = request.SpeedPercent;
                 if (!(pct > 0 && pct <= 100))
-                    return Commander("UnreachableSpeed", $"speed {pct.ToString("0.###", Inv)} % outside 0 < pct ≤ 100.");
+                    return Commander("UnreachableSpeed", $"speed {request.Speed} % outside 0 < pct ≤ 100.");
                 if (SpeedRounding.Raw(pct, s.MaxVelocity) == 0)
-                    return Commander(SpeedRounding.RefusalName, SpeedRounding.Body(pct, s.MaxVelocity, ctx.At(RegisterField.MaxVelocity)));
+                    return Commander(SpeedRounding.RefusalName, SpeedRounding.Body(request.Speed, s.MaxVelocity, ctx.At(RegisterField.MaxVelocity)));
                 return null;
             }
 
