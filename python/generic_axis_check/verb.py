@@ -34,7 +34,7 @@ from .dump import decode
 from .errors import DRIVE_FAULT, HOME_LATCH_FAILED, ErrorClass, Read, format_message
 from .lease import LeaseHeld
 from .poll import ms, wait_for
-from .registers import MAP_VERSION, AxisState, Command, RegisterMap, StatusBlock, register_ref
+from .registers import MAP_VERSION, AxisState, Command, RegisterMap, StatusBlock
 from .runner import cleanup, exception_outcome, preflight, to_completion
 
 VERBS = ("enable", "disable", "home", "stop", "reset", "move", "jog")
@@ -52,10 +52,12 @@ DEFAULT_SPEED_PERCENT = 10.0
 JOG_MOTION_S = 0.5
 """jog → ContinuousMotion observed within 500 ms after the ack."""
 
+REFUSED_UNWRITTEN = "refused before writing anything"
+
 POLL_S = 0.02
 """Step 5: every status read at 20 ms."""
 
-COMPLETED = "COMPLETED"
+PASSED = "PASS"
 FAILED = "FAIL"
 REFUSED = "REFUSED"
 INTERRUPTED = "INTERRUPTED"
@@ -93,13 +95,29 @@ class VerbResult:
 Out = Callable[[str], None]
 
 
+def stamp(elapsed_ms: int) -> str:
+    """``+  1254 ms``: from the completion of the verb's first write (negative for a read before it)."""
+    return f"{'+' if elapsed_ms >= 0 else '-'}{abs(elapsed_ms):>6} ms"
+
+
+def _bits(name: str, value: int) -> str:
+    return decode(name, value).replace(" | ", "|")
+
+
 def status_line(elapsed_ms: int, s: StatusBlock) -> str:
-    """Step 5: ``State``, ``Flags``, ``ActualPosition``, ``ActualVelocity``, ``FaultCode``, ``CommandAck``."""
+    """Step 5, one line per 20 ms read, in the C# tool's shape: ``State``, ``Flags``, ``ActualPosition``,
+    ``ActualVelocity``, ``FaultCode``, ``CommandAck``."""
+    fault = "0 None" if s.fault_code == 0 else decode("FaultCode", s.fault_code)
     return (
-        f"{elapsed_ms:>7} ms  State {decode('State', s.state)} · Flags {decode('Flags', int(s.flags))} · "
-        f"ActualPosition {s.actual_position / UNITS:.3f} · ActualVelocity {s.actual_velocity / UNITS:.3f} · "
-        f"FaultCode {decode('FaultCode', s.fault_code)} · CommandAck {s.command_ack}"
+        f"{stamp(elapsed_ms)}  State {decode('State', s.state)}  Flags {_bits('Flags', int(s.flags))}  "
+        f"ActualPosition {s.actual_position / UNITS:.3f}  ActualVelocity {s.actual_velocity / UNITS:.3f}  "
+        f"FaultCode {fault}  CommandAck {s.command_ack}"
     )
+
+
+def command_line(elapsed_ms: int, word: int) -> str:
+    """Each command write: ``+  1234 ms  write Command Enable|MoveAbsolute (0x0005)``."""
+    return f"{stamp(elapsed_ms)}  write Command {_bits('Command', word)} (0x{word:04X})"
 
 
 def map_problem(ctx: CheckContext, s: StatusBlock) -> Outcome | None:
@@ -130,18 +148,18 @@ def guard_problem(verb: Verb, s: StatusBlock, registers: RegisterMap) -> str | N
     limits = (Read("TravelMin", s.travel_min), Read("TravelMax", s.travel_max), Read("MaxVelocity", s.max_velocity))
     if verb.name == "move" and verb.value is not None:
         if unpublished:
-            return refuse("OutOfRange", "move refused: the PLC publishes no limits", *limits)
+            return refuse("OutOfRange", f"{REFUSED_UNWRITTEN}: the PLC publishes no limits", *limits)
         if not s.homed:
-            return refuse("NotHomed", "move refused: the axis is not homed", Read("Flags", int(s.flags)))
+            return refuse("NotHomed", f"{REFUSED_UNWRITTEN}: the axis is not homed", Read("Flags", int(s.flags)))
         target = raw(verb.value)
         if not s.travel_min <= target <= s.travel_max:
-            what = f"move refused: target {verb.value:g} is outside TravelMin..TravelMax"
+            what = f"{REFUSED_UNWRITTEN}: target {verb.value:.3f} is outside TravelMin..TravelMax"
             return refuse("OutOfRange", what, Read("TravelMin", s.travel_min), Read("TravelMax", s.travel_max))
     if verb.name == "jog" and verb.value is not None:
         if unpublished:
-            return refuse("UnreachableSpeed", "jog refused: the PLC publishes no limits", *limits)
+            return refuse("UnreachableSpeed", f"{REFUSED_UNWRITTEN}: the PLC publishes no limits", *limits)
         if abs(raw(verb.value)) > s.max_velocity:
-            what = f"jog refused: |{verb.value:g}| u/s is above MaxVelocity"
+            what = f"{REFUSED_UNWRITTEN}: |{verb.value:.3f}| u/s is above MaxVelocity"
             return refuse("UnreachableSpeed", what, Read("MaxVelocity", s.max_velocity))
     return None
 
@@ -151,7 +169,7 @@ def guard_problem(verb: Verb, s: StatusBlock, registers: RegisterMap) -> str | N
 
 async def _until(
     ctx: CheckContext, predicate: Callable[[StatusBlock], bool], timeout_s: float, since: float
-) -> tuple[StatusBlock, bool]:
+) -> tuple[StatusBlock, bool, int]:
     """Wait for ``predicate`` or ErrorStop; every read is printed by the client's status listener."""
     poll = await wait_for(
         ctx.client,
@@ -160,14 +178,14 @@ async def _until(
         timeout_s,
         since=since,
     )
-    return poll.status, poll.met and predicate(poll.status)
+    return poll.status, poll.met and predicate(poll.status), poll.elapsed_ms
 
 
 async def _enable(ctx: CheckContext, _verb: Verb) -> Outcome:
     ack = await ctx.command(Command.ENABLE)
-    s, met = await _until(ctx, lambda s: s.state == AxisState.STANDSTILL, STATE_TIMEOUT_S, ack.written_at)
+    s, met, took = await _until(ctx, lambda s: s.state == AxisState.STANDSTILL, STATE_TIMEOUT_S, ack.written_at)
     if met:
-        return passed(f"Standstill {ack.poll.elapsed_ms} ms after the ack")
+        return passed(f"Standstill after {took} ms.")
     if s.state == AxisState.ERROR_STOP:
         return faulted(ctx, "Enable 1: ErrorStop instead of Standstill", s)
     what = f"no Standstill {STATE_TIMEOUT_S:g} s after Enable 1"
@@ -176,9 +194,9 @@ async def _enable(ctx: CheckContext, _verb: Verb) -> Outcome:
 
 async def _disable(ctx: CheckContext, _verb: Verb) -> Outcome:
     ack = await ctx.command(Command.NONE)
-    s, met = await _until(ctx, lambda s: s.state == AxisState.DISABLED, STATE_TIMEOUT_S, ack.written_at)
+    s, met, took = await _until(ctx, lambda s: s.state == AxisState.DISABLED, STATE_TIMEOUT_S, ack.written_at)
     if met:
-        return passed("Disabled")
+        return passed(f"Disabled after {took} ms.")
     if s.state == AxisState.ERROR_STOP:
         return faulted(ctx, "Enable 0: ErrorStop instead of Disabled", s)
     what = f"no Disabled {STATE_TIMEOUT_S:g} s after Enable 0"
@@ -190,9 +208,11 @@ async def _home(ctx: CheckContext, _verb: Verb) -> Outcome:
     if not_ready:
         return not_ready
     ack = await ctx.command(Command.ENABLE | Command.HOME)
-    s, met = await _until(ctx, lambda s: s.state == AxisState.STANDSTILL and s.homed, HOME_TIMEOUT_S, ack.written_at)
+    s, met, took = await _until(
+        ctx, lambda s: s.state == AxisState.STANDSTILL and s.homed, HOME_TIMEOUT_S, ack.written_at
+    )
     if met:
-        return passed("homed")
+        return passed(f"Standstill + Homed after {took} ms.")
     if s.state == AxisState.ERROR_STOP:
         return faulted(ctx, "homing ended in ErrorStop", s)
     what = f"not homed {HOME_TIMEOUT_S:g} s after Home"
@@ -202,9 +222,9 @@ async def _home(ctx: CheckContext, _verb: Verb) -> Outcome:
 async def _stop(ctx: CheckContext, _verb: Verb) -> Outcome:
     ack = await ctx.command(ctx.enabled | Command.STOP)
     at_rest = (AxisState.STANDSTILL, AxisState.DISABLED)
-    s, met = await _until(ctx, lambda s: s.state in at_rest, STATE_TIMEOUT_S, ack.written_at)
+    s, met, took = await _until(ctx, lambda s: s.state in at_rest, STATE_TIMEOUT_S, ack.written_at)
     if met:
-        return passed(f"State {decode('State', s.state)}")
+        return passed(f"{decode('State', s.state).split(' ', 1)[1]} after {took} ms.")
     if s.state == AxisState.ERROR_STOP:
         return faulted(ctx, "Stop: ErrorStop instead of Standstill or Disabled", s)
     what = f"still moving {STATE_TIMEOUT_S:g} s after Stop"
@@ -223,7 +243,8 @@ async def _reset(ctx: CheckContext, _verb: Verb) -> Outcome:
         ctx.client, ctx.registers, lambda s: s.state != AxisState.ERROR_STOP, STATE_TIMEOUT_S, since=ack.written_at
     )
     if poll.met:
-        return passed(f"State {decode('State', poll.status.state)}")
+        state = decode("State", poll.status.state).split(" ", 1)[1]
+        return passed(f"not ErrorStop ({state}) after {poll.elapsed_ms} ms.")
     return faulted(ctx, f"still in ErrorStop {STATE_TIMEOUT_S:g} s after Reset", poll.status)
 
 
@@ -239,9 +260,11 @@ async def _move(ctx: CheckContext, verb: Verb) -> Outcome:
     await ctx.write_parameters(target, velocity, 0)  # parameters in one FC16, then the command FC16
     ack = await ctx.command(Command.ENABLE | Command.MOVE_ABSOLUTE)
     budget_s = travel_timeout_s(target - start.actual_position, velocity)
-    s, met = await _until(ctx, lambda s: s.state == AxisState.STANDSTILL and s.in_position, budget_s, ack.written_at)
+    s, met, took = await _until(
+        ctx, lambda s: s.state == AxisState.STANDSTILL and s.in_position, budget_s, ack.written_at
+    )
     if met:
-        return passed(f"in position at {s.actual_position / UNITS:.3f}")
+        return passed(f"Standstill + InPosition after {took} ms, ActualPosition {s.actual_position / UNITS:.3f}.")
     if s.state == AxisState.ERROR_STOP:
         return faulted(ctx, "MoveAbsolute ended in ErrorStop", s)
     what = f"not arrived in position within {budget_s:.1f} s (2 × |target − start| ÷ velocity + {STATE_TIMEOUT_S:g} s)"
@@ -263,7 +286,7 @@ async def _jog(ctx: CheckContext, verb: Verb) -> Outcome:
     await ctx.write_parameters(start.actual_position, raw(verb.value), 0)
     await ctx.command(Command.ENABLE | Command.MOVE_VELOCITY)
     acked_at = time.monotonic()
-    s, met = await _until(ctx, lambda s: s.state == AxisState.CONTINUOUS_MOTION, JOG_MOTION_S, acked_at)
+    s, met, took = await _until(ctx, lambda s: s.state == AxisState.CONTINUOUS_MOTION, JOG_MOTION_S, acked_at)
     if not met:
         if s.state == AxisState.ERROR_STOP:
             return faulted(ctx, "MoveVelocity: ErrorStop instead of ContinuousMotion", s)
@@ -290,7 +313,7 @@ async def _jog(ctx: CheckContext, verb: Verb) -> Outcome:
     return (
         stopped[0]
         if stopped[0].result == FAIL
-        else passed(f"ContinuousMotion observed; after the jog, Stop: {stopped[0].message}")
+        else passed(f"ContinuousMotion after {took} ms; Stop → {stopped[0].message}")
     )
 
 
@@ -314,13 +337,28 @@ async def run_verb(options: Options, verb: Verb, out: Out) -> VerbResult:
     client = PlcClient(options.host, options.port, options.unit, registers)
     ctx = CheckContext(client, registers, options, Beater(client, registers))
     ctx.beater.expected_owner = lambda: options.owner_id if ctx.holds_lease else None
-    started = time.monotonic()
+    first_write: list[float] = []
+    """The completion time of the verb's first write: every printed ms counts from it."""
+
+    def since_first_write() -> int:
+        return ms(time.monotonic() - first_write[0]) if first_write else 0
+
+    def on_write(address: int, values: list[int]) -> None:
+        if address == registers.command:
+            if not first_write:
+                first_write.append(time.monotonic())
+            out(command_line(since_first_write(), values[0]))
+
+    out(
+        f"--command {verb} on {options.host}:{options.port} unit {options.unit} "
+        f"(C = holding {options.command_base}, S = input {options.status_base}), owner {options.owner_id}"
+    )
     proven_free = False
     result = VerbResult(INTERRUPTED, 4, f"interrupted by the operator before {verb.name} completed")
 
     def finish(outcome: Outcome) -> VerbResult:
         if outcome.result == PASS:
-            return VerbResult(COMPLETED, 0, f"{verb.name}: done — {outcome.message}")
+            return VerbResult(PASSED, 0, f"{verb.name}: done — {outcome.message}")
         return VerbResult(FAILED, 1, f"{verb.name}: {outcome.message}")
 
     try:
@@ -346,13 +384,12 @@ async def run_verb(options: Options, verb: Verb, out: Out) -> VerbResult:
         ctx.command_word = word & int(Command.ENABLE)  # a Stop or Reset keeps (or drops) the Enable it found
         await ctx.take_lease()
         await ctx.beater.start()
-        out(f"lease taken: LeaseOwner ({register_ref(registers, 'LeaseOwner')}) = {options.owner_id}; beating")
         if verdict.foreign_trip:
             # Step 1: "proceed as the driver does at attach": the dead holder's trip is cleared; ErrorStop and
             # FaultCode 4 stay for `reset`.
             await ctx.clear_watchdog_fault()
-            out(f"WatchdogFault ({register_ref(registers, 'WatchdogFault')}) = 0 written (the dead holder's trip)")
-        client.status_listener = lambda s: out(status_line(ms(time.monotonic() - started), s))
+        client.status_listener = lambda s: out(status_line(since_first_write(), s))
+        client.write_listener = on_write
         client.guard = ctx.beater.raise_if_failed  # a dead beat is Transport, never a Machine trip (review #7)
         try:
             outcome = await RUN[verb.name](ctx, verb)  # steps 4 and 5
@@ -368,6 +405,7 @@ async def run_verb(options: Options, verb: Verb, out: Out) -> VerbResult:
     finally:
         client.guard = None
         client.status_listener = None
+        client.write_listener = None
         if client.connected and proven_free:
             await to_completion(cleanup(ctx))  # step 6
         with contextlib.suppress(PlcError):

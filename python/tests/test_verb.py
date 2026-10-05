@@ -30,6 +30,10 @@ async def verb(plc: StubPlc, v: Verb, lines: list[str] | None = None) -> VerbRes
     return result
 
 
+def row_sign(rows: list[str], text: str) -> str:
+    return next(row[0] for row in rows if text in row)
+
+
 def released(plc: StubPlc) -> bool:
     return plc.regs[MAP.lease_owner] == 0
 
@@ -40,31 +44,38 @@ def released(plc: StubPlc) -> bool:
 async def test_enable_reaches_standstill_and_ends_disabled(stub: StubPlc) -> None:
     lines: list[str] = []
     result = await verb(stub, Verb("enable"), lines)
-    assert (result.result, result.exit_code) == ("COMPLETED", 0), result.message
-    assert result.message.startswith("enable: done — Standstill ")
+    assert (result.result, result.exit_code) == ("PASS", 0), result.message
+    assert re.fullmatch(r"enable: done — Standstill after \d+ ms\.", result.message), result.message
     assert stub.accepted == [ENABLE, 0]  # Enable 1, then cleanup's Enable 0: no more energised than found
     assert result.cleanup == ["C+0 = 0x0000, C+1 = 2 (Enable 0)", "C+9 = 0 (release lease)"]
     assert released(stub)
     assert stub.axis.state == DISABLED
     # Step 5: every status read printed with the six registers.
+    # The C# tool's shape: a header, one line per command write, one per 20 ms status read, ms from the first write.
+    assert lines[0] == f"--command enable on 127.0.0.1:{stub.port} unit 1 (C = holding 0, S = input 0), owner 65535"
+    writes = [line for line in lines if "  write Command " in line]
+    assert writes == ["+     0 ms  write Command Enable (0x0001)"], writes
     rows = [line for line in lines if " ms  State " in line]
     assert rows, lines
-    assert all(
-        re.search(
-            r"State \d .* · Flags .* · ActualPosition -?\d+\.\d{3} · ActualVelocity -?\d+\.\d{3} · FaultCode \d+ "
-            r".* · CommandAck \d+$",
+    for row in rows:
+        assert re.fullmatch(
+            r"[+-] {0,5}\d+ ms  State \d \w+  Flags \S+  ActualPosition -?\d+\.\d{3}  ActualVelocity -?\d+\.\d{3}  "
+            r"FaultCode \d+ \S.*  CommandAck \d+",
             row,
-        )
-        for row in rows
-    ), rows
-    assert any("State 1 Standstill" in row for row in rows)
+        ), row
+    assert any("State 1 Standstill  Flags Homed|DriveReady  " in row and "FaultCode 0 None" in row for row in rows)
+    # ms count from the completion of the verb's first write: the read that shows Standstill comes after it.
+    standstill_ms = next(int(row[1:7]) for row in rows if "State 1 Standstill" in row)
+    assert row_sign(rows, "State 1 Standstill") == "+"
+    assert standstill_ms > 0, rows
 
 
 async def test_disable_reaches_disabled(stub: StubPlc) -> None:
     stub.regs[MAP.command] = ENABLE
     stub.axis.state = STANDSTILL  # an axis found energised, at rest
     result = await verb(stub, Verb("disable"))
-    assert (result.result, result.exit_code, result.message) == ("COMPLETED", 0, "disable: done — Disabled")
+    assert (result.result, result.exit_code) == ("PASS", 0)
+    assert re.fullmatch(r"disable: done — Disabled after \d+ ms\.", result.message), result.message
     assert stub.axis.state == DISABLED
     assert result.cleanup == ["C+9 = 0 (release lease)"]
 
@@ -74,8 +85,8 @@ async def test_stop_keeps_the_enable_it_found_and_cleanup_leaves_it(stub: StubPl
     stub.regs[MAP.command] = ENABLE
     stub.axis.state = STANDSTILL
     result = await verb(stub, Verb("stop"))
-    assert (result.result, result.exit_code) == ("COMPLETED", 0), result.message
-    assert result.message == "stop: done — State 1 Standstill"
+    assert (result.result, result.exit_code) == ("PASS", 0), result.message
+    assert re.fullmatch(r"stop: done — Standstill after \d+ ms\.", result.message), result.message
     assert stub.accepted == [ENABLE | STOP]
     assert stub.regs[MAP.command] == ENABLE  # the edge cleared after the ack, Enable kept
     assert result.cleanup == ["C+9 = 0 (release lease)"]
@@ -86,7 +97,7 @@ async def test_reset_leaves_errorstop_after_clearing_watchdog_fault_and_enable(s
     stub._error_stop(2)  # a limit-switch fault, as the PLC latches it
     stub.regs[MAP.watchdog_fault] = 1
     result = await verb(stub, Verb("reset"))
-    assert (result.result, result.exit_code) == ("COMPLETED", 0), result.message
+    assert (result.result, result.exit_code) == ("PASS", 0), result.message
     assert stub.regs[MAP.watchdog_fault] == 0
     assert stub.accepted == [0, RESET]  # "Enable 0 before the Reset edge"
     assert (stub.axis.state, stub.axis.fault) == (DISABLED, 0)
@@ -96,7 +107,8 @@ async def test_home_enables_first_and_ends_homed_and_disabled() -> None:
     async with StubPlc(StubOptions(homing_velocity=5_000_000)) as plc:
         plc.axis.homed = False
         result = await verb(plc, Verb("home"))
-    assert (result.result, result.exit_code, result.message) == ("COMPLETED", 0, "home: done — homed")
+    assert (result.result, result.exit_code) == ("PASS", 0)
+    assert re.fullmatch(r"home: done — Standstill \+ Homed after \d+ ms\.", result.message), result.message
     assert plc.accepted[:2] == [ENABLE, ENABLE | HOME]  # "from Disabled set Enable first"
     assert plc.axis.homed
     assert plc.axis.state == DISABLED  # cleanup's Enable 0
@@ -105,8 +117,10 @@ async def test_home_enables_first_and_ends_homed_and_disabled() -> None:
 
 async def test_move_writes_parameters_then_the_command_and_arrives(stub: StubPlc) -> None:
     result = await verb(stub, Verb("move", 600, speed_percent=20))
-    assert (result.result, result.exit_code) == ("COMPLETED", 0), result.message
-    assert result.message == "move: done — in position at 600.000"
+    assert (result.result, result.exit_code) == ("PASS", 0), result.message
+    assert re.fullmatch(
+        r"move: done — Standstill \+ InPosition after \d+ ms, ActualPosition 600\.000\.", result.message
+    ), result.message
     # Handshake: parameters C+2…C+7 in one FC16 (target 600 000, 20 % of 500 000), then C+0…C+1 in a second FC16.
     params = [(a, v) for a, v in stub.writes if a == MAP.target_position]
     assert params == [(2, [0x27C0, 0x0009, 0x86A0, 0x0001, 0, 0])]
@@ -120,8 +134,10 @@ async def test_jog_for_runs_continuous_motion_then_stops() -> None:
     async with StubPlc(StubOptions(default_acceleration=5_000_000)) as plc:
         result = await verb(plc, Verb("jog", -50, run_for_s=0.4))
         start, end = 500_000, plc.axis.p
-    assert (result.result, result.exit_code) == ("COMPLETED", 0), result.message
-    assert result.message == "jog: done — ContinuousMotion observed; after the jog, Stop: State 1 Standstill"
+    assert (result.result, result.exit_code) == ("PASS", 0), result.message
+    assert re.fullmatch(
+        r"jog: done — ContinuousMotion after \d+ ms; Stop → Standstill after \d+ ms\.", result.message
+    ), result.message
     assert not any(line.endswith("(Stop)") for line in result.cleanup), result.cleanup  # the verb stopped, not cleanup
     assert ENABLE | MOVE_VEL in plc.accepted
     assert ENABLE | STOP in plc.accepted
@@ -183,36 +199,36 @@ async def test_partial_limits_are_protocol_and_write_nothing(stub: StubPlc) -> N
         (
             Verb("move", 20_000),
             None,
-            "move: Commander/OutOfRange: move refused: target 20000 is outside TravelMin..TravelMax. "
+            "move: Commander/OutOfRange: refused before writing anything: target 20000.000 is outside TravelMin..TravelMax. "
             "Read TravelMin (S+8 = input 8) = 0, TravelMax (S+10 = input 10) = 10000000.",
         ),
         (
             Verb("move", -0.001),
             None,
-            "move: Commander/OutOfRange: move refused: target -0.001 is outside TravelMin..TravelMax. "
+            "move: Commander/OutOfRange: refused before writing anything: target -0.001 is outside TravelMin..TravelMax. "
             "Read TravelMin (S+8 = input 8) = 0, TravelMax (S+10 = input 10) = 10000000.",
         ),
         (
             Verb("move", 100),
             "unhomed",
-            "move: Commander/NotHomed: move refused: the axis is not homed. Read Flags (S+1 = input 1) = 32.",
+            "move: Commander/NotHomed: refused before writing anything: the axis is not homed. Read Flags (S+1 = input 1) = 32.",
         ),
         (
             Verb("jog", -500.001, run_for_s=0.2),  # bounded: a guard that lets it through ends, red
             None,
-            "jog: Commander/UnreachableSpeed: jog refused: |-500.001| u/s is above MaxVelocity. "
+            "jog: Commander/UnreachableSpeed: refused before writing anything: |-500.001| u/s is above MaxVelocity. "
             "Read MaxVelocity (S+12 = input 12) = 500000.",
         ),
         (
             Verb("jog", 1, run_for_s=0.2),
             "unpublished",
-            "jog: Commander/UnreachableSpeed: jog refused: the PLC publishes no limits. Read TravelMin (S+8 = input 8) "
+            "jog: Commander/UnreachableSpeed: refused before writing anything: the PLC publishes no limits. Read TravelMin (S+8 = input 8) "
             "= 0, TravelMax (S+10 = input 10) = 0, MaxVelocity (S+12 = input 12) = 0.",
         ),
         (
             Verb("move", 1),
             "unpublished",
-            "move: Commander/OutOfRange: move refused: the PLC publishes no limits. Read TravelMin (S+8 = input 8) "
+            "move: Commander/OutOfRange: refused before writing anything: the PLC publishes no limits. Read TravelMin (S+8 = input 8) "
             "= 0, TravelMax (S+10 = input 10) = 0, MaxVelocity (S+12 = input 12) = 0.",
         ),
     ],
@@ -253,7 +269,7 @@ async def test_ctrl_c_mid_jog_stops_and_releases_and_counts_as_completed() -> No
         result = await task
         await asyncio.sleep(0.03)
         state = plc.axis.state
-    assert (result.result, result.exit_code) == ("COMPLETED", 0), result.message
+    assert (result.result, result.exit_code) == ("PASS", 0), result.message
     assert plc.accepted.index(ENABLE | STOP) > plc.accepted.index(ENABLE | MOVE_VEL)
     assert state == DISABLED
     assert released(plc)
@@ -315,9 +331,8 @@ async def test_after_a_dead_holders_trip_the_tool_attaches_and_reset_recovers() 
         lines: list[str] = []
         result = await verb(plc, Verb("reset"), lines)
         end = (plc.regs[MAP.watchdog_fault], plc.axis.state, plc.axis.fault)
-    assert lines[0].startswith("Pre-flight: LeaseOwner (C+9 = holding 9) = 1 held with no beat"), lines[0]
-    assert "WatchdogFault (C+10 = holding 10) = 0 written (the dead holder's trip)" in lines
-    assert (result.result, result.exit_code) == ("COMPLETED", 0), result.message
+    assert lines[1].startswith("Pre-flight: LeaseOwner (C+9 = holding 9) = 1 held with no beat"), lines[1]
+    assert (result.result, result.exit_code) == ("PASS", 0), result.message
     assert end == (0, DISABLED, 0)
     assert released(plc)
 
@@ -344,6 +359,27 @@ async def test_after_a_dead_holders_trip_watchdog_fault_is_cleared_at_attach_bef
     assert result.exit_code == 1  # Stop from ErrorStop: State stays 7, the PLC's fault named
     assert result.message.startswith("stop: Machine/WatchdogTripped: Stop: ErrorStop"), result.message
     assert end == (0, ERROR_STOP, 4)
+
+
+async def test_a_refused_guard_after_a_dead_holders_trip_writes_nothing_at_all() -> None:
+    # protocol.md step 3: "A refused guard writes nothing at all: no lease, no beat", and only then the attach's
+    # WatchdogFault = 0. Every stub write is recorded (not the end state: a write undone later must still show).
+    async with StubPlc() as plc:
+        commander = PlcClient("127.0.0.1", plc.port, 1)
+        await commander.connect()
+        await commander.write(MAP.lease_owner, [1])
+        beat = Beater(commander, MAP)
+        await beat.start()
+        await asyncio.sleep(0.3)
+        await beat.stop()  # dies; its watchdog trips during the pre-flight watch
+        commander.close()
+        before = len(plc.writes)
+        result = await verb(plc, Verb("move", 20_000))
+        ours = plc.writes[before:]
+        end = (plc.regs[MAP.watchdog_fault], plc.regs[MAP.lease_owner])
+    assert (result.result, result.exit_code) == ("GUARD", 2), result.message
+    assert ours == []
+    assert end == (1, 1)  # the dead holder's trip and lease, untouched
 
 
 # --- GA-U-145.py: the command line -----------------------------------------------------------------------------------
@@ -413,7 +449,7 @@ async def test_cli_guard_refusal_prints_and_exits_2(stub: StubPlc) -> None:
     out = stdout.decode().splitlines()
     assert process.returncode == 2
     assert out[-1] == "RESULT: GUARD"
-    assert out[-2].startswith("move: Commander/OutOfRange: move refused: target 20000")
+    assert out[-2].startswith("move: Commander/OutOfRange: refused before writing anything: target 20000.000")
     assert stub.writes == []
 
 

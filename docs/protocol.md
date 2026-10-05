@@ -234,16 +234,18 @@ is beating — rw2, a station, or a second tool; see Pre-flight; stop it first) 
    and beat every 100 ms. After a dead holder's trip, also write `WatchdogFault = 0`, as the driver does at attach,
    leaving ErrorStop and `FaultCode = 4` for `reset`.
 4. Send the verb through the handshake of § Command semantics: parameters in one FC16, then `Command` + `CommandSeq`
-   in a second FC16; ack ≤ 500 ms; the edge cleared after the ack. `home`, `move` and `jog` from Disabled set Enable
-   first, as the driver's Home does. `reset` writes `WatchdogFault = 0` if set and Enable 0 before the Reset edge.
+   in a second FC16; ack ≤ 500 ms; the edge cleared after the ack. `enable`, and `home`, `move` and `jog` from
+   Disabled, set Enable first, as the driver's Home does, with an Enable 0 first when bit 0 already reads 1 (a fresh
+   edge, as the driver energises); "found energised" is decided from State, never from the command bit; cleanup writes
+   Enable 0 only if the axis was found not energised and this run wrote Enable 1. `reset` writes `WatchdogFault = 0` if set and Enable 0 before the Reset edge.
 5. Print every status read at 20 ms (`State`, `Flags`, `ActualPosition`, `ActualVelocity`, `FaultCode`, `CommandAck`)
    until the verb completes: enable → Standstill (5 s) · disable → Disabled (5 s) · home → Standstill + `Homed`
    (120 s) · stop → Standstill or Disabled (5 s) · reset → not ErrorStop (5 s) · move → Standstill + `InPosition`
    (2 × |Δ| ÷ v + 5 s) · jog → ContinuousMotion observed (500 ms after the ack), then printing continues until
    `--for` elapses or Ctrl-C, and the tool sends Stop. Each budget is measured from the completion of the verb's write
    (jog's 500 ms from the ack), as in § Rules for every run › Timing.
-6. Clean up as § Rules for every run: Stop if moving, clear edges, Enable 0 only if this run set Enable 1, release
-   the lease. A run leaves the axis no more energised than it found it: `enable` proves the handshake and ends Disabled.
+6. Clean up as § Rules for every run: Stop if moving, clear edges, Enable 0 by the rule of step 4, release the lease.
+   A run leaves the axis no more energised than it found it: `enable` proves the handshake and ends Disabled.
 
 Exit codes: 0 = the verb completed (a jog ended by `--for` or Ctrl-C after ContinuousMotion was observed included) ·
 1 = the PLC failed it (Transport, Protocol or Machine, in the shape of § Errors and debugging rule 1) · 2 = usage error
@@ -307,7 +309,7 @@ usage error prints no `RESULT` line.
 | CHK-03 | Machine limits published | Status block, "Limits come from the machine" | 02 | Read S+8…S+13 (FC04). | Not all zero, `TravelMin < TravelMax`, `MaxVelocity > 0`. The values are reported. |
 | CHK-04 | Status mirror cadence | Status block; FR-11 tick | 02 | 30 status-block reads (FC04), one every 100 ms. | All 30 answer, the slowest round trip is ≤ 100 ms, and `State` ∈ {0,1,2,3,4,6,7} in every read. |
 | CHK-05 | 32-bit word order and driver ownership of parameters | Transport (word order); Command block | 02 | Write C+2…C+3 = `[0x0002, 0x0001]` (65 538), read back. Write −2 as `[0xFFFE, 0xFFFF]`, read back. Wait 1 s and read again. No edge bit is set. | Both values read back exactly (FC03), and are unchanged after 1 s (the PLC does not write driver-owned holding registers). The PLC's *interpretation* of the order is proven by CHK-03 (sane limits) and CHK-13 (it arrives where it was sent). |
-| CHK-06 | Enable handshake (level) | Command semantics: Handshake, Enable | 02 | Precondition State 0 or 1. Take the lease (checker id), beat. Write `[Enable, seq+1]`, then after the ack `[0, seq+2]`. | Each ack arrives in ≤ 500 ms. State is 1 within 5 s after Enable 1 and 0 within 5 s after Enable 0. Ack ms and state ms are reported. Energises the drive and commands no motion. |
+| CHK-06 | Enable handshake (level) | Command semantics: Handshake, Enable | 02 | Precondition State 0 or 1. Take the lease (checker id), beat. Write `[Enable, seq+1]`, then after the ack `[0, seq+2]`. If `Command` bit 0 already reads 1 while State is 0, write `[0, seq+1]` first and wait for its ack, so the Enable is a fresh 0→1 edge (the later numbers shift by one). | Each ack arrives in ≤ 500 ms. State is 1 within 5 s after Enable 1 and 0 within 5 s after Enable 0. Ack ms and state ms are reported. Energises the drive and commands no motion. |
 | CHK-07 | Reset handshake (edge) | Command semantics: Reset, Acknowledge | 06 | From State 0 write `[Reset, seq+1]`. After the ack, clear the edge `[0, seq+1]`. | Ack in ≤ 500 ms, `State` stays 0 and `FaultCode` stays 0 (Reset outside ErrorStop is a no-op). |
 | CHK-08 | Watchdog trips on a stalled beat | FR-11 | 06 | Hold the lease, `WatchdogFault = 0`, beat for 2 s, then stop beating. Keep polling. | `WatchdogFault == 1`, `WatchdogTrips` +1, `State == 7`, `FaultCode == 4`, all within **1.0–1.5 s** of the last beat. The trip time is reported. |
 | CHK-09 | Watchdog disarms after a trip and re-arms on clear | FR-11 | 08 | Setup: first trip the watchdog as in CHK-08 (lease held, `WatchdogFault = 0`, beat 2 s, stop, wait ≤ 1.5 s; no trip → FAIL "setup: no trip"). Then, without clearing, beat 1 s: no second trip is counted. Then Reset edge, `WatchdogFault = 0`, beat 2 s (must not trip), stop beating. | No trip while latched. No trip while beating. A second trip within 1.0–1.5 s with `WatchdogTrips` +1. Recovery afterwards is Reset plus `WatchdogFault = 0`. |
