@@ -726,7 +726,8 @@ def test_an_out_of_range_speed_is_printed_as_typed() -> None:
 
 # --- GA-U-157.py (#47, #48): one number grammar for every --command number, string by string with C# ---------------
 
-ACCEPTED_NUMBERS = ("+5", "5", "5.", ".5", "5e-1", "0.00005", "-12.5", "1E3")
+ACCEPTED_NUMBERS = ("+5", "5", "5.", ".5", "5e-1", "0.00005", "-12.5", "1E3", "-5e-1", "-5.", "-1E3")
+"""-5e-1, -5. and -1E3 (#50): negatives argparse's own matcher would not take as values; the override exists for them."""
 REFUSED_NUMBERS = (
     " 5",
     "5 ",
