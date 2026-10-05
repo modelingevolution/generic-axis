@@ -258,13 +258,13 @@ public sealed class CommandModeTests
         writes.Should().BeEmpty("a PLC on another map version is never written, not even the lease");
     }
 
-    // ---- the command line (GA-U-137) -------------------------------------------------------------------------------
+    // ---- the command line (GA-U-145) -------------------------------------------------------------------------------
 
     [Theory]
     [InlineData(new[] { "--command", "enable", "plc" }, Verb.Enable)]
     [InlineData(new[] { "--check", "plc", "--command", "stop" }, Verb.Stop)]
     [InlineData(new[] { "--command", "home", "plc:5020", "--allow-motion" }, Verb.Home)]
-    public void GA_U_137_VerbsParse(string[] args, Verb verb)
+    public void GA_U_145_VerbsParse(string[] args, Verb verb)
     {
         var (o, error) = CheckCommandLine.Parse(args);
         error.Should().BeNull();
@@ -272,7 +272,7 @@ public sealed class CommandModeTests
     }
 
     [Fact]
-    public void GA_U_137_MoveAndJogTakeNumbersIncludingNegativeOnes()
+    public void GA_U_145_MoveAndJogTakeNumbersIncludingNegativeOnes()
     {
         var move = CheckCommandLine.Parse(["--command", "move", "-12.5", "plc", "--speed", "20", "--allow-motion"]).Options!.Command!;
         move.Should().Be(new VerbRequest(Verb.Move, Target: -12.5, SpeedPercent: 20));
@@ -299,7 +299,7 @@ public sealed class CommandModeTests
     [InlineData("--command", "enable", "--command", "stop", "plc")]
     [InlineData("--check", "plc", "--speed", "20")]
     [InlineData("--command")]
-    public void GA_U_137_BadCommandLinesAreUsageErrors(params string[] args)
+    public void GA_U_145_BadCommandLinesAreUsageErrors(params string[] args)
     {
         var (o, error) = CheckCommandLine.Parse(args);
         o.Should().BeNull();
@@ -313,7 +313,7 @@ public sealed class CommandModeTests
     [Theory]
     [InlineData(2, "--command", "fly", "127.0.0.1:1")]
     [InlineData(1, "--command", "enable", "127.0.0.1:1")]
-    public async Task GA_U_137_CommandWithoutCheckNeverStartsTheUi(int expected, params string[] args)
+    public async Task GA_U_145_CommandWithoutCheckNeverStartsTheUi(int expected, params string[] args)
     {
         var dll = Path.Combine(AppContext.BaseDirectory, "ModelingEvolution.GenericAxis.TestApp.dll");
         var psi = new ProcessStartInfo("dotnet") { RedirectStandardError = true, RedirectStandardOutput = true, WorkingDirectory = AppContext.BaseDirectory };
