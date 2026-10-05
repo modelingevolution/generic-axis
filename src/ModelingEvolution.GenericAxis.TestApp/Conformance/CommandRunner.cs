@@ -47,13 +47,13 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                return Finish(output, $"{name}: interrupted by the operator during pre-flight; nothing was written.", "INTERRUPTED", ConformanceExitCodes.Interrupted);
+                return Finish(output, $"{name}: interrupted by the operator during pre-flight; nothing was written.", ConformanceExitCodes.Interrupted);
             }
 
             if (preflight.Unreadable is { } unreadable)
-                return Finish(output, $"{name}: {Failure.FromMotion(unreadable).Render()}", "FAIL", ConformanceExitCodes.Fail);
+                return Finish(output, $"{name}: {Failure.FromMotion(unreadable).Render()}", ConformanceExitCodes.Fail);
             if (preflight.Refusal is { } refusal)
-                return Finish(output, $"Pre-flight: {refusal}", "REFUSED", ConformanceExitCodes.Refused);
+                return Finish(output, $"Pre-flight: {refusal}", ConformanceExitCodes.Refused);
             if (preflight.Note is { } note) output.WriteLine($"Pre-flight: {note}");
 
             (exit, result) = await run.ExecuteAsync(ct);
@@ -78,24 +78,31 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
         // protocol step 6: Stop if moving, clear edges, Enable 0 only if this run set Enable 1, release the lease.
         await CommanderSession.CleanupAsync(ctx, _log, disableOnExit: run.DisableOnExit);
         foreach (var entry in ctx.CleanupLog) output.WriteLine($"Cleanup: {entry}");
-        return Result(output, exit switch
-        {
-            ConformanceExitCodes.Pass => "PASS",
-            ConformanceExitCodes.Usage => "GUARD",
-            ConformanceExitCodes.Interrupted => "INTERRUPTED",
-            _ => "FAIL",
-        }, exit);
+        return Result(output, exit);
     }
 
-    private static int Finish(TextWriter output, string line, string result, int exit)
+    /// <summary>
+    /// The last line of a run per exit code (protocol § One-verb mode): the one table the runner prints from, bound to
+    /// protocol.md by a parity test (#41). A usage error never reaches the runner and prints no RESULT line.
+    /// </summary>
+    public static IReadOnlyDictionary<int, string> ResultWords { get; } = new Dictionary<int, string>
+    {
+        [ConformanceExitCodes.Pass] = "PASS",
+        [ConformanceExitCodes.Fail] = "FAIL",
+        [ConformanceExitCodes.Usage] = "GUARD",
+        [ConformanceExitCodes.Refused] = "REFUSED",
+        [ConformanceExitCodes.Interrupted] = "INTERRUPTED",
+    };
+
+    private static int Finish(TextWriter output, string line, int exit)
     {
         output.WriteLine(line);
-        return Result(output, result, exit);
+        return Result(output, exit);
     }
 
-    private static int Result(TextWriter output, string result, int exit)
+    private static int Result(TextWriter output, int exit)
     {
-        output.WriteLine($"RESULT: {result}");
+        output.WriteLine($"RESULT: {ResultWords[exit]}");
         return exit;
     }
 

@@ -200,7 +200,7 @@ public static class CheckCommandLine
             if (dump || report is not null) return (null, "--command runs one verb; it takes no --dump or --report");
             if (speed is not null && vb != Verb.Move) return (null, "--speed belongs to --command move");
             if (forSeconds is not null && vb != Verb.Jog) return (null, "--for belongs to --command jog");
-            if (vb is Verb.Home or Verb.Move or Verb.Jog && !allowMotion)
+            if (new VerbRequest(vb).Moves && !allowMotion) // the one list, bound to protocol.md by GA-U-146
                 return (null, $"--command {vb.ToString().ToLowerInvariant()} moves the axis: it needs --allow-motion (an operator at the machine, the travel clear)");
         }
         else if (speed is not null || forSeconds is not null)
