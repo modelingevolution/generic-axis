@@ -27,6 +27,7 @@ from .errors import (
     HOME_LATCH_FAILED,
     MOTION_FAILED,
     PROTOCOL_MISMATCH,
+    UNREACHABLE_SPEED,
     WATCHDOG_TRIPPED,
     ErrorClass,
     Read,
@@ -45,6 +46,7 @@ from .registers import (
     StatusBlock,
     describe_range,
     from_words,
+    speed_raw,
 )
 
 PASS = "PASS"
@@ -301,8 +303,18 @@ async def ensure_enabled(ctx: CheckContext) -> Outcome | None:
     return None
 
 
-def percent_of(value: int, percent: int) -> int:
-    return value * percent // 100
+async def commanded_speed(ctx: CheckContext, percent: int) -> tuple[int, Outcome | None]:
+    """The check's speed by protocol.md's Speed rounding (CHK-13…16, review #65), read before the check writes
+    anything: a raw 0 SKIPs the check with the refusal message, writing nothing (never floored to 1)."""
+    s = await ctx.status()
+    velocity = speed_raw(s.max_velocity, percent)
+    if velocity == 0:
+        what = f"refused before writing anything: {percent} % of MaxVelocity rounds to raw Velocity 0; nothing to move with"
+        message = format_message(
+            ErrorClass.COMMANDER, UNREACHABLE_SPEED, what, ctx.registers, (Read("MaxVelocity", s.max_velocity),)
+        )
+        return 0, Outcome(SKIPPED, message, restore=False)
+    return velocity, None
 
 
 # --------------------------------------------------------------------------------------------------- checks
@@ -656,12 +668,14 @@ async def chk12(ctx: CheckContext) -> Outcome:
 
 
 async def chk13(ctx: CheckContext) -> Outcome:
+    velocity, refused = await commanded_speed(ctx, DISCRETE_SPEED_PERCENT)
+    if refused:
+        return refused
     not_ready = await ensure_enabled(ctx)
     if not_ready:
         return not_ready
     start = await ctx.status()
     target = start.travel_min + MOVE_OFFSET
-    velocity = percent_of(start.max_velocity, DISCRETE_SPEED_PERCENT)
     await ctx.write_parameters(target, velocity, 0)
     ack = await ctx.command(Command.ENABLE | Command.MOVE_ABSOLUTE)
     observed = {"target": target, "ackMs": ack.poll.elapsed_ms}
@@ -730,12 +744,14 @@ async def stop_and_measure(
 
 
 async def chk14(ctx: CheckContext) -> Outcome:
+    velocity, refused = await commanded_speed(ctx, DISCRETE_SPEED_PERCENT)
+    if refused:
+        return refused
     not_ready = await ensure_enabled(ctx)
     if not_ready:
         return not_ready
     start = await ctx.status()
     target = start.travel_min + (start.travel_max - start.travel_min) // 2
-    velocity = percent_of(start.max_velocity, DISCRETE_SPEED_PERCENT)
     await ctx.write_parameters(target, velocity, 0)
     move = await ctx.command(Command.ENABLE | Command.MOVE_ABSOLUTE)
     if move.poll.status.state != AxisState.DISCRETE_MOTION:
@@ -761,11 +777,13 @@ async def chk14(ctx: CheckContext) -> Outcome:
 
 
 async def chk15(ctx: CheckContext) -> Outcome:
+    velocity, refused = await commanded_speed(ctx, JOG_SPEED_PERCENT)
+    if refused:
+        return refused
     not_ready = await ensure_enabled(ctx)
     if not_ready:
         return not_ready
     start = await ctx.status()
-    velocity = percent_of(start.max_velocity, JOG_SPEED_PERCENT)
     await ctx.write_parameters(start.actual_position, velocity, 0)
     ack = await ctx.command(Command.ENABLE | Command.MOVE_VELOCITY)
     observed: dict[str, int | None] = {"commandedVelocity": velocity, "ackMs": ack.poll.elapsed_ms}
@@ -795,11 +813,13 @@ async def chk15(ctx: CheckContext) -> Outcome:
 
 
 async def chk16(ctx: CheckContext) -> Outcome:
+    velocity, refused = await commanded_speed(ctx, JOG_SPEED_PERCENT)
+    if refused:
+        return refused
     not_ready = await ensure_enabled(ctx)
     if not_ready:
         return not_ready
     start = await ctx.status()
-    velocity = percent_of(start.max_velocity, JOG_SPEED_PERCENT)
     await ctx.write_parameters(start.actual_position, velocity, 0)
     jog = await ctx.command(Command.ENABLE | Command.MOVE_VELOCITY)
     moving = await wait_for(

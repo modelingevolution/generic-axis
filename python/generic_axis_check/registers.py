@@ -6,6 +6,7 @@ C# driver or simulator.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import IntEnum, IntFlag, StrEnum
 
@@ -185,6 +186,18 @@ def from_words(low: int, high: int) -> int:
     """Decode ``(low, high)`` registers into an int32 (protocol.md § Transport, word order)."""
     unsigned = (low & WORD_MASK) | ((high & WORD_MASK) << 16)
     return unsigned - (1 << 32) if unsigned & 0x80000000 else unsigned
+
+
+def round_half_away(value: float) -> int:
+    """protocol.md "Speed rounding": round half away from zero (2.5 → 3, −2.5 → −3), never banker's, never floored."""
+    rounded = math.floor(abs(value) + 0.5)
+    return -rounded if value < 0 and rounded else rounded
+
+
+def speed_raw(max_velocity: int, percent: float) -> int:
+    """protocol.md § One-verb mode step 3, "Speed rounding" (both modes, review #65): raw = round-half-away-from-zero(
+    pct × MaxVelocity raw ÷ 100). A 0 is refused by the caller, never floored to 1."""
+    return round_half_away(percent * max_velocity / 100)
 
 
 def next_nonzero(value: int) -> int:
