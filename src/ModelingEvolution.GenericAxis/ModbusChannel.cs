@@ -82,7 +82,8 @@ internal sealed class ModbusChannel : IModbusChannel
 
     /// <inheritdoc/>
     public Task ConnectAsync(CancellationToken ct) =>
-        ExecuteAsync<object?>(_ => Task.FromResult<object?>(null), "connect", null, ChannelPriority.Move, ct);
+        // A TCP connect carries no unit (#70): its messages name host:port only.
+        ExecuteAsync<object?>(_ => Task.FromResult<object?>(null), "connect", null, ChannelPriority.Move, ct, unit: null);
 
     /// <inheritdoc/>
     public async Task DisconnectAsync(CancellationToken ct = default)
@@ -139,7 +140,7 @@ internal sealed class ModbusChannel : IModbusChannel
     /// <exception cref="MotionException"><see cref="MotionError.CommunicationLost"/> — both attempts failed with a
     /// transport failure, or the channel is disposed.</exception>
     private async Task<T> ExecuteAsync<T>(Func<ModbusTcpClient, Task<T>> operation, string what, string? range,
-        ChannelPriority priority, CancellationToken ct, byte unit = 0)
+        ChannelPriority priority, CancellationToken ct, byte? unit)
     {
         // A disposed channel must never quietly reopen the socket: that would make a killed commander look alive
         // again for one transaction.
@@ -184,7 +185,7 @@ internal sealed class ModbusChannel : IModbusChannel
                     // ADR-37: the PLC answered, and refused the request as not served (01/02/03). That is the PLC
                     // answering outside the map — Protocol, never a link fault — and a retry would be refused again.
                     // The connection is healthy (an exception response is a complete frame), so it is kept.
-                    throw Refusal(_label, what, range, ex.ExceptionCode, Host, Port, unit);
+                    throw Refusal(_label, what, range, ex.ExceptionCode, Endpoint(unit));
                 }
                 catch (Exception ex) when (IsTransport(ex))
                 {
@@ -198,15 +199,15 @@ internal sealed class ModbusChannel : IModbusChannel
                 {
                     Interlocked.Increment(ref _retries); // counted for the conformance checker's `retries`
                     _logger?.LogWarning(failure,
-                        "{Label}: {What}{Range} on {Host}:{Port} unit {Unit} failed ({Message}); reconnecting "
-                        + "and retrying once", _label, what, range is null ? "" : " " + range, Host, Port, unit, reason);
+                        "{Label}: {What}{Range} on {Endpoint} failed ({Message}); reconnecting and retrying once",
+                        _label, what, range is null ? "" : " " + range, Endpoint(unit), reason);
                     await Task.Delay(RetryPause, ct).ConfigureAwait(false);
                     continue;
                 }
 
                 throw new MotionException(MotionError.CommunicationLost,
                     $"{_label}: {MotionError.CommunicationLost}: {what}"
-                    + $"{(range is null ? "" : " " + range)} on {Host}:{Port} unit {unit} failed twice "
+                    + $"{(range is null ? "" : " " + range)} on {Endpoint(unit)} failed twice "
                     + $"(reconnected once): {reason}.");
             }
         }
@@ -257,11 +258,11 @@ internal sealed class ModbusChannel : IModbusChannel
     /// (protocol rule 3: Warning once, then Debug).
     /// </summary>
     internal static MotionException Refusal(string label, string what, string? range, ModbusExceptionCode code,
-        string host, int port, byte unit)
+        string endpoint)
     {
         var ex = AxisErrors.Create(label, MotionError.ProtocolMismatch,
             $"{what}: {(range is null ? "request" : range.Trim('(', ')'))} refused: Modbus exception {(int)code:D2} "
-            + $"({CodeName(code)}){RefusalHint(range, code)} ({host}:{port} unit {unit})");
+            + $"({CodeName(code)}){RefusalHint(range, code)} ({endpoint})");
         ex.Data[RefusalKey] = (int)code;
         return ex;
     }
@@ -282,6 +283,12 @@ internal sealed class ModbusChannel : IModbusChannel
             ? " — the PLC does not serve the status block as input registers"
             : " — the PLC does not serve the command block as holding registers";
     }
+
+    /// <summary>
+    /// <c>host:port unit u</c> for a frame, which carries the unit; <c>host:port</c> for a TCP connect, which carries
+    /// none (#70: a connect message once named "unit 0" whatever unit was configured).
+    /// </summary>
+    private string Endpoint(byte? unit) => unit is { } u ? $"{Host}:{Port} unit {u}" : $"{Host}:{Port}";
 
     private static Exception Innermost(Exception ex) =>
         ex is AggregateException { InnerExceptions.Count: 1 } agg ? Innermost(agg.InnerExceptions[0]) : ex;
