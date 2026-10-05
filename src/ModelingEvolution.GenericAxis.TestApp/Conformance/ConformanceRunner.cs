@@ -77,7 +77,7 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
                 outcome = outcome with { Observed = Canonical(chk01, outcome, ctx.Retries) };
                 results.Add(new CheckResult(chk01.Id, chk01.Title, chk01.Section, CheckResultKind.Fail, 0, outcome.Message, outcome.Observed,
                     outcome.Deciding?.Class, ctx.LastValues()));
-                foreach (var def in _catalog.Skip(1)) results.Add(Skipped(def, $"needs {chk01.Id}, which FAILED"));
+                foreach (var def in _catalog.Skip(1)) results.Add(Skipped(def, Needs(chk01.Id, CheckResultKind.Fail)));
             }
             else if (refusal is { } reason)
             {
@@ -243,13 +243,17 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
     private static CheckResult Skipped(CheckDefinition def, string reason) =>
         new(def.Id, def.Title, def.Section, CheckResultKind.Skipped, 0, reason, []);
 
+    /// <summary>protocol § Rules, Order (e60d73a): <c>needs CHK-n, which FAILED</c> / <c>needs CHK-n, which SKIPPED</c>.</summary>
+    internal static string Needs(string id, CheckResultKind result) =>
+        $"needs {id}, which {(result == CheckResultKind.Fail ? "FAILED" : "SKIPPED")}";
+
     private static string? SkipReason(CheckDefinition def, CheckerOptions options, IReadOnlyDictionary<string, CheckResultKind> done)
     {
         if (def.RequiresMotion && !options.AllowMotion) return "needs --allow-motion";
         foreach (var need in def.Needs)
         {
             var result = done.GetValueOrDefault(need, CheckResultKind.Skipped);
-            if (result != CheckResultKind.Pass) return $"needs {need}, which {(result == CheckResultKind.Fail ? "FAILED" : "was SKIPPED")}";
+            if (result != CheckResultKind.Pass) return Needs(need, result);
         }
 
         return null;

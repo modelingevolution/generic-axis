@@ -184,7 +184,7 @@ public sealed class CommandModeTests
             (new(), new VerbRequest(Verb.Move, Target: 600, SpeedPercent: 0), "move: Commander/UnreachableSpeed: refused before writing anything: speed 0 % outside 0 < pct ≤ 100."),
             (new(), new VerbRequest(Verb.Move, Target: 600, SpeedPercent: 100.001), "move: Commander/UnreachableSpeed: refused before writing anything: speed 100.001 % outside 0 < pct ≤ 100."),
             (new(), new VerbRequest(Verb.Move, Target: 600, SpeedPercent: 0.00005),
-                "move: Commander/UnreachableSpeed: refused before writing anything: " + SpeedRounding.Refusal(0.00005, 500_000, "S+12 = input 12")),
+                "move: " + SpeedRounding.Refusal(0.00005, 500_000, "S+12 = input 12")),
             (new() { PublishLimits = false }, new VerbRequest(Verb.Jog, Velocity: 10),
                 "jog: Commander/OutOfRange: refused before writing anything: the PLC publishes no limits; jog needs them."),
         };

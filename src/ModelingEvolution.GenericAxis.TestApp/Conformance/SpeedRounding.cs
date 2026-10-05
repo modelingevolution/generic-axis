@@ -14,11 +14,25 @@ public static class SpeedRounding
     public static int Raw(double percent, int maxVelocityRaw) =>
         (int)(Math.Round(maxVelocityRaw * percent / 100.0, MidpointRounding.AwayFromZero) + 0.0);
 
-    /// <summary>The refusal of a raw 0, naming MaxVelocity, the percentage and the raw result.</summary>
-    public static string Refusal(double percent, int maxVelocityRaw, string maxVelocityAt)
+    /// <summary>
+    /// The refusal of a raw 0, exactly the protocol's line (§ One-verb mode step 3, e60d73a), used by both modes: the
+    /// one-verb guard prints it after "&lt;verb&gt;: ", and a check SKIPs itself with it (the <c>Commander/</c> prefix stays;
+    /// errorClass stays null on the SKIP).
+    /// </summary>
+    public static string Refusal(double percent, int maxVelocityRaw, string maxVelocityAt) =>
+        $"{ErrorClass.Commander}/{RefusalName}: {RefusalLead}{Body(percent, maxVelocityRaw, maxVelocityAt)}";
+
+    /// <summary>The SDK MotionError name of the refusal.</summary>
+    public const string RefusalName = "UnreachableSpeed";
+
+    /// <summary>The phrase every Commander refusal of the one-verb mode starts its text with.</summary>
+    public const string RefusalLead = "refused before writing anything: ";
+
+    /// <summary>The refusal's text after the lead: the percentage, the arithmetic, and the register read.</summary>
+    public static string Body(double percent, int maxVelocityRaw, string maxVelocityAt)
     {
         var pct = percent.ToString("0.######", CultureInfo.InvariantCulture);
-        return $"speed {pct} % of MaxVelocity rounds to raw Velocity 0 (round-half-away-from-zero({pct} × {maxVelocityRaw} ÷ 100) = 0); "
-               + $"refused, never floored. Read MaxVelocity ({maxVelocityAt}) = {maxVelocityRaw}.";
+        return $"{pct} % of MaxVelocity rounds to raw Velocity 0 (round-half-away-from-zero({pct} × {maxVelocityRaw} ÷ 100) = 0); "
+               + $"nothing to move with. Read MaxVelocity ({maxVelocityAt}) = {maxVelocityRaw}.";
     }
 }

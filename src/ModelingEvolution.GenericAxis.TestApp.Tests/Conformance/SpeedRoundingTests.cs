@@ -28,12 +28,12 @@ public sealed class SpeedRoundingTests
     [Fact]
     public void GA_U_147_ARawZeroAt49IsRefusedNamingAllThree() =>
         SpeedRounding.Refusal(1, 49, "S+12 = input 12").Should().Be(
-            "speed 1 % of MaxVelocity rounds to raw Velocity 0 (round-half-away-from-zero(1 × 49 ÷ 100) = 0); refused, never floored. Read MaxVelocity (S+12 = input 12) = 49.");
+            "Commander/UnreachableSpeed: refused before writing anything: 1 % of MaxVelocity rounds to raw Velocity 0 (round-half-away-from-zero(1 × 49 ÷ 100) = 0); nothing to move with. Read MaxVelocity (S+12 = input 12) = 49.");
 
     [Fact]
     public void GA_U_147_TheRefusalNamesMaxVelocityThePercentageAndTheRawResult() =>
         SpeedRounding.Refusal(1, 45, "S+12 = input 12").Should().Be(
-            "speed 1 % of MaxVelocity rounds to raw Velocity 0 (round-half-away-from-zero(1 × 45 ÷ 100) = 0); refused, never floored. Read MaxVelocity (S+12 = input 12) = 45.");
+            "Commander/UnreachableSpeed: refused before writing anything: 1 % of MaxVelocity rounds to raw Velocity 0 (round-half-away-from-zero(1 × 45 ÷ 100) = 0); nothing to move with. Read MaxVelocity (S+12 = input 12) = 45.");
 
     /// <summary>
     /// GA-U-148: the helper is the one both call sites use — CHK-13…16 and <c>--command move --speed</c> go through
@@ -110,7 +110,7 @@ public sealed class SpeedRoundingCheckerTests
         // A machine-property skip, like an unmet precondition — never INCONCLUSIVE, so the release gate (#43) does not count it.
         report.Checks.Should().NotContain(c => c.Message.Contains("INCONCLUSIVE", StringComparison.OrdinalIgnoreCase));
         ReportWriter.ToJson(report).Should().NotContain("INCONCLUSIVE");
-        report.Checks.Single(c => c.Id == "CHK-16").Message.Should().Be("needs CHK-15, which was SKIPPED");
+        report.Checks.Single(c => c.Id == "CHK-16").Message.Should().Be("needs CHK-15, which SKIPPED");
         moveVelocityWrites.Should().Be(0, "a speed that rounds to raw 0 is refused, never written");
         report.ExitCode.Should().Be(0, "SKIPPED is allowed");
     }

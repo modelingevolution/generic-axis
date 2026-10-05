@@ -40,11 +40,11 @@ public sealed class RunnerLogicTests
             [CheckResultKind.Pass, CheckResultKind.Fail, .. Enumerable.Repeat(CheckResultKind.Skipped, 14)]);
         foreach (var c in report.Checks.Skip(2))
         {
-            c.Message.Should().MatchRegex(@"^needs CHK-\d{2}, which (FAILED|was SKIPPED)$");
+            c.Message.Should().MatchRegex(@"^needs CHK-\d{2}, which (FAILED|SKIPPED)$");
         }
 
         report.Checks.Single(c => c.Id == "CHK-03").Message.Should().Be("needs CHK-02, which FAILED");
-        report.Checks.Single(c => c.Id == "CHK-09").Message.Should().Be("needs CHK-08, which was SKIPPED");
+        report.Checks.Single(c => c.Id == "CHK-09").Message.Should().Be("needs CHK-08, which SKIPPED");
         report.ExitCode.Should().Be(1);
     }
 

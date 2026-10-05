@@ -60,6 +60,35 @@ public sealed partial class OneVerbProtocolParityTests
             .Should().BeEquivalentTo(motion, "exactly the protocol's motion verbs need --allow-motion");
     }
 
+    [GeneratedRegex(@"`(?<line>Commander/UnreachableSpeed: refused before writing anything: <pct>[^`]*)`")]
+    private static partial Regex RefusalLine();
+
+    [GeneratedRegex(@"`needs CHK-n, which (?<word>[A-Z]+)`")]
+    private static partial Regex NeedsPhrase();
+
+    [GeneratedRegex(@"\s+")]
+    private static partial Regex Spaces();
+
+    /// <summary>#66 (e60d73a): the raw-0 speed refusal — one-verb guard and check SKIP alike — is the protocol's line.</summary>
+    [Fact]
+    public void GA_U_146_TheSpeedRefusalIsTheProtocolsLine()
+    {
+        var line = Spaces().Replace(RefusalLine().Match(Protocol()).Groups["line"].Value, " ");
+        line.Should().NotBeEmpty("protocol.md states the refusal once (Speed rounding)");
+        var expected = line.Replace("<pct>", "1", StringComparison.Ordinal).Replace("<raw>", "45", StringComparison.Ordinal);
+        SpeedRounding.Refusal(1, 45, "S+12 = input 12").Should().Be(expected);
+    }
+
+    /// <summary>#66 (e60d73a): the dependant SKIP phrase of § Rules, Order.</summary>
+    [Fact]
+    public void GA_U_146_TheDependantPhraseIsTheProtocols()
+    {
+        var words = NeedsPhrase().Matches(Protocol()).Select(m => m.Groups["word"].Value).ToHashSet();
+        words.Should().BeEquivalentTo(["FAILED", "SKIPPED"]);
+        ConformanceRunner.Needs("CHK-n", CheckResultKind.Fail).Should().Be("needs CHK-n, which FAILED");
+        ConformanceRunner.Needs("CHK-n", CheckResultKind.Skipped).Should().Be("needs CHK-n, which SKIPPED");
+    }
+
     [Fact]
     public void GA_U_146_TheResultWordsAndExitCodesAreTheProtocols()
     {

@@ -212,7 +212,7 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
                 if (!(pct > 0 && pct <= 100))
                     return Commander("UnreachableSpeed", $"speed {pct.ToString("0.###", Inv)} % outside 0 < pct ≤ 100.");
                 if (SpeedRounding.Raw(pct, s.MaxVelocity) == 0)
-                    return Commander("UnreachableSpeed", SpeedRounding.Refusal(pct, s.MaxVelocity, ctx.At(RegisterField.MaxVelocity)));
+                    return Commander(SpeedRounding.RefusalName, SpeedRounding.Body(pct, s.MaxVelocity, ctx.At(RegisterField.MaxVelocity)));
                 return null;
             }
 
@@ -227,7 +227,7 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
         /// <see cref="Words.ToRaw"/>), as a double so an over-range value is judged, not thrown.</summary>
         private static double Raw(double units) => Math.Round(units * Words.Scale, MidpointRounding.AwayFromZero) + 0.0; // + 0.0: no "-0"
 
-        private static Failure Commander(string name, string text) => new(ErrorClass.Commander, name, 7, $"refused before writing anything: {text}");
+        private static Failure Commander(string name, string text) => new(ErrorClass.Commander, name, 7, $"{SpeedRounding.RefusalLead}{text}");
 
         // ---- the verbs (protocol step 4 and 5) --------------------------------------------------------------------
 
