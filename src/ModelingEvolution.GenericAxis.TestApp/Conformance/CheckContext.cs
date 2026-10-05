@@ -148,6 +148,7 @@ internal sealed class CheckContext : IAsyncDisposable
         var watchdog = await ReadAsync(Map.Heartbeat, 4, ct);
         var status = await ReadStatusAsync(ct);
         var view = new PlcView(status, watchdog[0], watchdog[1], watchdog[2], watchdog[3]);
+        Observer?.Invoke(view);
         if (HoldsLease && Beater.IsRunning && view.LeaseOwner != Options.OwnerId)
         {
             // Lead ruling 2026-09-29 (#33): the register does not hold what the beating checker wrote.
@@ -157,6 +158,9 @@ internal sealed class CheckContext : IAsyncDisposable
 
         return view;
     }
+
+    /// <summary>Called with every view read (one-verb mode prints each one, protocol § One-verb mode step 5).</summary>
+    public Action<PlcView>? Observer { get; set; }
 
     /// <summary>
     /// The checker wrote <c>LeaseOwner</c> = its own id and has not released or overwritten it since. While it also
@@ -347,6 +351,20 @@ internal sealed class CommandWriter(CheckContext ctx)
         Words.Write(words.AsSpan(2), velocity);
         Words.Write(words.AsSpan(4), acceleration);
         await ctx.WriteAsync(ctx.Map.Parameters, words, $"TargetPosition {target}, Velocity {velocity}, Acceleration {acceleration}", ct);
+    }
+
+    /// <summary>
+    /// Clears edge bits still set in <c>Command</c> (an ack wait cut short), keeping the Enable level and the sequence:
+    /// the protocol's edge-clear write, not a command write. Returns the journal entry, or null when nothing was set.
+    /// </summary>
+    public async Task<string?> ClearEdgesAsync(CancellationToken ct)
+    {
+        var words = await ctx.ReadAsync(ctx.Map.Command, 2, ct);
+        var level = (ushort)(words[0] & (ushort)CommandBits.Enable);
+        if (words[0] == level) return null;
+        await ctx.Channel.WriteRegistersAsync(ctx.Unit, ctx.Map.Command, [level, words[1]],
+            $"clear edge bits, CommandSeq {words[1]}", ChannelPriority.Stop, ct);
+        return $"C+0 = 0x{level:X4} (clear edge bits, Enable {level}), CommandSeq {words[1]}";
     }
 
     public async Task<Ack> SendAsync(CommandBits bits, CancellationToken ct, ChannelPriority lane = ChannelPriority.Move)

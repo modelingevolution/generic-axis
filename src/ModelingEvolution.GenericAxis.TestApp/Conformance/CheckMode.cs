@@ -35,6 +35,7 @@ public static class CheckMode
         try
         {
             if (options.Dump) return await DumpAsync(options, loggerFactory, cts.Token);
+            if (options.Command is not null) return await new CommandRunner(loggerFactory).RunAsync(options, Console.Out, cts.Token);
             var report = await new ConformanceRunner(loggerFactory).RunAsync(options, cts.Token);
             var markdown = ReportWriter.ToMarkdown(report);
             await Console.Out.WriteAsync(markdown);

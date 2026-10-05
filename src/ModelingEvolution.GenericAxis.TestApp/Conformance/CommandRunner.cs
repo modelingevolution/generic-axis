@@ -1,0 +1,348 @@
+using System.Diagnostics;
+using System.Globalization;
+using Microsoft.Extensions.Logging;
+using RocketWelder.SDK.Devices.Motion;
+
+namespace ModelingEvolution.GenericAxis.TestApp.Conformance;
+
+/// <summary>
+/// One-verb mode (protocol § Conformance checks, One-verb mode; ADR-38): pre-flight, map and limits check, guards,
+/// lease and beat, one verb through the handshake, every 20 ms status read printed until the verb completes, then the
+/// cleanup of § Rules for every run. It reuses the checker's <see cref="CheckContext"/> (channel, beat, command writer,
+/// poller) and <see cref="CommanderSession"/> (pre-flight, cleanup): there is no second implementation.
+/// </summary>
+public sealed class CommandRunner(ILoggerFactory loggerFactory)
+{
+    private static readonly TimeSpan StateBudget = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan HomeBudget = TimeSpan.FromSeconds(120);
+    private static readonly TimeSpan JogEntryBudget = TimeSpan.FromMilliseconds(500);
+    private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
+
+    private const ushort Disabled = 0, Standstill = 1, ContinuousMotion = 4, ErrorStop = 7;
+
+    private readonly ILogger _log = loggerFactory.CreateLogger<CommandRunner>();
+
+    /// <summary>Runs <see cref="CheckerOptions.Command"/> against the PLC; returns the protocol's exit code.</summary>
+    public Task<int> RunAsync(CheckerOptions options, TextWriter output, CancellationToken ct) =>
+        RunAsync(options, new ModbusChannel(options.Host, options.Port, loggerFactory.CreateLogger<ModbusChannel>(), map: options.Map), output, ct);
+
+    internal async Task<int> RunAsync(CheckerOptions options, IModbusChannel channel, TextWriter output, CancellationToken ct)
+    {
+        var request = options.Command ?? throw new ArgumentException("no --command", nameof(options));
+        var name = request.Name;
+        await using var ctx = new CheckContext(options, channel, _log);
+        var run = new Run(ctx, request, output);
+        output.WriteLine($"--command {Describe(request)} on {options.Host}:{options.Port} unit {options.Unit} "
+                         + $"(C = holding {options.CommandBase}, S = input {options.StatusBase}), owner {options.OwnerId}");
+
+        int exit;
+        string result;
+        try
+        {
+            CommanderSession.Preflight preflight;
+            try
+            {
+                preflight = await CommanderSession.PreflightAsync(ctx, _log, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return Finish(output, $"{name}: interrupted by the operator during pre-flight; nothing was written.", "INTERRUPTED", ConformanceExitCodes.Interrupted);
+            }
+
+            if (preflight.Unreadable is { } unreadable)
+                return Finish(output, $"{name}: {Failure.FromMotion(unreadable).Render()}", "FAIL", ConformanceExitCodes.Fail);
+            if (preflight.Refusal is { } refusal)
+                return Finish(output, $"Pre-flight: {refusal}", "REFUSED", ConformanceExitCodes.Refused);
+            if (preflight.Note is { } note) output.WriteLine($"Pre-flight: {note}");
+
+            (exit, result) = await run.ExecuteAsync(ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            (exit, result) = run.JogObserved
+                ? (ConformanceExitCodes.Pass, $"{name}: ended by the operator after ContinuousMotion was observed.")
+                : (ConformanceExitCodes.Interrupted, $"{name}: interrupted by the operator before the verb completed.");
+        }
+        catch (MotionException ex)
+        {
+            (exit, result) = (ConformanceExitCodes.Fail, $"{name}: {Failure.FromMotion(ex).Render()}");
+        }
+        finally
+        {
+            // The verb's prints end where the verb ends; cleanup is journalled instead.
+            ctx.Observer = null;
+        }
+
+        output.WriteLine(result);
+        // protocol step 6: Stop if moving, clear edges, Enable 0 only if this run set Enable 1, release the lease.
+        await CommanderSession.CleanupAsync(ctx, _log, disableOnExit: run.EnabledByRun);
+        foreach (var entry in ctx.CleanupLog) output.WriteLine($"Cleanup: {entry}");
+        return Result(output, exit switch
+        {
+            ConformanceExitCodes.Pass => "PASS",
+            ConformanceExitCodes.Usage => "GUARD",
+            ConformanceExitCodes.Interrupted => "INTERRUPTED",
+            _ => "FAIL",
+        }, exit);
+    }
+
+    private static int Finish(TextWriter output, string line, string result, int exit)
+    {
+        output.WriteLine(line);
+        return Result(output, result, exit);
+    }
+
+    private static int Result(TextWriter output, string result, int exit)
+    {
+        output.WriteLine($"RESULT: {result}");
+        return exit;
+    }
+
+    private static string Describe(VerbRequest r) => r.Verb switch
+    {
+        Verb.Move => $"move {r.Target!.Value.ToString("0.###", Inv)} --speed {r.SpeedPercent.ToString("0.###", Inv)}",
+        Verb.Jog => $"jog {r.Velocity!.Value.ToString("0.###", Inv)}{(r.For is { } f ? $" --for {f.TotalSeconds.ToString("0.###", Inv)}" : "")}",
+        _ => r.Name,
+    };
+
+    /// <summary>Unit conversion of the protocol: raw register value ÷ 1000.</summary>
+    private static string U(int raw) => Words.FromRaw(raw).ToString("0.000", Inv);
+
+    /// <summary>One status line (protocol step 5): ms since the verb's first write, then the six fields.</summary>
+    internal static string StatusLine(long ms, PlcView v)
+    {
+        var s = v.Status;
+        return $"+{ms,6} ms  State {s.State} {RegisterDump.StateName(s.State),-16} Flags {(s.Flags == 0 ? "none" : s.Flags.ToString().Replace(", ", "|", StringComparison.Ordinal)),-40} "
+               + $"ActualPosition {U(s.ActualPosition),11}  ActualVelocity {U(s.ActualVelocity),10}  FaultCode {s.FaultCode} {RegisterDump.FaultName(s.FaultCode)}  CommandAck {s.CommandAck}";
+    }
+
+    /// <summary>The state of one run: the verb, the level found, whether this run energised the drive.</summary>
+    private sealed class Run(CheckContext ctx, VerbRequest request, TextWriter output)
+    {
+        private Stopwatch? _clock;
+        private long _writtenAt;
+        private bool _levelAtStart;
+
+        /// <summary>This run set Enable 1 on an axis it found with Enable 0: cleanup writes Enable 0.</summary>
+        public bool EnabledByRun { get; private set; }
+
+        /// <summary>A jog reached ContinuousMotion: an operator's Ctrl-C after this point is the jog's normal end.</summary>
+        public bool JogObserved { get; private set; }
+
+        private string Name => request.Name;
+
+        private CommandBits Level => _levelAtStart || EnabledByRun ? CommandBits.Enable : CommandBits.None;
+
+        public async Task<(int Exit, string Line)> ExecuteAsync(CancellationToken ct)
+        {
+            // Step 2: the status block before anything is written.
+            var s = await ctx.ReadStatusAsync(ct);
+            if (s.MapVersion != RegisterMap.Version)
+                return Fail(Failure.Protocol($"wrong map version. Read MapVersion ({ctx.At(RegisterField.MapVersion)}) = {s.MapVersion}, expected {RegisterMap.Version}; nothing written."));
+            if (s.LimitsPublished && !s.LimitsValid)
+                return Fail(Failure.Protocol($"limits not sane. Read TravelMin ({ctx.At(RegisterField.TravelMin)}) = {U(s.TravelMin)}, TravelMax ({ctx.At(RegisterField.TravelMax)}) = {U(s.TravelMax)}, "
+                                             + $"MaxVelocity ({ctx.At(RegisterField.MaxVelocity)}) = {U(s.MaxVelocity)}, expected TravelMin < TravelMax and MaxVelocity > 0; nothing written."));
+
+            // Step 3: guards, before any write — the lease included.
+            if (Guard(s) is { } refused) return (ConformanceExitCodes.Usage, $"{Name}: {refused.Render()}");
+
+            await ctx.TakeLeaseAsync(ct);
+            if (ctx.ForeignTrip)
+            {
+                // Step 1: a dead holder's trip — proceed as the driver does at attach; ErrorStop and FaultCode 4 stay for reset.
+                await ctx.ClearWatchdogFaultAsync(ct);
+                output.WriteLine($"{ctx.At(RegisterField.WatchdogFault)} = 0 written: the previous commander's trip (ErrorStop, FaultCode 4 stays for reset)");
+            }
+
+            await ctx.Beater.StartAsync(ct);
+            _levelAtStart = ((await ctx.ReadAsync(ctx.Map.Command, 1, ct))[0] & (ushort)CommandBits.Enable) != 0;
+            ctx.Observer = v => output.WriteLine(StatusLine(_clock is { } c ? (long)c.Elapsed.TotalMilliseconds : 0, v));
+
+            var failure = request.Verb switch
+            {
+                Verb.Enable => await EnableAsync(ct),
+                Verb.Disable => await DisableAsync(ct),
+                Verb.Home => await HomeAsync(ct),
+                Verb.Stop => await StopAsync(ct),
+                Verb.Reset => await ResetAsync(ct),
+                Verb.Move => await MoveAsync(s, ct),
+                _ => await JogAsync(s, ct),
+            };
+            return failure is null ? (ConformanceExitCodes.Pass, _done ?? $"{Name}: done.") : Fail(failure);
+        }
+
+        private string? _done;
+
+        private (int, string) Fail(Failure f) => (ConformanceExitCodes.Fail, $"{Name}: {f.Render()}");
+
+        // ---- guards (protocol step 3; Commander class) -------------------------------------------------------------
+
+        private Failure? Guard(StatusBlock s)
+        {
+            if (request.Verb is not (Verb.Move or Verb.Jog)) return null;
+            if (!s.LimitsPublished)
+                return Commander("OutOfRange", $"the PLC publishes no limits; {Name} needs them. Read TravelMin ({ctx.At(RegisterField.TravelMin)}) = 0, "
+                                               + $"TravelMax ({ctx.At(RegisterField.TravelMax)}) = 0, MaxVelocity ({ctx.At(RegisterField.MaxVelocity)}) = 0.");
+            if (request.Verb == Verb.Move)
+            {
+                if (!s.Homed)
+                    return Commander("NotHomed", $"move needs Homed. Read Flags ({ctx.At(RegisterField.Flags)}) = 0x{(ushort)s.Flags:X4}, expected bit 0 (Homed) set.");
+                var target = request.Target!.Value;
+                if (target < Words.FromRaw(s.TravelMin) || target > Words.FromRaw(s.TravelMax))
+                    return Commander("OutOfRange", $"target {target.ToString("0.000", Inv)} is outside TravelMin..TravelMax. Read TravelMin ({ctx.At(RegisterField.TravelMin)}) = {U(s.TravelMin)}, "
+                                                   + $"TravelMax ({ctx.At(RegisterField.TravelMax)}) = {U(s.TravelMax)}.");
+                return null;
+            }
+
+            var v = request.Velocity!.Value;
+            if (v == 0 || Math.Abs(v) > Words.FromRaw(s.MaxVelocity))
+                return Commander("UnreachableSpeed", $"jog needs 0 < |v| ≤ MaxVelocity, got {v.ToString("0.000", Inv)}. Read MaxVelocity ({ctx.At(RegisterField.MaxVelocity)}) = {U(s.MaxVelocity)}.");
+            return null;
+        }
+
+        private static Failure Commander(string name, string text) => new(ErrorClass.Commander, name, 7, $"refused before writing anything: {text}");
+
+        // ---- the verbs (protocol step 4 and 5) --------------------------------------------------------------------
+
+        private async Task<Failure?> EnableAsync(CancellationToken ct)
+        {
+            if (await SendAsync(CommandBits.Enable, "Enable 1", ct) is { } f) return f;
+            return await AwaitAsync(v => v.State == Standstill, StateBudget, ct,
+                v => Failure.Machine("DriveFault", $"no Standstill 5 s after Enable 1. Read State ({ctx.At(RegisterField.State)}) = {v.State}, expected 1."), "Standstill");
+        }
+
+        private async Task<Failure?> DisableAsync(CancellationToken ct)
+        {
+            if (await SendAsync(CommandBits.None, "Enable 0", ct) is { } f) return f;
+            return await AwaitAsync(v => v.State == Disabled, StateBudget, ct,
+                v => Failure.Machine("DriveFault", $"no Disabled 5 s after Enable 0. Read State ({ctx.At(RegisterField.State)}) = {v.State}, expected 0."), "Disabled", faultEnds: false);
+        }
+
+        private async Task<Failure?> HomeAsync(CancellationToken ct)
+        {
+            if (await EnsureEnabledAsync(ct) is { } f) return f;
+            if (await SendAsync(CommandBits.Enable | CommandBits.Home, "Home", ct) is { } h) return h;
+            return await AwaitAsync(v => v.State == Standstill && v.Status.Homed, HomeBudget, ct,
+                v => Failure.Machine("HomeLatchFailed", $"not homed within 120 s. Read State ({ctx.At(RegisterField.State)}) = {v.State}, Flags.Homed = {(v.Status.Homed ? 1 : 0)}, expected 1 and 1."),
+                "Standstill + Homed");
+        }
+
+        private async Task<Failure?> StopAsync(CancellationToken ct)
+        {
+            if (await SendAsync(Level | CommandBits.Stop, "Stop", ct, ChannelPriority.Stop) is { } f) return f;
+            return await AwaitAsync(v => v.State is Standstill or Disabled, StateBudget, ct,
+                v => Failure.Machine("MotionFailed", $"still moving 5 s after Stop. Read State ({ctx.At(RegisterField.State)}) = {v.State}, ActualVelocity ({ctx.At(RegisterField.ActualVelocity)}) = {U(v.Status.ActualVelocity)}, expected 0 or 1."),
+                "Standstill or Disabled");
+        }
+
+        private async Task<Failure?> ResetAsync(CancellationToken ct)
+        {
+            var v0 = await ctx.ReadViewAsync(ct);
+            if (v0.WatchdogFault != 0)
+            {
+                await ctx.ClearWatchdogFaultAsync(ct);
+                output.WriteLine($"{ctx.At(RegisterField.WatchdogFault)} = 0 written before the Reset");
+            }
+
+            if (Level != CommandBits.None)
+            {
+                if (await SendAsync(CommandBits.None, "Enable 0", ct) is { } off) return off;
+                _levelAtStart = false;
+                EnabledByRun = false;
+            }
+
+            if (await SendAsync(CommandBits.Reset, "Reset", ct) is { } f) return f;
+            return await AwaitAsync(v => v.State != ErrorStop, StateBudget, ct,
+                v => Failure.Fault(v.Status.FaultCode, ctx.At(RegisterField.FaultCode)) with
+                {
+                    Text = $"still in ErrorStop 5 s after Reset. Read State ({ctx.At(RegisterField.State)}) = 7, FaultCode ({ctx.At(RegisterField.FaultCode)}) = {v.Status.FaultCode}.",
+                },
+                "not ErrorStop", faultEnds: false);
+        }
+
+        private async Task<Failure?> MoveAsync(StatusBlock s, CancellationToken ct)
+        {
+            var target = Words.ToRaw(request.Target!.Value, "TargetPosition");
+            var velocity = (int)Math.Round(s.MaxVelocity * request.SpeedPercent / 100.0, MidpointRounding.AwayFromZero);
+            if (velocity == 0) velocity = 1;
+            var budget = TimeSpan.FromSeconds(2.0 * Math.Abs(target - (double)s.ActualPosition) / velocity + 5);
+            if (await EnsureEnabledAsync(ct) is { } f) return f;
+            await ctx.Commands.WriteParametersAsync(target, velocity, 0, ct);
+            if (await SendAsync(CommandBits.Enable | CommandBits.MoveAbsolute, "MoveAbsolute", ct) is { } m) return m;
+            return await AwaitAsync(v => v.State == Standstill && v.Status.InPosition, budget, ct,
+                v => Failure.Machine("MotionFailed", $"not arrived within {budget.TotalSeconds:0.0} s (2 × |target − start| ÷ velocity + 5 s). Read State ({ctx.At(RegisterField.State)}) = {v.State}, "
+                                                     + $"Flags.InPosition = {(v.Status.InPosition ? 1 : 0)}, ActualPosition ({ctx.At(RegisterField.ActualPosition)}) = {U(v.Status.ActualPosition)}, expected 1, 1, {U(target)}."),
+                "Standstill + InPosition");
+        }
+
+        private async Task<Failure?> JogAsync(StatusBlock s, CancellationToken ct)
+        {
+            var velocity = Words.ToRaw(request.Velocity!.Value, "Velocity");
+            if (await EnsureEnabledAsync(ct) is { } f) return f;
+            await ctx.Commands.WriteParametersAsync(s.ActualPosition, velocity, 0, ct);
+            if (await SendAsync(CommandBits.Enable | CommandBits.MoveVelocity, "MoveVelocity", ct) is { } j) return j;
+            if (await AwaitAsync(v => v.State == ContinuousMotion, JogEntryBudget, ct,
+                    v => Failure.Machine("MotionFailed", $"no ContinuousMotion 500 ms after the ack. Read State ({ctx.At(RegisterField.State)}) = {v.State}, expected 4."),
+                    "ContinuousMotion", fromAck: true) is { } entry) return entry;
+            JogObserved = true;
+
+            // Keep printing until --for elapses (or Ctrl-C, which ends the run as a completed jog with cleanup's Stop).
+            var watch = await ctx.WaitForAsync(v => v.State != ContinuousMotion, request.For ?? TimeSpan.FromDays(1), CheckContext.Now(), ct);
+            if (watch.Met)
+            {
+                if (Unexpected(watch.View) is { } fault) return fault;
+                _done = $"{Name}: the PLC ended the jog itself after {watch.ElapsedMs} ms (State {watch.View.State} {RegisterDump.StateName(watch.View.State)}).";
+                return null;
+            }
+
+            if (await SendAsync(CommandBits.Enable | CommandBits.Stop, "Stop", ct, ChannelPriority.Stop) is { } stop) return stop;
+            var halted = await AwaitAsync(v => v.State is Standstill or Disabled, StateBudget, ct,
+                v => Failure.Machine("MotionFailed", $"still moving 5 s after Stop. Read State ({ctx.At(RegisterField.State)}) = {v.State}, expected 0 or 1."), "Standstill");
+            if (halted is null) _done = $"{Name}: done — ContinuousMotion for {request.For!.Value.TotalSeconds:0.###} s (--for), then Stop: halted.";
+            return halted;
+        }
+
+        // ---- shared steps ---------------------------------------------------------------------------------------
+
+        /// <summary>Protocol step 4: <c>home</c>, <c>move</c> and <c>jog</c> from Disabled set Enable first.</summary>
+        private async Task<Failure?> EnsureEnabledAsync(CancellationToken ct)
+        {
+            var s = await ctx.ReadStatusAsync(ct);
+            if (s.State != Disabled) return null;
+            return await EnableAsync(ct);
+        }
+
+        /// <summary>The handshake through the checker's <see cref="CommandWriter"/>; a missing ack is NotAcknowledged.</summary>
+        private async Task<Failure?> SendAsync(CommandBits bits, string what, CancellationToken ct, ChannelPriority lane = ChannelPriority.Move)
+        {
+            _clock ??= Stopwatch.StartNew();
+            if ((bits & CommandBits.Enable) != 0 && !_levelAtStart) EnabledByRun = true;
+            if ((bits & CommandBits.Enable) == 0) EnabledByRun = false;
+            output.WriteLine($"+{(long)_clock.Elapsed.TotalMilliseconds,6} ms  write Command {(bits == CommandBits.None ? "None" : bits.ToString().Replace(", ", "|", StringComparison.Ordinal))} (0x{(ushort)bits:X4})");
+            var ack = await ctx.Commands.SendAsync(bits, ct, lane);
+            _writtenAt = ack.WrittenAt;
+            return ack.Acked ? null : Failure.NotAcknowledged(what, ack.Seq, ack.View.Status.CommandAck, ack.View.State);
+        }
+
+        /// <summary>
+        /// Prints every read until <paramref name="until"/> holds. A PLC fault (ErrorStop with a FaultCode) or a state
+        /// outside the protocol ends the wait at once with its own class, unless <paramref name="faultEnds"/> is off.
+        /// </summary>
+        private async Task<Failure?> AwaitAsync(Func<PlcView, bool> until, TimeSpan budget, CancellationToken ct,
+            Func<PlcView, Failure> late, string expected, bool faultEnds = true, bool fromAck = false)
+        {
+            // Measured from the completion of the triggering write (protocol § Rules, Timing); jog entry from the ack.
+            var since = fromAck ? CheckContext.Now() : _writtenAt;
+            var w = await ctx.WaitForAsync(v => until(v) || (faultEnds && Unexpected(v) is not null), budget, since, ct);
+            if (!w.Met) return late(w.View);
+            if (!until(w.View)) return Unexpected(w.View);
+            _done = $"{Name}: done — {expected} after {w.ElapsedMs} ms.";
+            return null;
+        }
+
+        private Failure? Unexpected(PlcView v) =>
+            v.State is 5 or > 7 || (v.State == ErrorStop && v.Status.FaultCode == 0)
+                ? Failure.InvalidState(v.State, v.Status.FaultCode, ctx.At(RegisterField.State))
+                : v.State == ErrorStop ? Failure.Fault(v.Status.FaultCode, ctx.At(RegisterField.FaultCode)) : null;
+    }
+}

@@ -8,7 +8,7 @@ public static class WebMode
 {
     public const string Usage =
         "Usage: (no arguments) the UI on http://localhost:5070 | --urls URL | --Section:Key=value … "
-        + "| --check <host>[:port] … | --headless [--port N]";
+        + "| --check <host>[:port] … | --command <verb> … <host>[:port] | --headless [--port N]";
 
     /// <summary>Null when every argument belongs to web mode, else the error for exit code 2.</summary>
     public static string? Validate(IReadOnlyList<string> args)

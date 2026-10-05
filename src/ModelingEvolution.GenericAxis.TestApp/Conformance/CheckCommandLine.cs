@@ -30,7 +30,38 @@ public sealed record CheckerOptions
     /// <summary><c>--watch</c> (with <c>--dump</c>): repeat the dump at 5 Hz until Ctrl-C.</summary>
     public bool Watch { get; init; }
 
+    /// <summary><c>--command &lt;verb&gt; [args]</c>: one-verb mode instead of the checks (protocol § One-verb mode).</summary>
+    public VerbRequest? Command { get; init; }
+
     public RegisterMap Map => new(CommandBase, StatusBase);
+}
+
+/// <summary>The verbs of one-verb mode (protocol § Command line, <c>--command</c>).</summary>
+public enum Verb
+{
+    Enable,
+    Disable,
+    Home,
+    Stop,
+    Reset,
+    Move,
+    Jog,
+}
+
+/// <summary>
+/// One verb with its arguments, in axis units: <c>move &lt;target&gt; [--speed &lt;pct&gt;]</c> (pct of <c>MaxVelocity</c>,
+/// default 10) and <c>jog &lt;signed velocity&gt; [--for S]</c>.
+/// </summary>
+public sealed record VerbRequest(Verb Verb, double? Target = null, double SpeedPercent = VerbRequest.DefaultSpeedPercent,
+    double? Velocity = null, TimeSpan? For = null)
+{
+    public const double DefaultSpeedPercent = 10;
+
+    /// <summary><c>home</c>, <c>move</c> and <c>jog</c> need <c>--allow-motion</c>.</summary>
+    public bool Moves => Verb is Verb.Home or Verb.Move or Verb.Jog;
+
+    /// <summary>The verb's name as typed: <c>move</c>.</summary>
+    public string Name => Verb.ToString().ToLowerInvariant();
 }
 
 /// <summary>
@@ -41,9 +72,14 @@ public static class CheckCommandLine
 {
     public const string Flag = "--check";
 
+    /// <summary>One-verb mode; routes to <see cref="CommandRunner"/> with or without <c>--check</c>.</summary>
+    public const string CommandFlag = "--command";
+
     public const string Usage =
         "Usage: --check <host>[:port] [--unit N] [--command-base N (holding, default 0)] [--status-base N (input, default 0)] [--owner-id N] "
-        + "[--allow-motion] [--tolerance X] [--report FILE.md|FILE.json] | --check <host>[:port] --dump [--watch]";
+        + "[--allow-motion] [--tolerance X] [--report FILE.md|FILE.json] | --check <host>[:port] --dump [--watch] "
+        + "| --command enable|disable|home|stop|reset|move <target> [--speed <pct>]|jog <signed velocity> [--for S] <host>[:port] "
+        + "[--unit N] [--command-base N] [--status-base N] [--owner-id N] [--allow-motion]";
 
     /// <summary>Returns the options, or an error message for exit code 2.</summary>
     public static (CheckerOptions? Options, string? Error) Parse(IReadOnlyList<string> args)
@@ -58,6 +94,10 @@ public static class CheckCommandLine
         ReportTarget? report = null;
         var dump = false;
         var watch = false;
+        Verb? verb = null;
+        double? verbNumber = null;
+        double? speed = null;
+        double? forSeconds = null;
 
         for (var i = 0; i < args.Count; i++)
         {
@@ -99,6 +139,34 @@ public static class CheckCommandLine
                     case "--report":
                         report = Report(Value());
                         break;
+                    case CommandFlag:
+                        if (verb is not null) throw new FormatException("one --command only");
+                        var name = Value();
+                        verb = Enum.GetValues<Verb>().FirstOrDefault(v => v.ToString().ToLowerInvariant() == name) is var v
+                               && v.ToString().ToLowerInvariant() == name
+                            ? v
+                            : throw new FormatException($"--command '{name}' is not a verb (enable, disable, home, stop, reset, move, jog)");
+                        if (verb is Verb.Move or Verb.Jog)
+                        {
+                            var n = i + 1 < args.Count ? args[++i] : throw new FormatException($"--command {name} needs a number");
+                            verbNumber = double.TryParse(n, NumberStyles.Float, CultureInfo.InvariantCulture, out var x) && double.IsFinite(x)
+                                ? x
+                                : throw new FormatException($"--command {name} needs a number, got '{n}'");
+                        }
+
+                        break;
+                    case "--speed":
+                        var sp = Value();
+                        speed = double.TryParse(sp, NumberStyles.Float, CultureInfo.InvariantCulture, out var pct) && pct > 0 && pct <= 100
+                            ? pct
+                            : throw new FormatException($"--speed must be 0 < pct ≤ 100, got '{sp}'");
+                        break;
+                    case "--for":
+                        var fs = Value();
+                        forSeconds = double.TryParse(fs, NumberStyles.Float, CultureInfo.InvariantCulture, out var sec) && sec > 0 && double.IsFinite(sec)
+                            ? sec
+                            : throw new FormatException($"--for must be a positive number of seconds, got '{fs}'");
+                        break;
                     default:
                         if (arg.StartsWith('-')) throw new FormatException($"unknown argument '{arg}'");
                         if (target is not null) throw new FormatException($"one target only; got '{target}' and '{arg}'");
@@ -126,6 +194,18 @@ public static class CheckCommandLine
 
         if (host.Length == 0) return (null, $"missing host in '{target}'");
         if (watch && !dump) return (null, "--watch needs --dump");
+        if (verb is { } vb)
+        {
+            if (dump || report is not null) return (null, "--command runs one verb; it takes no --dump or --report");
+            if (speed is not null && vb != Verb.Move) return (null, "--speed belongs to --command move");
+            if (forSeconds is not null && vb != Verb.Jog) return (null, "--for belongs to --command jog");
+            if (vb is Verb.Home or Verb.Move or Verb.Jog && !allowMotion)
+                return (null, $"--command {vb.ToString().ToLowerInvariant()} moves the axis: it needs --allow-motion (an operator at the machine, the travel clear)");
+        }
+        else if (speed is not null || forSeconds is not null)
+        {
+            return (null, "--speed and --for belong to --command");
+        }
         if (owner == CheckerOptions.ForeignOwnerId)
             return (null, $"--owner-id {owner} is the foreign id CHK-11 impersonates; use another");
 
@@ -143,6 +223,13 @@ public static class CheckCommandLine
         {
             Host = host, Port = port, Unit = (byte)unit, CommandBase = commandBase, StatusBase = statusBase,
             OwnerId = (ushort)owner, AllowMotion = allowMotion, Tolerance = tolerance, Report = report, Dump = dump, Watch = watch,
+            Command = verb switch
+            {
+                null => null,
+                Verb.Move => new VerbRequest(Verb.Move, Target: verbNumber, SpeedPercent: speed ?? VerbRequest.DefaultSpeedPercent),
+                Verb.Jog => new VerbRequest(Verb.Jog, Velocity: verbNumber, For: forSeconds is { } f ? TimeSpan.FromSeconds(f) : null),
+                var other => new VerbRequest(other.Value),
+            },
         }, null);
     }
 
