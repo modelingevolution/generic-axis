@@ -47,13 +47,13 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                return Finish(output, $"{name}: interrupted by the operator during pre-flight; nothing was written.", "INTERRUPTED", ConformanceExitCodes.Interrupted);
+                return Finish(output, $"{name}: interrupted by the operator during pre-flight; nothing was written.", ConformanceExitCodes.Interrupted);
             }
 
             if (preflight.Unreadable is { } unreadable)
-                return Finish(output, $"{name}: {Failure.FromMotion(unreadable).Render()}", "FAIL", ConformanceExitCodes.Fail);
+                return Finish(output, $"{name}: {Failure.FromMotion(unreadable).Render()}", ConformanceExitCodes.Fail);
             if (preflight.Refusal is { } refusal)
-                return Finish(output, $"Pre-flight: {refusal}", "REFUSED", ConformanceExitCodes.Refused);
+                return Finish(output, $"Pre-flight: {refusal}", ConformanceExitCodes.Refused);
             if (preflight.Note is { } note) output.WriteLine($"Pre-flight: {note}");
 
             (exit, result) = await run.ExecuteAsync(ct);
@@ -78,31 +78,38 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
         // protocol step 6: Stop if moving, clear edges, Enable 0 only if this run set Enable 1, release the lease.
         await CommanderSession.CleanupAsync(ctx, _log, disableOnExit: run.DisableOnExit);
         foreach (var entry in ctx.CleanupLog) output.WriteLine($"Cleanup: {entry}");
-        return Result(output, exit switch
-        {
-            ConformanceExitCodes.Pass => "PASS",
-            ConformanceExitCodes.Usage => "GUARD",
-            ConformanceExitCodes.Interrupted => "INTERRUPTED",
-            _ => "FAIL",
-        }, exit);
+        return Result(output, exit);
     }
 
-    private static int Finish(TextWriter output, string line, string result, int exit)
+    /// <summary>
+    /// The last line of a run per exit code (protocol § One-verb mode): the one table the runner prints from, bound to
+    /// protocol.md by a parity test (#41). A usage error never reaches the runner and prints no RESULT line.
+    /// </summary>
+    public static IReadOnlyDictionary<int, string> ResultWords { get; } = new Dictionary<int, string>
+    {
+        [ConformanceExitCodes.Pass] = "PASS",
+        [ConformanceExitCodes.Fail] = "FAIL",
+        [ConformanceExitCodes.Usage] = "GUARD",
+        [ConformanceExitCodes.Refused] = "REFUSED",
+        [ConformanceExitCodes.Interrupted] = "INTERRUPTED",
+    };
+
+    private static int Finish(TextWriter output, string line, int exit)
     {
         output.WriteLine(line);
-        return Result(output, result, exit);
+        return Result(output, exit);
     }
 
-    private static int Result(TextWriter output, string result, int exit)
+    private static int Result(TextWriter output, int exit)
     {
-        output.WriteLine($"RESULT: {result}");
+        output.WriteLine($"RESULT: {ResultWords[exit]}");
         return exit;
     }
 
     private static string Describe(VerbRequest r) => r.Verb switch
     {
-        Verb.Move => $"move {r.Target!.Value.ToString("0.###", Inv)} --speed {r.SpeedPercent.ToString("0.###", Inv)}",
-        Verb.Jog => $"jog {r.Velocity!.Value.ToString("0.###", Inv)}{(r.For is { } f ? $" --for {f.TotalSeconds.ToString("0.###", Inv)}" : "")}",
+        Verb.Move => $"move {r.Target!.Value.ToString("0.######", Inv)} --speed {r.SpeedPercent.ToString("0.###", Inv)}",
+        Verb.Jog => $"jog {r.Velocity!.Value.ToString("0.######", Inv)}{(r.For is { } f ? $" --for {f.TotalSeconds.ToString("0.###", Inv)}" : "")}",
         _ => r.Name,
     };
 
@@ -195,18 +202,35 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
             {
                 if (!s.Homed)
                     return Commander("NotHomed", $"move needs Homed. Read Flags ({ctx.At(RegisterField.Flags)}) = 0x{(ushort)s.Flags:X4}, expected bit 0 (Homed) set.");
+                // Judged on the raw values the PLC would be sent (#37): what is written is the rounded register value.
                 var target = request.Target!.Value;
-                if (target < Words.FromRaw(s.TravelMin) || target > Words.FromRaw(s.TravelMax))
-                    return Commander("OutOfRange", $"target {target.ToString("0.000", Inv)} is outside TravelMin..TravelMax. Read TravelMin ({ctx.At(RegisterField.TravelMin)}) = {s.TravelMin}, "
+                var targetRaw = Raw(target);
+                if (targetRaw < s.TravelMin || targetRaw > s.TravelMax)
+                    return Commander("OutOfRange", $"target {target.ToString("0.000######", Inv)} (raw {targetRaw.ToString("0", Inv)}) is outside TravelMin..TravelMax. Read TravelMin ({ctx.At(RegisterField.TravelMin)}) = {s.TravelMin}, "
                                                    + $"TravelMax ({ctx.At(RegisterField.TravelMax)}) = {s.TravelMax}.");
+                var pct = request.SpeedPercent;
+                if (!(pct > 0 && pct <= 100))
+                    return Commander("UnreachableSpeed", $"speed {pct.ToString("0.###", Inv)} % outside 0 < pct ≤ 100.");
+                var speedRaw = MoveSpeedRaw(s);
+                if (speedRaw <= 0)
+                    return Commander("UnreachableSpeed", $"--speed {request.SpeedPercent.ToString("0.###", Inv)} % of MaxVelocity rounds to raw Velocity 0; nothing to move with. "
+                                                         + $"Read MaxVelocity ({ctx.At(RegisterField.MaxVelocity)}) = {s.MaxVelocity}.");
                 return null;
             }
 
             var v = request.Velocity!.Value;
-            if (v == 0 || Math.Abs(v) > Words.FromRaw(s.MaxVelocity))
-                return Commander("UnreachableSpeed", $"jog needs 0 < |v| ≤ MaxVelocity, got {v.ToString("0.000", Inv)}. Read MaxVelocity ({ctx.At(RegisterField.MaxVelocity)}) = {s.MaxVelocity}.");
+            var raw = Raw(v);
+            if (raw == 0 || Math.Abs(raw) > s.MaxVelocity)
+                return Commander("UnreachableSpeed", $"jog needs 0 < |v| ≤ MaxVelocity, got {v.ToString("0.000######", Inv)} (raw {raw.ToString("0", Inv)}). Read MaxVelocity ({ctx.At(RegisterField.MaxVelocity)}) = {s.MaxVelocity}.");
             return null;
         }
+
+        /// <summary>The register value <paramref name="units"/> is written as (0.001 per count, half away from zero, as
+        /// <see cref="Words.ToRaw"/>), as a double so an over-range value is judged, not thrown.</summary>
+        private static double Raw(double units) => Math.Round(units * Words.Scale, MidpointRounding.AwayFromZero) + 0.0; // + 0.0: no "-0"
+
+        /// <summary>move's resolved speed: <c>--speed</c> % of <c>MaxVelocity</c>, as the raw value written.</summary>
+        private double MoveSpeedRaw(StatusBlock s) => Math.Round(s.MaxVelocity * request.SpeedPercent / 100.0, MidpointRounding.AwayFromZero);
 
         private static Failure Commander(string name, string text) => new(ErrorClass.Commander, name, 7, $"refused before writing anything: {text}");
 
@@ -270,8 +294,7 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
         private async Task<Failure?> MoveAsync(StatusBlock s, CancellationToken ct)
         {
             var target = Words.ToRaw(request.Target!.Value, "TargetPosition");
-            var velocity = (int)Math.Round(s.MaxVelocity * request.SpeedPercent / 100.0, MidpointRounding.AwayFromZero);
-            if (velocity == 0) velocity = 1;
+            var velocity = (int)MoveSpeedRaw(s); // the guard refused 0
             var budget = TimeSpan.FromSeconds(2.0 * Math.Abs(target - (double)s.ActualPosition) / velocity + 5);
             if (await EnsureEnabledAsync(ct) is { } f) return f;
             await ctx.Commands.WriteParametersAsync(target, velocity, 0, ct);

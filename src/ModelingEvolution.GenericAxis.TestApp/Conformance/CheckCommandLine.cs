@@ -157,9 +157,10 @@ public static class CheckCommandLine
                         break;
                     case "--speed":
                         var sp = Value();
-                        speed = double.TryParse(sp, NumberStyles.Float, CultureInfo.InvariantCulture, out var pct) && pct > 0 && pct <= 100
+                        // A number is the parser's business; its range (0 < pct ≤ 100) is a guard (protocol step 3, #39).
+                        speed = double.TryParse(sp, NumberStyles.Float, CultureInfo.InvariantCulture, out var pct) && double.IsFinite(pct)
                             ? pct
-                            : throw new FormatException($"--speed must be 0 < pct ≤ 100, got '{sp}'");
+                            : throw new FormatException($"--speed needs a number, got '{sp}'");
                         break;
                     case "--for":
                         var fs = Value();
@@ -199,7 +200,7 @@ public static class CheckCommandLine
             if (dump || report is not null) return (null, "--command runs one verb; it takes no --dump or --report");
             if (speed is not null && vb != Verb.Move) return (null, "--speed belongs to --command move");
             if (forSeconds is not null && vb != Verb.Jog) return (null, "--for belongs to --command jog");
-            if (vb is Verb.Home or Verb.Move or Verb.Jog && !allowMotion)
+            if (new VerbRequest(vb).Moves && !allowMotion) // the one list, bound to protocol.md by GA-U-146
                 return (null, $"--command {vb.ToString().ToLowerInvariant()} moves the axis: it needs --allow-motion (an operator at the machine, the travel clear)");
         }
         else if (speed is not null || forSeconds is not null)

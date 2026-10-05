@@ -167,15 +167,24 @@ public sealed class CommandModeTests
         var cases = new (SimulatedAxisOptions Options, VerbRequest Request, string Line)[]
         {
             (new(), new VerbRequest(Verb.Move, Target: 10_000.5),
-                "move: Commander/OutOfRange: refused before writing anything: target 10000.500 is outside TravelMin..TravelMax. Read TravelMin (S+8 = input 8) = 0, TravelMax (S+10 = input 10) = 10000000."),
+                "move: Commander/OutOfRange: refused before writing anything: target 10000.500 (raw 10000500) is outside TravelMin..TravelMax. Read TravelMin (S+8 = input 8) = 0, TravelMax (S+10 = input 10) = 10000000."),
             (new(), new VerbRequest(Verb.Move, Target: -0.001),
-                "move: Commander/OutOfRange: refused before writing anything: target -0.001 is outside TravelMin..TravelMax."),
+                "move: Commander/OutOfRange: refused before writing anything: target -0.001 (raw -1) is outside TravelMin..TravelMax."),
             (new() { HomedAtPowerUp = false }, new VerbRequest(Verb.Move, Target: 100),
                 "move: Commander/NotHomed: refused before writing anything: move needs Homed. Read Flags (S+1 = input 1) = 0x0000, expected bit 0 (Homed) set."),
             (new(), new VerbRequest(Verb.Jog, Velocity: 500.001),
-                "jog: Commander/UnreachableSpeed: refused before writing anything: jog needs 0 < |v| ≤ MaxVelocity, got 500.001. Read MaxVelocity (S+12 = input 12) = 500000."),
-            (new(), new VerbRequest(Verb.Jog, Velocity: -500.001), "jog: Commander/UnreachableSpeed: refused before writing anything: jog needs 0 < |v| ≤ MaxVelocity, got -500.001."),
+                "jog: Commander/UnreachableSpeed: refused before writing anything: jog needs 0 < |v| ≤ MaxVelocity, got 500.001 (raw 500001). Read MaxVelocity (S+12 = input 12) = 500000."),
+            (new(), new VerbRequest(Verb.Jog, Velocity: -500.001), "jog: Commander/UnreachableSpeed: refused before writing anything: jog needs 0 < |v| ≤ MaxVelocity, got -500.001 (raw -500001)."),
             (new(), new VerbRequest(Verb.Jog, Velocity: 0), "jog: Commander/UnreachableSpeed:"),
+            // #37: the guard is on the RAW value written — 0.0004 unit/s rounds to Velocity 0.
+            (new(), new VerbRequest(Verb.Jog, Velocity: 0.0004), "jog: Commander/UnreachableSpeed: refused before writing anything: jog needs 0 < |v| ≤ MaxVelocity, got 0.0004 (raw 0)."),
+            (new(), new VerbRequest(Verb.Jog, Velocity: -0.0004), "jog: Commander/UnreachableSpeed: refused before writing anything: jog needs 0 < |v| ≤ MaxVelocity, got -0.0004 (raw 0)."),
+            // #39: --speed out of 0 < pct ≤ 100 is a guard (exit 2, RESULT: GUARD), not a usage error.
+            (new(), new VerbRequest(Verb.Move, Target: 600, SpeedPercent: 150), "move: Commander/UnreachableSpeed: refused before writing anything: speed 150 % outside 0 < pct ≤ 100."),
+            (new(), new VerbRequest(Verb.Move, Target: 600, SpeedPercent: 0), "move: Commander/UnreachableSpeed: refused before writing anything: speed 0 % outside 0 < pct ≤ 100."),
+            (new(), new VerbRequest(Verb.Move, Target: 600, SpeedPercent: 100.001), "move: Commander/UnreachableSpeed: refused before writing anything: speed 100.001 % outside 0 < pct ≤ 100."),
+            (new(), new VerbRequest(Verb.Move, Target: 600, SpeedPercent: 0.00005),
+                "move: Commander/UnreachableSpeed: refused before writing anything: --speed 0 % of MaxVelocity rounds to raw Velocity 0"),
             (new() { PublishLimits = false }, new VerbRequest(Verb.Jog, Velocity: 10),
                 "jog: Commander/OutOfRange: refused before writing anything: the PLC publishes no limits; jog needs them."),
         };
@@ -199,6 +208,12 @@ public sealed class CommandModeTests
         {
             var (exit, output) = await Command(at, new VerbRequest(Verb.Jog, Velocity: -500));
             exit.Should().Be(0, $"|v| = MaxVelocity is allowed (the boundary): {output}");
+        }
+
+        using (var at = new LiveSimulator())
+        {
+            var (exit, output) = await Command(at, new VerbRequest(Verb.Move, Target: -0.0004));
+            exit.Should().Be(0, $"-0.0004 is written as raw 0 = TravelMin, inside the travel (#37): {output}");
         }
     }
 
@@ -439,6 +454,8 @@ public sealed class CommandModeTests
     [Fact]
     public void GA_U_145_MoveAndJogTakeNumbersIncludingNegativeOnes()
     {
+        CheckCommandLine.Parse(["--command", "move", "100", "plc", "--speed", "150", "--allow-motion"]).Options!.Command!.SpeedPercent
+            .Should().Be(150, "the range is the guard's (exit 2, RESULT: GUARD), not a usage error (#39)");
         var move = CheckCommandLine.Parse(["--command", "move", "-12.5", "plc", "--speed", "20", "--allow-motion"]).Options!.Command!;
         move.Should().Be(new VerbRequest(Verb.Move, Target: -12.5, SpeedPercent: 20));
         CheckCommandLine.Parse(["--command", "move", "100", "plc", "--allow-motion"]).Options!.Command!.SpeedPercent.Should().Be(10);
@@ -454,8 +471,7 @@ public sealed class CommandModeTests
     [InlineData("--command", "3", "plc")]
     [InlineData("--command", "fly", "plc")]
     [InlineData("--command", "move", "plc", "--allow-motion")]
-    [InlineData("--command", "move", "100", "plc", "--allow-motion", "--speed", "0")]
-    [InlineData("--command", "move", "100", "plc", "--allow-motion", "--speed", "101")]
+    [InlineData("--command", "move", "100", "plc", "--allow-motion", "--speed", "fast")]
     [InlineData("--command", "enable", "plc", "--speed", "20")]
     [InlineData("--command", "enable", "plc", "--for", "2")]
     [InlineData("--command", "jog", "5", "plc", "--allow-motion", "--for", "0")]
