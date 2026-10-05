@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from generic_axis_check.checks import PASS, SKIPPED
-from generic_axis_check.context import Options
+from generic_axis_check.beat import Beater
+from generic_axis_check.checks import CHECKS, PASS, SKIPPED
+from generic_axis_check.client import PlcClient
+from generic_axis_check.context import CheckContext, Options
 from generic_axis_check.registers import RegisterMap, speed_raw
 from generic_axis_check.runner import run
 from generic_axis_check.verb import Verb, move_velocity, run_verb
@@ -115,3 +117,27 @@ async def test_a_one_verb_move_whose_speed_rounds_to_0_writes_nothing() -> None:
     assert (result.result, result.exit_code) == ("GUARD", 2), result.message
     assert "--speed 1 % of MaxVelocity rounds to raw Velocity 0" in result.message
     assert writes == []
+
+
+@pytest.mark.parametrize(
+    ("check_id", "max_velocity"),
+    [("CHK-13", 4), ("CHK-14", 4), ("CHK-15", 49), ("CHK-16", 49)],  # 10 % of 4 → 0.4 → 0; 1 % of 49 → 0.49 → 0
+)
+async def test_a_self_skipping_check_entered_from_disabled_writes_nothing(check_id: str, max_velocity: int) -> None:
+    # Review #67: entered from Disabled (where a restore that had to Reset leaves the axis), the speed refusal comes
+    # before the energise path: zero client writes during the check, on the write journal. A check that enables first
+    # and refuses after would write Enable here; from Standstill it would not, which is why the 49 run cannot show it.
+    async with StubPlc(StubOptions(max_velocity=max_velocity)) as plc:
+        assert plc.axis.state == 0  # Disabled
+        client = PlcClient("127.0.0.1", plc.port, 1)
+        await client.connect()
+        try:
+            ctx = CheckContext(client, MAP, Options(host="127.0.0.1", port=plc.port), Beater(client, MAP))
+            check = next(c for c in CHECKS if c.id == check_id)
+            before = len(plc.writes)
+            outcome = await check.run(ctx)
+            during = plc.writes[before:]
+        finally:
+            client.close()
+    assert outcome.result == SKIPPED, outcome.message
+    assert during == []
