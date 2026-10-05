@@ -229,7 +229,9 @@ is beating — rw2, a station, or a second tool; see Pre-flight; stop it first) 
 2. Read the status block. `MapVersion ≠ 1` or limits not sane → Protocol error, exit 1, nothing written.
 3. Run the guards on that read (Commander class, exit 2; the message names the register and its value): `move` needs
    `Homed` and a target inside `TravelMin..TravelMax`; `--speed` defaults to 10 % of `MaxVelocity` and must be
-   0 < pct ≤ 100; `jog` needs 0 < |v| ≤ `MaxVelocity`, v in axis units/s. Unpublished limits (all zero) refuse `move`
+   0 < pct ≤ 100. **Speed rounding** (both modes, both tools): a percentage becomes raw = round-half-away-from-zero(pct
+   × `MaxVelocity` raw ÷ 100); a raw 0 is refused, never floored, naming `MaxVelocity`, the percentage and the raw
+   result. `jog` needs 0 < |v| ≤ `MaxVelocity`, v in axis units/s. Unpublished limits (all zero) refuse `move`
    and `jog`. A refused guard writes nothing at all: no lease, no beat. Only then take the lease under the tool's id
    and beat every 100 ms. After a dead holder's trip, also write `WatchdogFault = 0`, as the driver does at attach,
    leaving ErrorStop and `FaultCode = 4` for `reset`.
@@ -316,10 +318,10 @@ usage error prints no `RESULT` line.
 | CHK-10 | Clean release disarms | FR-11 "Clean release disarms" | 08 | Beat 2 s, write `LeaseOwner = 0`, stop beating, wait 2 s. | No trip: `WatchdogFault == 0` and the trip count is unchanged. |
 | CHK-11 | Advisory lease | FR-11 "Advisory lease" | 02 | (a) `LeaseOwner = 0` → the checker's lease client takes it and reads back its id, then releases. (b) Write `LeaseOwner = 65534` and beat as that incumbent. The checker's lease client, with a 3 s timeout, must refuse. (c) Stop the incumbent's beat while the client watches. | (a) Read-back equals the checker id. (b) Refused with LeaseHeld naming 65534 after 3 s, and `LeaseOwner` is still 65534. (c) Taken within 2 s of the incumbent's last beat, with the time reported. Any trip caused by (c) is cleaned up. Before restoring after (c), the checker waits until `WatchdogFault` reads 1 or 1.6 s have passed since the incumbent's last beat, then clears it. |
 | CHK-12 | Home | Command semantics: Home | 06, `--allow-motion` | Enable, then Home edge. | Ack in ≤ 500 ms. Then `State == 1` with `Homed` within 120 s, and `FaultCode == 0`. Duration reported. |
-| CHK-13 | MoveAbsolute to TravelMin + 10 | Command semantics: MoveAbsolute | 03, 12 | Target `TravelMin + 10`, velocity 10 % of `MaxVelocity`, acceleration 0. | Ack with `State == 3` in ≤ 500 ms. Then `State == 1` with `InPosition`, arriving within 2 × \|target − start\| ÷ velocity + 5 s (start = `ActualPosition` before the move), and `abs(ActualPosition − target) ≤ --tolerance`. The error and duration are reported. |
-| CHK-14 | Stop mid-move | Command semantics: Stop; FR-11 priority | 13 | MoveAbsolute toward `TravelMin + (TravelMax − TravelMin)/2` at 10 %. Once `abs(ActualVelocity)` ≥ 90 % of the commanded speed (or after 2 s), write Stop. | Ack in ≤ 500 ms. `ActualVelocity == 0` and `State == 1` within **200 ms** of the Stop write. The time is reported. |
-| CHK-15 | MoveVelocity | Command semantics: MoveVelocity | 13 | MoveVelocity at +1 % of `MaxVelocity` (away from `TravelMin`) for 1 s, then Stop. | Ack with `State == 4`, `ActualVelocity > 0` during the run, then `State == 1` after Stop within 200 ms. |
-| CHK-16 | Kill test | FR-11 | 08, 15 | MoveVelocity at +1 %; `ActualVelocity > 0` within 2 s of the ack, then stop beating. The connection stays open, and polling continues. | Trip (`FaultCode 4`, `State 7`) within 1.0–1.5 s of the last beat. `ActualVelocity == 0` within 200 ms of the trip. `Homed` is still set. Both times are reported. |
+| CHK-13 | MoveAbsolute to TravelMin + 10 | Command semantics: MoveAbsolute | 03, 12 | Target `TravelMin + 10`, velocity 10 % of `MaxVelocity` (Speed rounding, § One-verb mode), acceleration 0. | Ack with `State == 3` in ≤ 500 ms. Then `State == 1` with `InPosition`, arriving within 2 × \|target − start\| ÷ velocity + 5 s (start = `ActualPosition` before the move), and `abs(ActualPosition − target) ≤ --tolerance`. The error and duration are reported. |
+| CHK-14 | Stop mid-move | Command semantics: Stop; FR-11 priority | 13 | MoveAbsolute toward `TravelMin + (TravelMax − TravelMin)/2` at 10 % (Speed rounding). Once `abs(ActualVelocity)` ≥ 90 % of the commanded speed (or after 2 s), write Stop. | Ack in ≤ 500 ms. `ActualVelocity == 0` and `State == 1` within **200 ms** of the Stop write. The time is reported. |
+| CHK-15 | MoveVelocity | Command semantics: MoveVelocity | 13 | MoveVelocity at +1 % of `MaxVelocity` (Speed rounding; away from `TravelMin`) for 1 s, then Stop. | Ack with `State == 4`, `ActualVelocity > 0` during the run, then `State == 1` after Stop within 200 ms. |
+| CHK-16 | Kill test | FR-11 | 08, 15 | MoveVelocity at +1 % (Speed rounding); `ActualVelocity > 0` within 2 s of the ack, then stop beating. The connection stays open, and polling continues. | Trip (`FaultCode 4`, `State 7`) within 1.0–1.5 s of the last beat. `ActualVelocity == 0` within 200 ms of the trip. `Homed` is still set. Both times are reported. |
 
 ### Error class of a FAIL
 
@@ -334,7 +336,8 @@ Every FAIL carries one class (a checker error carries none, § Report schema), d
 | The PLC answered, but against this document: Modbus exception 01, 02 or 03 in any check (no retry); CHK-02, 03, 04 (an invalid State, or the slowest round trip over 100 ms), 05, 07 (Reset changed the axis); any watchdog behaviour in CHK-08, 09, 10 and CHK-16's trip (no trip, early or late trip, a trip while latched or after release, `Homed` cleared by a trip); CHK-11 when a register does not hold what was written, or `Heartbeat` keeps changing after the incumbent stopped writing it; an ack read without the command's state (CHK-12…15, "ack in the scan that enters the state") | Protocol / `ProtocolMismatch` |
 | An accepted command whose effect never came: no Standstill after Enable 1 or no Disabled after Enable 0 (CHK-06) → `DriveFault`; not homed within 120 s (CHK-12) → `HomeLatchFailed`; not arrived, outside `--tolerance`, left ContinuousMotion, no velocity, or a halt over 200 ms (CHK-13…16) → `MotionFailed` | Machine |
 
-There is no Commander class in a checker FAIL: the checker writes raw registers and refuses nothing.
+There is no Commander class in a checker FAIL: the checker writes raw registers and refuses nothing, except a speed that
+rounds to raw 0 (Speed rounding), which SKIPs that check with the refusal message, writing nothing.
 
 - **The one retry.** A checker performs the one reconnect-and-retry the driver performs, logs it at Warning, and
   counts it in that check's `retries` (§ Observed values). A second failure is a Transport FAIL. A Protocol refusal is not retried.
