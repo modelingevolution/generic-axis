@@ -15,7 +15,8 @@ public sealed partial class NumberGrammarTests
     public static readonly string[] Refused =
         [" 5", "5 ", "1_0", "0x5", "inf", "-inf", "nan", "NaN", "Infinity", "1e400", "fast", "", ".", "e5", "5e", "+-5", "1,5",
          "\u22125", "5,5", // U+2212 minus and the de-DE decimal comma: the grammar is culture-invariant ASCII
-         "5\n", "\n5", "5\r\n", "5\r"]; // #71: no whitespace — a regex `$` would let a final "\n" through
+         "5\n", "\n5", "5\r\n", "5\r", // #71: no whitespace — a regex `$` would let a final "\n" through
+         "\uFF15", "\u0661\u0660\u0660", "1\u0665", "\u096B"]; // Python #51: fullwidth 5, Arabic-Indic 100, mixed, Devanagari 5 — ASCII digits only
 
     /// <summary>Each numeric slot: the argument name the error names, and the command line around the probe.</summary>
     private static readonly (string Arg, Func<string, string[]> Line)[] Slots =
@@ -52,6 +53,19 @@ public sealed partial class NumberGrammarTests
             options.Should().BeNull($"{arg} '{probe}'");
             error.Should().Be($"{arg} {probe}: not a number");
         }
+    }
+
+    /// <summary>
+    /// The grammar itself — not the parser behind it — refuses every non-number but the out-of-range 1e400 (finiteness).
+    /// .NET's TryParse also rejects Unicode digits, so without this pin the regex's ASCII-only <c>[0-9]</c> (vs
+    /// <c>\d</c>, which matches Unicode Nd) would be unobserved (Python #51: its \d accepted "١٠٠").
+    /// </summary>
+    [Fact]
+    public void GA_U_149_TheGrammarAloneRefusesEveryNonNumber()
+    {
+        Accepted.Should().OnlyContain(p => CheckCommandLine.NumberGrammar.IsMatch(p));
+        Refused.Where(p => p != "1e400").Should().NotContain(p => CheckCommandLine.NumberGrammar.IsMatch(p),
+            "the protocol's grammar is ASCII digits, sign, point and exponent only");
     }
 
     [GeneratedRegex(@"Every numeric argument \(the `move` target, the `jog` velocity,\s+`--speed`, `--for`\) matches `\[\+-\]\?` then decimal digits with an optional fraction \((?<frac>[^)]*)\) and an\s+optional exponent \((?<exp>[^)]*)\), with no (?<no>[^,]+(?:,[^,]+)*?), and its value is finite; anything else\s+is a usage error, `(?<msg>[^`]+)`")]
