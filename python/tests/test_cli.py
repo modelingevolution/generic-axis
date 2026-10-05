@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import signal
+import socket
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -22,6 +24,7 @@ from generic_axis_check.runner import Report
 
 from .conftest import PYTHON_DIR
 from .simproc import free_port, wait_for_port
+from .stub_plc import StubPlc
 
 
 def test_parse_host_only_takes_the_protocol_defaults() -> None:
@@ -177,3 +180,36 @@ async def test_a_second_ctrl_c_does_not_abort_the_cleanup(tmp_path: Path) -> Non
     assert cleanup[-1] == "C+9 = 0 (release lease)"
     assert command[0] == 0  # neither Stop nor Enable left set
     assert lease == 0
+
+
+# --- GA-U-158.py (C# #70): a TCP connect names no unit; a frame names the configured one --------------------------
+
+
+def _run_cli(*argv: str) -> str:
+    done = subprocess.run(
+        [sys.executable, "-m", "generic_axis_check", *argv], capture_output=True, text=True, timeout=60, check=False
+    )
+    return done.stdout + done.stderr
+
+
+@pytest.mark.parametrize("mode", [(), ("--command", "enable")])
+def test_a_failed_connect_names_host_and_port_and_no_unit(mode: tuple[str, ...]) -> None:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]  # closed once the block ends
+    out = _run_cli(f"127.0.0.1:{port}", "--unit", "7", *mode)
+    assert f"connect to 127.0.0.1:{port} failed" in out, out
+    connect_lines = [line for line in out.splitlines() if "connect to" in line]
+    assert connect_lines, out
+    assert not any(re.search(r"\bunit \d", line) for line in connect_lines), connect_lines
+    assert "unit 0" not in out, out
+    assert "unit 1" not in out, out
+
+
+async def test_a_frame_error_names_the_configured_unit(stub: StubPlc) -> None:
+    # The stub serves unit 1 and stays silent for unit 7: the pre-flight read fails naming unit 7, never a default.
+    loop = asyncio.get_running_loop()
+    out = await loop.run_in_executor(None, _run_cli, f"127.0.0.1:{stub.port}", "--unit", "7")
+    assert re.search(r"FC03 read C\+8…C\+10 = holding 8…10 on 127\.0\.0\.1:\d+ unit 7 failed", out), out
+    assert "unit 0" not in out, out
+    assert "unit 1" not in out, out
