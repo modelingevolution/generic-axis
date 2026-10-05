@@ -69,6 +69,10 @@ jobs:
       - name: Python checker against the simulator
         run: python -m generic_axis_check "127.0.0.1:$SIM_PORT" --allow-motion --report conformance-python.md
 
+      - name: The simulator passes the full list (no FAIL, no SKIP) in both reports
+        # A checker exits 0 with SKIPs; the protocol requires the simulator to pass CHK-01…16 (review: skipped == 0).
+        run: python .github/scripts/assert-full-pass.py conformance-csharp.json conformance-python.json
+
       - name: Python integration tests (GA-I-30…39, one simulator per scenario)
         working-directory: python
         run: pytest tests -m integration -v
