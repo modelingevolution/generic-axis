@@ -415,11 +415,9 @@ async def run_verb(options: Options, verb: Verb, out: Out) -> VerbResult:
             return VerbResult(REFUSED, f"Pre-flight: {verdict.refusal}")
         proven_free = True
         if verdict.dead_holder is not None:
-            # protocol.md "One-verb mode" step 3 (review #40): the one-verb mode clears the trip at attach.
-            out(
-                f"Pre-flight: {verdict.dead_holder}: the previous commander is dead; its trip is cleared at attach as "
-                "the driver does; FaultCode 4 is left for reset."
-            )
+            # Review #40 (C# #64): say only what was seen. The clear is reported by its own line when it is written,
+            # after the guards and the lease; a refused guard writes nothing, so it never claims one.
+            out(f"Pre-flight: {verdict.dead_holder}")
         elif verdict.note is not None:
             out(f"Pre-flight: {verdict.note}")
         status = await ctx.status()  # step 2

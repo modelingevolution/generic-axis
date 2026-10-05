@@ -388,9 +388,10 @@ async def test_after_a_dead_holders_trip_the_tool_attaches_and_reset_recovers() 
         result = await verb(plc, Verb("reset"), lines)
         end = (plc.regs[MAP.watchdog_fault], plc.axis.state, plc.axis.fault)
     # Review #40: the one-verb note says what this mode does with the trip (the checklist leaves it for its operator).
-    assert lines[1] == (
-        "Pre-flight: LeaseOwner (C+9 = holding 9) = 1 held with no beat and WatchdogFault (C+10 = holding 10) = 1: the "
-        "previous commander is dead; its trip is cleared at attach as the driver does; FaultCode 4 is left for reset."
+    assert re.fullmatch(
+        r"Pre-flight: LeaseOwner \(C\+9 = holding 9\) = 1 held with no beat for 1\.\d s and WatchdogFault "
+        r"\(C\+10 = holding 10\) = 1: the previous commander is dead\.",
+        lines[1],
     ), lines[1]
     assert (
         "C+10 = holding 10 = 0 written at attach, as the driver does (ErrorStop and FaultCode 4 stay for reset)"
@@ -438,11 +439,15 @@ async def test_a_refused_guard_after_a_dead_holders_trip_writes_nothing_at_all()
         await beat.stop()  # dies; its watchdog trips during the pre-flight watch
         commander.close()
         before = len(plc.writes)
-        result = await verb(plc, Verb("move", 20_000))
+        lines: list[str] = []
+        result = await verb(plc, Verb("move", 20_000), lines)
         ours = plc.writes[before:]
         end = (plc.regs[MAP.watchdog_fault], plc.regs[MAP.lease_owner])
     assert (result.result, result.exit_code) == ("GUARD", 2), result.message
     assert ours == []
+    # Review #40 (C# #64): the note says what was seen; nothing claims a clear that was never written.
+    assert lines[1].endswith("= 1: the previous commander is dead."), lines[1]
+    assert not any("cleared" in line or "written at attach" in line for line in lines), lines
     assert end == (1, 1)  # the dead holder's trip and lease, untouched
 
 
@@ -628,6 +633,8 @@ def test_the_verbs_motion_verbs_and_result_words_match_protocol_md() -> None:
     listed = row.group(1).split("(One-verb mode, below): ", 1)[1].split(". ", 1)
     verbs = re.findall(r"`(\w+)(?: [^`]*)?`", listed[0])
     motion = re.findall(r"`(\w+)`", listed[1].split(" need `--allow-motion`", 1)[0])
+    assert verbs, "no verb parsed from the --command row"
+    assert motion, "no --allow-motion verb parsed"
     assert tuple(verbs) == VERBS
     assert set(motion) == set(MOTION_VERBS)
     one_verb = text.split("**One-verb mode (`--command`)**", 1)[1].split("### Rules for every run", 1)[0]

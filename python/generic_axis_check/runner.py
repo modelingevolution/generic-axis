@@ -132,8 +132,9 @@ class Preflight:
     foreign_trip: bool = False
     """The lease holder is dead and its watchdog trip is left for its operator: the checker never clears it."""
     dead_holder: str | None = None
-    """What showed the lease holder dead ("LeaseOwner (…) = n held with no beat and WatchdogFault (…) = 1"); the
-    checklist and the one-verb mode each finish the note with what they do about the trip (review #40)."""
+    """What was seen, and only that: "LeaseOwner (…) = n held with no beat for 1.0 s and WatchdogFault (…) = 1: the
+    previous commander is dead." The one-verb mode prints it (review #40, C# #64); what is done about the trip is
+    reported only when it is written."""
 
 
 async def preflight(client: PlcClient, registers: RegisterMap) -> Preflight:
@@ -173,9 +174,9 @@ async def preflight(client: PlcClient, registers: RegisterMap) -> Preflight:
     if owner == 0:
         return Preflight()
     if fault != 0:
-        dead = f"{owner_at} held with no beat and {fault_at}"
-        note = f"{dead}: the previous commander is dead; its trip is left for its operator."
-        return Preflight(note=note, foreign_trip=True, dead_holder=dead)
+        note = f"{owner_at} held with no beat and {fault_at}: the previous commander is dead; its trip is left for its operator."
+        seen = f"{owner_at} held with no beat for {watched_s:.1f} s and {fault_at}: the previous commander is dead."
+        return Preflight(note=note, foreign_trip=True, dead_holder=seen)
     return Preflight(
         f"{owner_at} is held and {fault_at}: no beat and no trip within {watched_s:.1f} s — "
         "a live commander, or a PLC without a working watchdog; release LeaseOwner by hand only if no commander runs"
