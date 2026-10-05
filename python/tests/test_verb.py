@@ -467,7 +467,7 @@ async def test_a_refused_guard_after_a_dead_holders_trip_writes_nothing_at_all()
             Verb("move", 1500, 20, speed_text="20"),
         ),
         (["plc", "--command", "move", "1500", "--allow-motion"], Verb("move", 1500, 10, speed_text="10")),
-        (["plc", "--command", "jog", "-50", "--for", "2", "--allow-motion"], Verb("jog", -50, 10, 2)),
+        (["plc", "--command", "jog", "-50", "--for", "2", "--allow-motion"], Verb("jog", -50, 10, 2, run_for_text="2")),
         (["plc", "--command", "jog", "-0.5", "--allow-motion"], Verb("jog", -0.5)),
     ],
 )
