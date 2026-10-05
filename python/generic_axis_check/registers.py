@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from decimal import Decimal
 from enum import IntEnum, IntFlag, StrEnum
 
 MAP_VERSION = 1
@@ -203,6 +204,12 @@ def speed_raw(max_velocity: int, percent: float) -> int:
 def format_percent(value: float) -> str:
     """A percentage as "0.###" (both tools): 150 → 150, 12.5 → 12.5, 0.00009 → 0."""
     return f"{value:.3f}".rstrip("0").rstrip(".")
+
+
+def percent_as_given(value: float) -> str:
+    """protocol.md "Speed rounding" (e49dd62): the percentage as given, printed in full and never rounded for display:
+    10 → 10, 12.5 → 12.5, 0.00005 → 0.00005 (no exponent)."""
+    return format(Decimal(repr(value)).normalize(), "f")
 
 
 def next_nonzero(value: int) -> int:

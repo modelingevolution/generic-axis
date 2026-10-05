@@ -32,7 +32,7 @@ from .errors import (
     Read,
     format_message,
     machine_error,
-    speed_zero_refusal,
+    speed_zero_body,
 )
 from .lease import LeaseHeld, LeaseTaken, acquire
 from .poll import POLL_PERIOD_S, ms, wait_for
@@ -309,7 +309,8 @@ async def commanded_speed(ctx: CheckContext, percent: int) -> tuple[int, Outcome
     s = await ctx.status()
     velocity = speed_raw(s.max_velocity, percent)
     if velocity == 0:
-        return 0, Outcome(SKIPPED, speed_zero_refusal(ctx.registers, percent, s.max_velocity), restore=False)
+        # The refusal body alone, no class prefix (errorClass null, as on every SKIP).
+        return 0, Outcome(SKIPPED, speed_zero_body(ctx.registers, percent, s.max_velocity), restore=False)
     return velocity, None
 
 
