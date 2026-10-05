@@ -164,8 +164,6 @@ def _verb(a: argparse.Namespace) -> Verb | None:
             raise UsageError(f"--command {name} {args[0]}: not a number") from exc
     if a.speed is not None and name != "move":
         raise UsageError("--speed applies to --command move")
-    if a.speed is not None and not 0 < a.speed <= 100:
-        raise UsageError(f"--speed {a.speed:g}: must be 0 < pct ≤ 100")
     if a.run_for is not None and name != "jog":
         raise UsageError("--for applies to --command jog")
     if a.run_for is not None and a.run_for <= 0:

@@ -16,7 +16,7 @@ from generic_axis_check.client import PlcClient
 from generic_axis_check.context import Options
 from generic_axis_check.registers import Command, RegisterMap
 from generic_axis_check.runner import run
-from generic_axis_check.verb import Verb, VerbResult, run_verb
+from generic_axis_check.verb import MOTION_VERBS, RESULT_EXIT, VERBS, Verb, VerbResult, raw, run_verb
 
 from .stub_plc import StubOptions, StubPlc
 
@@ -122,6 +122,7 @@ async def test_move_writes_parameters_then_the_command_and_arrives(stub: StubPlc
     # ms count from the verb's first write, not from the start of the run: the 100 mm move takes about 1 s.
     rows = [line for line in lines if " ms  State " in line]
     assert rows[-1].startswith("+"), rows[-1]
+    assert "  ActualPosition 600.000  ActualVelocity 0.000  " in rows[-1], rows[-1]  # axis units, not raw
     assert 800 < int(rows[-1][1:7]) < 1800, rows[-1]  # 100 mm at 100 mm/s, 1 m/s² ramps: about 1.05 s
     assert (result.result, result.exit_code) == ("PASS", 0), result.message
     assert re.fullmatch(
@@ -205,13 +206,13 @@ async def test_partial_limits_are_protocol_and_write_nothing(stub: StubPlc) -> N
         (
             Verb("move", 20_000),
             None,
-            "move: Commander/OutOfRange: refused before writing anything: target 20000.000 is outside TravelMin..TravelMax. "
+            "move: Commander/OutOfRange: refused before writing anything: target 20000.000 (raw 20000000) is outside TravelMin..TravelMax. "
             "Read TravelMin (S+8 = input 8) = 0, TravelMax (S+10 = input 10) = 10000000.",
         ),
         (
             Verb("move", -0.001),
             None,
-            "move: Commander/OutOfRange: refused before writing anything: target -0.001 is outside TravelMin..TravelMax. "
+            "move: Commander/OutOfRange: refused before writing anything: target -0.001 (raw -1) is outside TravelMin..TravelMax. "
             "Read TravelMin (S+8 = input 8) = 0, TravelMax (S+10 = input 10) = 10000000.",
         ),
         (
@@ -222,14 +223,48 @@ async def test_partial_limits_are_protocol_and_write_nothing(stub: StubPlc) -> N
         (
             Verb("jog", -500.001, run_for_s=0.2),  # bounded: a guard that lets it through ends, red
             None,
-            "jog: Commander/UnreachableSpeed: refused before writing anything: |-500.001| u/s is above MaxVelocity. "
-            "Read MaxVelocity (S+12 = input 12) = 500000.",
+            "jog: Commander/UnreachableSpeed: refused before writing anything: jog needs 0 < |v| ≤ MaxVelocity, got -500.001 "
+            "(raw -500001). Read MaxVelocity (S+12 = input 12) = 500000.",
         ),
         (
             Verb("jog", 0, run_for_s=0.2),
             None,
-            "jog: Commander/UnreachableSpeed: refused before writing anything: jog velocity 0 is outside "
-            "0 < |v| ≤ MaxVelocity. Read MaxVelocity (S+12 = input 12) = 500000.",
+            "jog: Commander/UnreachableSpeed: refused before writing anything: jog needs 0 < |v| ≤ MaxVelocity, got 0.000 "
+            "(raw 0). Read MaxVelocity (S+12 = input 12) = 500000.",
+        ),
+        (
+            Verb("jog", 0.0004, run_for_s=0.2),  # review #37: raw 0 is no motion, whatever was typed
+            None,
+            "jog: Commander/UnreachableSpeed: refused before writing anything: jog needs 0 < |v| ≤ MaxVelocity, got 0.0004 "
+            "(raw 0). Read MaxVelocity (S+12 = input 12) = 500000.",
+        ),
+        (
+            Verb("jog", -0.0004, run_for_s=0.2),
+            None,
+            "jog: Commander/UnreachableSpeed: refused before writing anything: jog needs 0 < |v| ≤ MaxVelocity, got -0.0004 "
+            "(raw 0). Read MaxVelocity (S+12 = input 12) = 500000.",
+        ),
+        (
+            Verb("jog", 500.001, run_for_s=0.2),  # MaxVelocity + one raw quantum
+            None,
+            "jog: Commander/UnreachableSpeed: refused before writing anything: jog needs 0 < |v| ≤ MaxVelocity, got 500.001 "
+            "(raw 500001). Read MaxVelocity (S+12 = input 12) = 500000.",
+        ),
+        (
+            Verb("move", 100, speed_percent=150),  # review #39: a value the tool would refuse is a guard
+            None,
+            "move: Commander/UnreachableSpeed: refused before writing anything: speed 150 % outside 0 < pct ≤ 100.",
+        ),
+        (
+            Verb("move", 100, speed_percent=0),
+            None,
+            "move: Commander/UnreachableSpeed: refused before writing anything: speed 0 % outside 0 < pct ≤ 100.",
+        ),
+        (
+            Verb("move", 100, speed_percent=0.00009),  # 0.45 raw rounds to Velocity 0
+            None,
+            "move: Commander/UnreachableSpeed: refused before writing anything: --speed 0 % of MaxVelocity rounds to "
+            "raw Velocity 0; nothing to move with. Read MaxVelocity (S+12 = input 12) = 500000.",
         ),
         (
             Verb("jog", 1, run_for_s=0.2),
@@ -265,6 +300,15 @@ async def test_the_guards_allow_the_limits_themselves(stub: StubPlc) -> None:
     assert result.exit_code == 0, result.message
     result = await verb(stub, Verb("jog", -500, run_for_s=0.1))
     assert result.exit_code == 0, result.message
+
+
+async def test_a_move_target_is_judged_on_its_raw_value(stub: StubPlc) -> None:
+    # Review #37/#38: -0.0004 is written as raw 0 = TravelMin, so the guard lets it through and the move arrives.
+    stub.axis.p = 1000.0
+    result = await verb(stub, Verb("move", -0.0004, speed_percent=100))
+    assert result.exit_code == 0, result.message
+    params = [values for address, values in stub.writes if address == MAP.target_position]
+    assert params[0][:2] == [0, 0], params  # TargetPosition raw 0
 
 
 # --- GA-U-149.py: Ctrl-C ---------------------------------------------------------------------------------------------
@@ -343,7 +387,15 @@ async def test_after_a_dead_holders_trip_the_tool_attaches_and_reset_recovers() 
         lines: list[str] = []
         result = await verb(plc, Verb("reset"), lines)
         end = (plc.regs[MAP.watchdog_fault], plc.axis.state, plc.axis.fault)
-    assert lines[1].startswith("Pre-flight: LeaseOwner (C+9 = holding 9) = 1 held with no beat"), lines[1]
+    # Review #40: the one-verb note says what this mode does with the trip (the checklist leaves it for its operator).
+    assert lines[1] == (
+        "Pre-flight: LeaseOwner (C+9 = holding 9) = 1 held with no beat and WatchdogFault (C+10 = holding 10) = 1: the "
+        "previous commander is dead; its trip is cleared at attach as the driver does; FaultCode 4 is left for reset."
+    ), lines[1]
+    assert (
+        "C+10 = holding 10 = 0 written at attach, as the driver does (ErrorStop and FaultCode 4 stay for reset)"
+        in lines
+    )
     assert (result.result, result.exit_code) == ("PASS", 0), result.message
     assert end == (0, DISABLED, 0)
     assert released(plc)
@@ -421,8 +473,6 @@ def test_parse_reads_the_verb(argv: list[str], expected: Verb) -> None:
         ["plc", "--command", "enable", "1"],
         ["plc", "--command", "move", "--allow-motion"],
         ["plc", "--command", "move", "x", "--allow-motion"],
-        ["plc", "--command", "move", "10", "--speed", "0", "--allow-motion"],
-        ["plc", "--command", "move", "10", "--speed", "101", "--allow-motion"],
         ["plc", "--command", "enable", "--speed", "10"],
         ["plc", "--command", "move", "10", "--for", "1", "--allow-motion"],
         ["plc", "--command", "jog", "5", "--for", "0", "--allow-motion"],
@@ -436,6 +486,13 @@ def test_parse_reads_the_verb(argv: list[str], expected: Verb) -> None:
 def test_parse_refuses_a_malformed_verb(argv: list[str]) -> None:
     with pytest.raises(UsageError):
         parse(argv)
+
+
+def test_a_non_numeric_speed_stays_a_usage_error() -> None:
+    # Review #39: a speed the tool would refuse is a guard; syntax stays usage (argparse's own exit 2, no RESULT line).
+    with pytest.raises(SystemExit) as usage:
+        parse(["plc", "--command", "move", "10", "--speed", "fast", "--allow-motion"])
+    assert usage.value.code == 2
 
 
 def test_main_exit_codes_for_usage_and_guard(capsys: pytest.CaptureFixture[str]) -> None:
@@ -553,3 +610,33 @@ async def test_found_disabled_with_bit_0_clear_gets_no_0_edge(stub: StubPlc) -> 
     result = await verb(stub, Verb("enable"))
     assert result.exit_code == 0, result.message
     assert command_writes(stub) == [[ENABLE, 1], [0, 2]]  # Enable 1 at once; only cleanup's Enable 0
+
+
+# --- GA-U-153.py (review #41): the one-verb mode's words are protocol.md's -----------------------------------------
+
+
+def _protocol_text() -> str:
+    from pathlib import Path
+
+    return " ".join((Path(__file__).resolve().parents[2] / "docs" / "protocol.md").read_text(encoding="utf-8").split())
+
+
+def test_the_verbs_motion_verbs_and_result_words_match_protocol_md() -> None:
+    text = _protocol_text()
+    row = re.search(r"\| `--command <verb> \[args\]` .*?\| off \| (.*?) \|", text)
+    assert row is not None, "the --command row is missing from protocol.md"
+    listed = row.group(1).split("(One-verb mode, below): ", 1)[1].split(". ", 1)
+    verbs = re.findall(r"`(\w+)(?: [^`]*)?`", listed[0])
+    motion = re.findall(r"`(\w+)`", listed[1].split(" need `--allow-motion`", 1)[0])
+    assert tuple(verbs) == VERBS
+    assert set(motion) == set(MOTION_VERBS)
+    one_verb = text.split("**One-verb mode (`--command`)**", 1)[1].split("### Rules for every run", 1)[0]
+    pairs = {word: int(code) for word, code in re.findall(r"`RESULT: (\w+)` \(exit (\d)", one_verb)}
+    assert pairs == RESULT_EXIT
+    assert len(pairs) == 5, pairs
+
+
+def test_raw_rounds_half_away_from_zero_as_the_csharp_tool() -> None:
+    # Review #37: guards judge the raw value written, rounded half away from zero (0.0625 × 1000 = 62.5 exactly).
+    assert (raw(0.0625), raw(-0.0625)) == (63, -63)
+    assert (raw(0.0004), raw(-0.0004), raw(500.001)) == (0, 0, 500_001)
