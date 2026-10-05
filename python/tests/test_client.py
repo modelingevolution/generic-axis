@@ -19,7 +19,11 @@ async def test_read_from_a_silent_unit_raises_plc_error(stub: StubPlc) -> None:
     client = PlcClient("127.0.0.1", stub.port, 9)  # the stub stays silent for a unit it does not serve
     await client.connect()
     try:
-        with pytest.raises(PlcError, match=r"FC03 read C\+0…C\+11 = holding 0…11 on 127\.0\.0\.1:\d+ unit 9 failed: "):
+        with pytest.raises(
+            PlcError,
+            match=r"^FC03 read C\+0…C\+11 = holding 0…11 on 127\.0\.0\.1:\d+ unit 9 failed twice \(reconnected once\): "
+            r"timed out \(no answer within 500 ms\)$",
+        ):
             await client.read(0, 12)
     finally:
         client.close()
@@ -94,7 +98,7 @@ async def test_connect_failure_message_carries_the_exception_text() -> None:
     with pytest.raises(PlcError) as failure:
         await PlcClient("127.0.0.1", port, 1).connect()
     assert re.fullmatch(
-        rf"connect to 127\.0\.0\.1:{port} failed \(2 attempts in \d+\.\d s\): Connection refused \(.+\)",
+        rf"connect on 127\.0\.0\.1:{port} failed twice \(reconnected once\): Connection refused",  # review #49
         str(failure.value),
     ), str(failure.value)
 
@@ -187,7 +191,11 @@ async def test_read_input_from_a_silent_unit_names_fc04_and_the_input_range(stub
     await client.connect()
     started = time.monotonic()
     try:
-        with pytest.raises(PlcError, match=r"FC04 read S\+0…S\+14 = input 0…14 on 127\.0\.0\.1:\d+ unit 9 failed: "):
+        with pytest.raises(
+            PlcError,
+            match=r"^FC04 read S\+0…S\+14 = input 0…14 on 127\.0\.0\.1:\d+ unit 9 failed twice \(reconnected once\): "
+            r"timed out \(no answer within 500 ms\)$",
+        ):
             await client.read_input(0, 15)
     finally:
         client.close()

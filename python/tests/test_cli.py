@@ -198,8 +198,8 @@ def test_a_failed_connect_names_host_and_port_and_no_unit(mode: tuple[str, ...])
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]  # closed once the block ends
     out = _run_cli(f"127.0.0.1:{port}", "--unit", "7", *mode)
-    assert f"connect to 127.0.0.1:{port} failed" in out, out
-    connect_lines = [line for line in out.splitlines() if "connect to" in line]
+    assert f"connect on 127.0.0.1:{port} failed twice (reconnected once): Connection refused" in out, out
+    connect_lines = [line for line in out.splitlines() if "connect " in line and f":{port}" in line]
     assert connect_lines, out
     assert not any(re.search(r"\bunit \d", line) for line in connect_lines), connect_lines
     assert "unit 0" not in out, out
@@ -213,3 +213,33 @@ async def test_a_frame_error_names_the_configured_unit(stub: StubPlc) -> None:
     assert re.search(r"FC03 read C\+8…C\+10 = holding 8…10 on 127\.0\.0\.1:\d+ unit 7 failed", out), out
     assert "unit 0" not in out, out
     assert "unit 1" not in out, out
+
+
+# --- GA-U-159.py (review #49): after the one retry, a Transport message says "failed twice (reconnected once)" -------
+
+
+@pytest.mark.parametrize("mode", [(), ("--command", "enable")])
+async def test_a_silent_plc_reads_failed_twice_reconnected_once_with_the_plain_cause(
+    stub: StubPlc, mode: tuple[str, ...]
+) -> None:
+    # The stub serves unit 1 only, so --unit 7 gets no answer: two 0.5 s attempts with a reconnect between them. The
+    # message names that, in the protocol's shape, with the cause in plain words, never pymodbus's "No response received
+    # after 0 retries" (false here: the tool's own retry is the one that counts).
+    loop = asyncio.get_running_loop()
+    out = await loop.run_in_executor(None, _run_cli, f"127.0.0.1:{stub.port}", "--unit", "7", *mode)
+    expected = (
+        f"FC03 read C+8…C+10 = holding 8…10 on 127.0.0.1:{stub.port} unit 7 failed twice (reconnected once): "
+        "timed out (no answer within 500 ms)."
+    )
+    assert expected in out, out
+    assert "No response received" not in out, out
+    assert "0 retries" not in out, out
+
+
+@pytest.mark.parametrize("mode", [(), ("--command", "enable")])
+def test_a_closed_port_reads_connect_failed_twice_reconnected_once(mode: tuple[str, ...]) -> None:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    out = _run_cli(f"127.0.0.1:{port}", "--unit", "7", *mode)
+    assert f"connect on 127.0.0.1:{port} failed twice (reconnected once): Connection refused." in out, out

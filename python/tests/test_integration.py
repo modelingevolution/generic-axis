@@ -407,7 +407,8 @@ async def test_ga_i_40_dump_reads_without_touching(simulator: START) -> None:
     lines = err.splitlines()
     assert lines[0].endswith("failed; retrying once")  # rule 3: the one retry, at Warning
     assert re.fullmatch(
-        r"Transport/CommunicationLost: connect to 127\.0\.0\.1:\d+ failed .*Connection refused.*", lines[-1]
+        r"Transport/CommunicationLost: connect on 127\.0\.0\.1:\d+ failed twice \(reconnected once\): Connection refused\.",
+        lines[-1],
     )
 
 
