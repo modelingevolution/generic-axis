@@ -176,6 +176,11 @@ public sealed class CommandModeTests
                 "jog: Commander/UnreachableSpeed: refused before writing anything: jog needs 0 < |v| ≤ MaxVelocity, got 500.001. Read MaxVelocity (S+12 = input 12) = 500000."),
             (new(), new VerbRequest(Verb.Jog, Velocity: -500.001), "jog: Commander/UnreachableSpeed: refused before writing anything: jog needs 0 < |v| ≤ MaxVelocity, got -500.001."),
             (new(), new VerbRequest(Verb.Jog, Velocity: 0), "jog: Commander/UnreachableSpeed:"),
+            // #37: the guard is on the RAW value written — 0.0004 unit/s rounds to Velocity 0.
+            (new(), new VerbRequest(Verb.Jog, Velocity: 0.0004), "jog: Commander/UnreachableSpeed: refused before writing anything: jog needs 0 < |v| ≤ MaxVelocity"),
+            (new(), new VerbRequest(Verb.Jog, Velocity: -0.0004), "jog: Commander/UnreachableSpeed: refused before writing anything: jog needs 0 < |v| ≤ MaxVelocity"),
+            (new(), new VerbRequest(Verb.Move, Target: 600, SpeedPercent: 0.00005),
+                "move: Commander/UnreachableSpeed: refused before writing anything: --speed 0 % of MaxVelocity rounds to raw Velocity 0"),
             (new() { PublishLimits = false }, new VerbRequest(Verb.Jog, Velocity: 10),
                 "jog: Commander/OutOfRange: refused before writing anything: the PLC publishes no limits; jog needs them."),
         };
@@ -199,6 +204,12 @@ public sealed class CommandModeTests
         {
             var (exit, output) = await Command(at, new VerbRequest(Verb.Jog, Velocity: -500));
             exit.Should().Be(0, $"|v| = MaxVelocity is allowed (the boundary): {output}");
+        }
+
+        using (var at = new LiveSimulator())
+        {
+            var (exit, output) = await Command(at, new VerbRequest(Verb.Move, Target: -0.0004));
+            exit.Should().Be(0, $"-0.0004 is written as raw 0 = TravelMin, inside the travel (#37): {output}");
         }
     }
 

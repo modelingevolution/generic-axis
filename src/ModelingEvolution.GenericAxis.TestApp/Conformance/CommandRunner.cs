@@ -195,18 +195,32 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
             {
                 if (!s.Homed)
                     return Commander("NotHomed", $"move needs Homed. Read Flags ({ctx.At(RegisterField.Flags)}) = 0x{(ushort)s.Flags:X4}, expected bit 0 (Homed) set.");
+                // Judged on the raw values the PLC would be sent (#37): what is written is the rounded register value.
                 var target = request.Target!.Value;
-                if (target < Words.FromRaw(s.TravelMin) || target > Words.FromRaw(s.TravelMax))
+                var targetRaw = Raw(target);
+                if (targetRaw < s.TravelMin || targetRaw > s.TravelMax)
                     return Commander("OutOfRange", $"target {target.ToString("0.000", Inv)} is outside TravelMin..TravelMax. Read TravelMin ({ctx.At(RegisterField.TravelMin)}) = {s.TravelMin}, "
                                                    + $"TravelMax ({ctx.At(RegisterField.TravelMax)}) = {s.TravelMax}.");
+                var speedRaw = MoveSpeedRaw(s);
+                if (speedRaw <= 0)
+                    return Commander("UnreachableSpeed", $"--speed {request.SpeedPercent.ToString("0.###", Inv)} % of MaxVelocity rounds to raw Velocity 0; nothing to move with. "
+                                                         + $"Read MaxVelocity ({ctx.At(RegisterField.MaxVelocity)}) = {s.MaxVelocity}.");
                 return null;
             }
 
             var v = request.Velocity!.Value;
-            if (v == 0 || Math.Abs(v) > Words.FromRaw(s.MaxVelocity))
+            var raw = Raw(v);
+            if (raw == 0 || Math.Abs(raw) > s.MaxVelocity)
                 return Commander("UnreachableSpeed", $"jog needs 0 < |v| ≤ MaxVelocity, got {v.ToString("0.000", Inv)}. Read MaxVelocity ({ctx.At(RegisterField.MaxVelocity)}) = {s.MaxVelocity}.");
             return null;
         }
+
+        /// <summary>The register value <paramref name="units"/> is written as (0.001 per count, half away from zero, as
+        /// <see cref="Words.ToRaw"/>), as a double so an over-range value is judged, not thrown.</summary>
+        private static double Raw(double units) => Math.Round(units * Words.Scale, MidpointRounding.AwayFromZero);
+
+        /// <summary>move's resolved speed: <c>--speed</c> % of <c>MaxVelocity</c>, as the raw value written.</summary>
+        private double MoveSpeedRaw(StatusBlock s) => Math.Round(s.MaxVelocity * request.SpeedPercent / 100.0, MidpointRounding.AwayFromZero);
 
         private static Failure Commander(string name, string text) => new(ErrorClass.Commander, name, 7, $"refused before writing anything: {text}");
 
@@ -270,8 +284,7 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
         private async Task<Failure?> MoveAsync(StatusBlock s, CancellationToken ct)
         {
             var target = Words.ToRaw(request.Target!.Value, "TargetPosition");
-            var velocity = (int)Math.Round(s.MaxVelocity * request.SpeedPercent / 100.0, MidpointRounding.AwayFromZero);
-            if (velocity == 0) velocity = 1;
+            var velocity = (int)MoveSpeedRaw(s); // the guard refused 0
             var budget = TimeSpan.FromSeconds(2.0 * Math.Abs(target - (double)s.ActualPosition) / velocity + 5);
             if (await EnsureEnabledAsync(ct) is { } f) return f;
             await ctx.Commands.WriteParametersAsync(target, velocity, 0, ct);
