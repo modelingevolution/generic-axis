@@ -211,10 +211,8 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
                 var pct = request.SpeedPercent;
                 if (!(pct > 0 && pct <= 100))
                     return Commander("UnreachableSpeed", $"speed {pct.ToString("0.###", Inv)} % outside 0 < pct ≤ 100.");
-                var speedRaw = MoveSpeedRaw(s);
-                if (speedRaw <= 0)
-                    return Commander("UnreachableSpeed", $"--speed {request.SpeedPercent.ToString("0.###", Inv)} % of MaxVelocity rounds to raw Velocity 0; nothing to move with. "
-                                                         + $"Read MaxVelocity ({ctx.At(RegisterField.MaxVelocity)}) = {s.MaxVelocity}.");
+                if (SpeedRounding.Raw(pct, s.MaxVelocity) == 0)
+                    return Commander("UnreachableSpeed", SpeedRounding.Refusal(pct, s.MaxVelocity, ctx.At(RegisterField.MaxVelocity)));
                 return null;
             }
 
@@ -228,9 +226,6 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
         /// <summary>The register value <paramref name="units"/> is written as (0.001 per count, half away from zero, as
         /// <see cref="Words.ToRaw"/>), as a double so an over-range value is judged, not thrown.</summary>
         private static double Raw(double units) => Math.Round(units * Words.Scale, MidpointRounding.AwayFromZero) + 0.0; // + 0.0: no "-0"
-
-        /// <summary>move's resolved speed: <c>--speed</c> % of <c>MaxVelocity</c>, as the raw value written.</summary>
-        private double MoveSpeedRaw(StatusBlock s) => Math.Round(s.MaxVelocity * request.SpeedPercent / 100.0, MidpointRounding.AwayFromZero);
 
         private static Failure Commander(string name, string text) => new(ErrorClass.Commander, name, 7, $"refused before writing anything: {text}");
 
@@ -294,7 +289,7 @@ public sealed class CommandRunner(ILoggerFactory loggerFactory)
         private async Task<Failure?> MoveAsync(StatusBlock s, CancellationToken ct)
         {
             var target = Words.ToRaw(request.Target!.Value, "TargetPosition");
-            var velocity = (int)MoveSpeedRaw(s); // the guard refused 0
+            var velocity = SpeedRounding.Raw(request.SpeedPercent, s.MaxVelocity); // the guard refused 0
             var budget = TimeSpan.FromSeconds(2.0 * Math.Abs(target - (double)s.ActualPosition) / velocity + 5);
             if (await EnsureEnabledAsync(ct) is { } f) return f;
             await ctx.Commands.WriteParametersAsync(target, velocity, 0, ct);

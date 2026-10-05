@@ -184,7 +184,7 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
                 // The checker itself failed: the axis is in a state the checker cannot vouch for; nothing more runs.
                 blocked = $"not run: checker error during {def.Id}";
             }
-            else if (def.Restores)
+            else if (def.Restores && outcome.Result != CheckResultKind.Skipped) // a check that skipped itself wrote nothing
             {
                 var failed = await RestoreAsync(ctx, ct);
                 if (ct.IsCancellationRequested) blocked = Interrupted(def.Id);
@@ -196,7 +196,8 @@ public sealed class ConformanceRunner(ILoggerFactory loggerFactory)
                 }
             }
 
-            outcome = outcome with { Observed = Canonical(def, outcome, ctx.RetriesSince(retriesBefore)) };
+            // protocol § Observed values: a SKIPPED check has observed {} — also one that skipped itself (Speed rounding).
+            outcome = outcome with { Observed = outcome.Result == CheckResultKind.Skipped ? [] : Canonical(def, outcome, ctx.RetriesSince(retriesBefore)) };
             _log.LogInformation("{Id} {Result}: {Message}", def.Id, ReportWriter.Result(outcome.Result),
                 outcome.Result == CheckResultKind.Fail ? $"{def.Id}: {outcome.Message}" : outcome.Message);
             results.Add(new CheckResult(def.Id, def.Title, def.Section, outcome.Result, durationMs, outcome.Message, outcome.Observed,
