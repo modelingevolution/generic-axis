@@ -27,12 +27,12 @@ from .errors import (
     HOME_LATCH_FAILED,
     MOTION_FAILED,
     PROTOCOL_MISMATCH,
-    UNREACHABLE_SPEED,
     WATCHDOG_TRIPPED,
     ErrorClass,
     Read,
     format_message,
     machine_error,
+    speed_zero_refusal,
 )
 from .lease import LeaseHeld, LeaseTaken, acquire
 from .poll import POLL_PERIOD_S, ms, wait_for
@@ -309,11 +309,7 @@ async def commanded_speed(ctx: CheckContext, percent: int) -> tuple[int, Outcome
     s = await ctx.status()
     velocity = speed_raw(s.max_velocity, percent)
     if velocity == 0:
-        what = f"refused before writing anything: {percent} % of MaxVelocity rounds to raw Velocity 0; nothing to move with"
-        message = format_message(
-            ErrorClass.COMMANDER, UNREACHABLE_SPEED, what, ctx.registers, (Read("MaxVelocity", s.max_velocity),)
-        )
-        return 0, Outcome(SKIPPED, message, restore=False)
+        return 0, Outcome(SKIPPED, speed_zero_refusal(ctx.registers, percent, s.max_velocity), restore=False)
     return velocity, None
 
 

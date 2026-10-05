@@ -307,6 +307,56 @@ DETERMINISTIC = frozenset(
 )
 
 
+LOW_MAX_VELOCITY = {
+    # GA-I-85's simulator (C# SpeedRoundingTests): MaxVelocity raw 45, homed at 9.98, so CHK-13's move to TravelMin + 10
+    # is 20 counts at 10 % = 4.5 → raw 5, and 1 % = 0.45 → raw 0 SKIPs CHK-15 (and CHK-16 needing it).
+    "Simulator__MaxVelocity": "0.045",
+    "Simulator__InitialPosition": "9.98",
+    "Simulator__HomeSensorPosition": "9.98",
+}
+
+
+def test_ga_i_39_both_tools_agree_on_the_raw_0_speed_skip(simulator: START, tmp_path: Path) -> None:
+    # Review #66: on a low-MaxVelocity simulator both tools SKIP CHK-15 with protocol.md's refusal message, verbatim,
+    # and CHK-16 with the Order rule's phrase: the MESSAGES are compared, not only the verdicts.
+    dll = os.environ.get("GENERIC_AXIS_TESTAPP_DLL")
+    if not dll:
+        pytest.skip("needs the C# checker: GENERIC_AXIS_TESTAPP_DLL")
+    sim = simulator(**LOW_MAX_VELOCITY)
+    cs_report = tmp_path / "csharp.json"
+    cs = subprocess.run(
+        ["dotnet", dll, "--check", f"127.0.0.1:{sim.port}", "--allow-motion", "--report", str(cs_report)],
+        capture_output=True,
+        text=True,
+        timeout=200,
+        cwd=simulator_cwd(),
+        check=False,
+    )
+    assert cs_report.exists(), cs.stderr
+    _code, py = run_checker(sim.port, tmp_path, "--allow-motion")
+    csharp = json.loads(cs_report.read_text(encoding="utf-8"))
+
+    def skips(doc: dict[str, Any]) -> dict[str, tuple[str, str, str | None, dict[str, Any]]]:
+        return {
+            c["id"]: (c["result"], c["message"], c["errorClass"], c["observed"])
+            for c in doc["checks"]
+            if c["id"] in ("CHK-15", "CHK-16")
+        }
+
+    refusal = (
+        "Commander/UnreachableSpeed: refused before writing anything: 1 % of MaxVelocity rounds to raw Velocity 0 "
+        "(round-half-away-from-zero(1 × 45 ÷ 100) = 0); nothing to move with. Read MaxVelocity (S+12 = input 12) = 45."
+    )
+    assert skips(py) == {
+        "CHK-15": ("SKIPPED", refusal, None, {}),
+        "CHK-16": ("SKIPPED", "needs CHK-15, which SKIPPED", None, {}),
+    }
+    assert skips(csharp) == skips(py)
+    with cadence(sim):  # the motion checks before it ran at raw 5: a missed budget there is INCONCLUSIVE
+        assert [c["result"] for c in py["checks"][:14]] == ["PASS"] * 14
+        assert [c["result"] for c in csharp["checks"][:14]] == ["PASS"] * 14
+
+
 def dump_process(port: int, *args: str) -> subprocess.Popen[str]:
     return subprocess.Popen(
         [sys.executable, "-m", "generic_axis_check", f"127.0.0.1:{port}", "--dump", *args],

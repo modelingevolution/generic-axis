@@ -31,7 +31,7 @@ from .checks import (
 from .client import PlcClient, PlcError
 from .context import STATE_TIMEOUT_S, AckTimeout, CheckContext, Options
 from .dump import decode
-from .errors import DRIVE_FAULT, HOME_LATCH_FAILED, ErrorClass, Read, format_message
+from .errors import DRIVE_FAULT, HOME_LATCH_FAILED, ErrorClass, Read, format_message, speed_zero_refusal
 from .lease import LeaseHeld
 from .poll import ms, wait_for
 from .registers import (
@@ -40,6 +40,7 @@ from .registers import (
     Command,
     RegisterMap,
     StatusBlock,
+    format_percent,
     register_ref,
     round_half_away,
     speed_raw,
@@ -169,7 +170,7 @@ def units(value: float) -> str:
 
 def percent(value: float) -> str:
     """A percentage as "0.###": 150 → 150, 12.5 → 12.5."""
-    return f"{value:.3f}".rstrip("0").rstrip(".")
+    return format_percent(value)
 
 
 def move_velocity(s: StatusBlock, speed_percent: float) -> int:
@@ -200,11 +201,7 @@ def guard_problem(verb: Verb, s: StatusBlock, registers: RegisterMap) -> str | N
             what = f"{REFUSED_UNWRITTEN}: target {units(verb.value)} (raw {target}) is outside TravelMin..TravelMax"
             return refuse("OutOfRange", what, Read("TravelMin", s.travel_min), Read("TravelMax", s.travel_max))
         if move_velocity(s, verb.speed_percent) == 0:
-            what = (
-                f"{REFUSED_UNWRITTEN}: --speed {percent(verb.speed_percent)} % of MaxVelocity rounds to raw Velocity 0; "
-                "nothing to move with"
-            )
-            return refuse("UnreachableSpeed", what, max_velocity)
+            return speed_zero_refusal(registers, verb.speed_percent, s.max_velocity)  # one message, as a check's SKIP
     if verb.name == "jog" and verb.value is not None:
         if unpublished:
             return refuse("UnreachableSpeed", f"{REFUSED_UNWRITTEN}: the PLC publishes no limits", *limits)
