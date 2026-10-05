@@ -252,17 +252,19 @@ async def test_partial_limits_are_protocol_and_write_nothing(stub: StubPlc) -> N
             "(raw 500001). Read MaxVelocity (S+12 = input 12) = 500000.",
         ),
         (
-            Verb("move", 100, speed_percent=150),  # review #39: a value the tool would refuse is a guard
+            Verb(
+                "move", 100, speed_percent=150, speed_text="150"
+            ),  # review #39: a value the tool would refuse is a guard
             None,
             "move: Commander/UnreachableSpeed: refused before writing anything: speed 150 % outside 0 < pct ≤ 100.",
         ),
         (
-            Verb("move", 100, speed_percent=0),
+            Verb("move", 100, speed_percent=0, speed_text="0"),
             None,
             "move: Commander/UnreachableSpeed: refused before writing anything: speed 0 % outside 0 < pct ≤ 100.",
         ),
         (
-            Verb("move", 100, speed_percent=0.00009),  # 0.45 raw rounds to Velocity 0
+            Verb("move", 100, speed_percent=0.00009, speed_text="0.00009"),  # 0.45 raw rounds to Velocity 0
             None,
             "move: Commander/UnreachableSpeed: refused before writing anything: 0.00009 % of MaxVelocity rounds to "
             "raw Velocity 0 (round-half-away-from-zero(0.00009 × 500000 ÷ 100) = 0); nothing to move with. "
@@ -460,8 +462,11 @@ async def test_a_refused_guard_after_a_dead_holders_trip_writes_nothing_at_all()
     ("argv", "expected"),
     [
         (["plc", "--command", "enable"], Verb("enable")),
-        (["plc", "--command", "move", "1500", "--speed", "20", "--allow-motion"], Verb("move", 1500, 20)),
-        (["plc", "--command", "move", "1500", "--allow-motion"], Verb("move", 1500, 10)),
+        (
+            ["plc", "--command", "move", "1500", "--speed", "20", "--allow-motion"],
+            Verb("move", 1500, 20, speed_text="20"),
+        ),
+        (["plc", "--command", "move", "1500", "--allow-motion"], Verb("move", 1500, 10, speed_text="10")),
         (["plc", "--command", "jog", "-50", "--for", "2", "--allow-motion"], Verb("jog", -50, 10, 2)),
         (["plc", "--command", "jog", "-0.5", "--allow-motion"], Verb("jog", -0.5)),
     ],
@@ -496,10 +501,9 @@ def test_parse_refuses_a_malformed_verb(argv: list[str]) -> None:
 
 
 def test_a_non_numeric_speed_stays_a_usage_error() -> None:
-    # Review #39: a speed the tool would refuse is a guard; syntax stays usage (argparse's own exit 2, no RESULT line).
-    with pytest.raises(SystemExit) as usage:
+    # Review #39: a speed the tool would refuse is a guard; syntax stays usage (exit 2, no RESULT line).
+    with pytest.raises(UsageError, match="--speed fast: not a number"):
         parse(["plc", "--command", "move", "10", "--speed", "fast", "--allow-motion"])
-    assert usage.value.code == 2
 
 
 def test_main_exit_codes_for_usage_and_guard(capsys: pytest.CaptureFixture[str]) -> None:
@@ -675,7 +679,7 @@ def test_the_speed_refusal_and_the_dependant_phrase_match_protocol_md() -> None:
     assert guard is not None, "the one-verb guard's prefix is missing from protocol.md"
     expected = body.group(1).replace("<pct>", "0.00005").replace("<raw>", "49")
     assert "<" not in expected, expected
-    assert speed_zero_body(RegisterMap(), 0.00005, 49) == expected  # a check's SKIP: the body alone
+    assert speed_zero_body(RegisterMap(), "0.00005", 49) == expected  # a check's SKIP: the body alone
     assert guard.group(1) == SPEED_REFUSAL_PREFIX  # the one-verb guard: prefix + body
     order = re.search(r"`(needs CHK-n, which FAILED)` or `(needs CHK-n, which SKIPPED)`", text)
     assert order is not None, "the Order rule's dependant phrases are missing from protocol.md"
@@ -684,3 +688,38 @@ def test_the_speed_refusal_and_the_dependant_phrase_match_protocol_md() -> None:
         prior = CheckResult("CHK-08", "t", "s", PASS, 0, "m")
         needed = CheckResult("CHK-15", "t", "s", result, 0, "m")
         assert prerequisite_problem(chk16, {"CHK-08": prior, "CHK-15": needed}) == phrase.replace("CHK-n", "CHK-15")
+
+
+# --- GA-U-156.py (review #68): --speed is printed exactly as typed, wherever a percentage is shown -----------------
+
+
+@pytest.mark.parametrize(
+    ("typed", "max_velocity"),
+    [("0.00005", 500_000), ("1e-30", 500_000), ("33.3333333333333333", 1)],  # each rounds to raw Velocity 0
+)
+async def test_the_speed_is_printed_as_typed_in_the_header_and_the_refusal_body(typed: str, max_velocity: int) -> None:
+    # Through the command line: the typed string, never re-rendered from the float (5e-05, 1e-30 → 0.000…1,
+    # 33.333333333333336). Numeric parsing serves the guard and the rounding only.
+    async with StubPlc(StubOptions(max_velocity=max_velocity)) as plc:
+        invocation = parse([f"127.0.0.1:{plc.port}", "--command", "move", "20", "--speed", typed, "--allow-motion"])
+        assert invocation.verb is not None
+        lines: list[str] = []
+        result = await run_verb(invocation.options, invocation.verb, lines.append)
+    assert lines[0].startswith(f"--command move 20 --speed {typed} on 127.0.0.1:"), lines[0]
+    assert result.message == (
+        f"move: Commander/UnreachableSpeed: refused before writing anything: {typed} % of MaxVelocity rounds to raw "
+        f"Velocity 0 (round-half-away-from-zero({typed} × {max_velocity} ÷ 100) = 0); nothing to move with. "
+        f"Read MaxVelocity (S+12 = input 12) = {max_velocity}."
+    )
+
+
+def test_an_out_of_range_speed_is_printed_as_typed() -> None:
+    from generic_axis_check.registers import StatusBlock
+    from generic_axis_check.verb import guard_problem
+
+    s = StatusBlock.parse([1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0x9680, 0x98, 0xA120, 7, 1])
+    verb = parse(["plc", "--command", "move", "20", "--speed", "150.0", "--allow-motion"]).verb
+    assert verb is not None
+    assert guard_problem(verb, s, RegisterMap()) == (
+        "Commander/UnreachableSpeed: refused before writing anything: speed 150.0 % outside 0 < pct ≤ 100."
+    )

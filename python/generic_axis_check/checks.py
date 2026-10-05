@@ -310,7 +310,7 @@ async def commanded_speed(ctx: CheckContext, percent: int) -> tuple[int, Outcome
     velocity = speed_raw(s.max_velocity, percent)
     if velocity == 0:
         # The refusal body alone, no class prefix (errorClass null, as on every SKIP).
-        return 0, Outcome(SKIPPED, speed_zero_body(ctx.registers, percent, s.max_velocity), restore=False)
+        return 0, Outcome(SKIPPED, speed_zero_body(ctx.registers, str(percent), s.max_velocity), restore=False)
     return velocity, None
 
 

@@ -84,7 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="VERB",
         help=f"run one verb instead of the checks: {', '.join(VERBS[:5])}, move <target>, jog <signed velocity>",
     )
-    p.add_argument("--speed", type=float, help="move: percent of MaxVelocity (default 10)")
+    p.add_argument("--speed", help="move: percent of MaxVelocity (default 10)")
     p.add_argument("--for", dest="run_for", type=float, help="jog: end the jog after this many seconds")
     p.add_argument("--report", type=Path, help="*.md: Markdown there plus JSON next to it; *.json: JSON only")
     return p
@@ -168,8 +168,14 @@ def _verb(a: argparse.Namespace) -> Verb | None:
         raise UsageError("--for applies to --command jog")
     if a.run_for is not None and a.run_for <= 0:
         raise UsageError(f"--for {a.run_for:g}: must be > 0")
-    speed = DEFAULT_SPEED_PERCENT if a.speed is None else a.speed
-    return Verb(name, value, speed, a.run_for)
+    if a.speed is None:
+        default_text = "10" if name == "move" else None  # the default --speed, shown only where move shows it
+        return Verb(name, value, DEFAULT_SPEED_PERCENT, a.run_for, speed_text=default_text)
+    try:
+        speed = float(a.speed)  # the number, for the guard and the rounding only
+    except ValueError as exc:
+        raise UsageError(f"--speed {a.speed}: not a number") from exc
+    return Verb(name, value, speed, a.run_for, speed_text=a.speed)  # review #68: printed as typed
 
 
 async def run_dump(options: Options, watch: bool) -> int:

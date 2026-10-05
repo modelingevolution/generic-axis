@@ -48,7 +48,6 @@ from .registers import (
     Command,
     RegisterMap,
     StatusBlock,
-    format_percent,
     register_ref,
     round_half_away,
     speed_raw,
@@ -98,11 +97,19 @@ class Verb:
     speed_percent: float = DEFAULT_SPEED_PERCENT
     run_for_s: float | None = None
     """``jog --for S``; None: until Ctrl-C."""
+    speed_text: str | None = None
+    """``--speed`` exactly as typed (review #68): printed wherever the percentage is shown (the header, the guards, the
+    refusal body); ``speed_percent`` is its number, used only by the guard and the rounding. The command line always
+    sets it; a Verb built in code without it shows its number."""
+
+    @property
+    def speed_shown(self) -> str:
+        return self.speed_text if self.speed_text is not None else f"{self.speed_percent:g}"
 
     def __str__(self) -> str:
         text = self.name if self.value is None else f"{self.name} {self.value:g}"
         if self.name == "move":
-            text += f" --speed {self.speed_percent:g}"
+            text += f" --speed {self.speed_shown}"
         if self.run_for_s is not None:
             text += f" --for {self.run_for_s:g}"
         return text
@@ -176,11 +183,6 @@ def units(value: float) -> str:
     return f"{whole}.{fraction.ljust(3, '0')}"
 
 
-def percent(value: float) -> str:
-    """A percentage as "0.###": 150 → 150, 12.5 → 12.5."""
-    return format_percent(value)
-
-
 def move_velocity(s: StatusBlock, speed_percent: float) -> int:
     """``--speed`` → the raw Velocity written for ``move`` (default 10 % of ``MaxVelocity``)."""
     return speed_raw(s.max_velocity, speed_percent)
@@ -197,7 +199,7 @@ def guard_problem(verb: Verb, s: StatusBlock, registers: RegisterMap) -> str | N
     max_velocity = Read("MaxVelocity", s.max_velocity)
     if verb.name == "move" and verb.value is not None:
         if not 0 < verb.speed_percent <= 100:  # review #39: a value the tool would refuse is a guard, not usage
-            what = f"{REFUSED_UNWRITTEN}: speed {percent(verb.speed_percent)} % outside 0 < pct ≤ 100"
+            what = f"{REFUSED_UNWRITTEN}: speed {verb.speed_shown} % outside 0 < pct ≤ 100"
             return refuse("UnreachableSpeed", what)
         if unpublished:
             return refuse("OutOfRange", f"{REFUSED_UNWRITTEN}: the PLC publishes no limits", *limits)
@@ -209,7 +211,7 @@ def guard_problem(verb: Verb, s: StatusBlock, registers: RegisterMap) -> str | N
             what = f"{REFUSED_UNWRITTEN}: target {units(verb.value)} (raw {target}) is outside TravelMin..TravelMax"
             return refuse("OutOfRange", what, Read("TravelMin", s.travel_min), Read("TravelMax", s.travel_max))
         if move_velocity(s, verb.speed_percent) == 0:
-            return SPEED_REFUSAL_PREFIX + speed_zero_body(registers, verb.speed_percent, s.max_velocity)
+            return SPEED_REFUSAL_PREFIX + speed_zero_body(registers, verb.speed_shown, s.max_velocity)
     if verb.name == "jog" and verb.value is not None:
         if unpublished:
             return refuse("UnreachableSpeed", f"{REFUSED_UNWRITTEN}: the PLC publishes no limits", *limits)

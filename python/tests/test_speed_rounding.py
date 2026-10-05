@@ -113,7 +113,9 @@ def test_the_one_verb_speed_uses_the_same_helper() -> None:
 
 async def test_a_one_verb_move_whose_speed_rounds_to_0_writes_nothing() -> None:
     async with StubPlc(stub_options(49)) as plc:
-        result = await run_verb(Options(host="127.0.0.1", port=plc.port, allow_motion=True), Verb("move", 20, 1), print)
+        result = await run_verb(
+            Options(host="127.0.0.1", port=plc.port, allow_motion=True), Verb("move", 20, 1, speed_text="1"), print
+        )
         writes = list(plc.writes)
     assert (result.result, result.exit_code) == ("GUARD", 2), result.message
     assert result.message == (
