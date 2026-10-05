@@ -1,6 +1,6 @@
 """``python -m generic_axis_check <host>[:port] [--unit N] [--command-base N] [--status-base N] [--owner-id N]
-[--allow-motion] [--tolerance X] [--dump [--watch]] [--report PATH]`` (protocol.md § Conformance checks, "Command
-line")."""
+[--allow-motion] [--tolerance X] [--dump [--watch]] [--command <verb> [args] [--speed P] [--for S]] [--report PATH]``
+(protocol.md § Conformance checks, "Command line")."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import asyncio
 import logging
 import signal
 import sys
+from collections.abc import Coroutine
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from .errors import COMMUNICATION_LOST, PROTOCOL_MISMATCH, ErrorClass, format_me
 from .registers import RegisterMap
 from .report import to_json_text, to_markdown
 from .runner import Report, run
+from .verb import DEFAULT_SPEED_PERCENT, MOTION_VERBS, VERBS, VERBS_WITH_VALUE, Verb, VerbResult, run_verb
 
 DEFAULT_PORT = 502
 USAGE_ERROR = 2
@@ -43,6 +45,7 @@ class Invocation:
     report_json: Path | None
     dump: bool = False
     watch: bool = False
+    verb: Verb | None = None
 
 
 def _u16(text: str) -> int:
@@ -74,6 +77,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="print the decoded register dump and run no checks; writes nothing, takes no lease",
     )
     p.add_argument("--watch", action="store_true", help="with --dump: repeat at 5 Hz until Ctrl-C")
+    p.add_argument(
+        "--command",
+        nargs="+",
+        metavar="VERB",
+        help=f"run one verb instead of the checks: {', '.join(VERBS[:5])}, move <target>, jog <signed velocity>",
+    )
+    p.add_argument("--speed", type=float, help="move: percent of MaxVelocity (default 10)")
+    p.add_argument("--for", dest="run_for", type=float, help="jog: end the jog after this many seconds")
     p.add_argument("--report", type=Path, help="*.md: Markdown there plus JSON next to it; *.json: JSON only")
     return p
 
@@ -98,6 +109,7 @@ def parse(argv: list[str]) -> Invocation:
         raise UsageError("--watch needs --dump")
     if a.dump and a.report is not None:
         raise UsageError("--report applies to a check run, not to --dump")
+    verb = _verb(a)
     report_md = report_json = None
     if a.report is not None:
         match a.report.suffix.lower():
@@ -121,7 +133,44 @@ def parse(argv: list[str]) -> Invocation:
         RegisterMap(options.command_base, options.status_base)
     except ValueError as exc:
         raise UsageError(str(exc)) from exc
-    return Invocation(options, report_md, report_json, dump=a.dump, watch=a.watch)
+    return Invocation(options, report_md, report_json, dump=a.dump, watch=a.watch, verb=verb)
+
+
+def _verb(a: argparse.Namespace) -> Verb | None:
+    """protocol.md § Command line, ``--command <verb> [args]`` and "One-verb mode" (ADR-38): usage errors exit 2."""
+    if a.command is None:
+        if a.speed is not None or a.run_for is not None:
+            raise UsageError("--speed and --for apply to --command move and --command jog")
+        return None
+    name, *args = a.command
+    if name not in VERBS:
+        raise UsageError(f"--command {name}: the verb must be one of {', '.join(VERBS)}")
+    if a.dump or a.report is not None:
+        raise UsageError("--command runs one verb and writes no report: not with --dump or --report")
+    if name in MOTION_VERBS and not a.allow_motion:
+        raise UsageError(f"--command {name} moves the axis: it needs --allow-motion")
+    wanted = 1 if name in VERBS_WITH_VALUE else 0
+    if len(args) != wanted:
+        shape = {"move": "move <target>", "jog": "jog <signed velocity>"}.get(name, name)
+        raise UsageError(f"--command {shape}: got {' '.join(a.command)}")
+    value: float | None = None
+    if args:
+        try:
+            value = float(args[0])
+        except ValueError as exc:
+            raise UsageError(f"--command {name} {args[0]}: not a number") from exc
+    if name == "jog" and value == 0:
+        raise UsageError("--command jog 0: the velocity must not be 0")
+    if a.speed is not None and name != "move":
+        raise UsageError("--speed applies to --command move")
+    if a.speed is not None and not 0 < a.speed <= 100:
+        raise UsageError(f"--speed {a.speed:g}: must be 0 < pct ≤ 100")
+    if a.run_for is not None and name != "jog":
+        raise UsageError("--for applies to --command jog")
+    if a.run_for is not None and a.run_for <= 0:
+        raise UsageError(f"--for {a.run_for:g}: must be > 0")
+    speed = DEFAULT_SPEED_PERCENT if a.speed is None else a.speed
+    return Verb(name, value, speed, a.run_for)
 
 
 async def run_dump(options: Options, watch: bool) -> int:
@@ -147,6 +196,58 @@ async def run_dump(options: Options, watch: bool) -> int:
         client.close()
 
 
+async def _first_ctrl_c_cancels(work: Coroutine[object, object, None]) -> None:
+    """Review #26: the first Ctrl-C cancels the work (its cleanup still runs); any further Ctrl-C only says so.
+    asyncio.run's own handler raises KeyboardInterrupt on the second one, which aborted cleanup mid-way."""
+    loop = asyncio.get_running_loop()
+    task = asyncio.current_task()
+    interrupts = 0
+
+    def on_sigint() -> None:
+        nonlocal interrupts
+        interrupts += 1
+        if interrupts == 1 and task is not None:
+            task.cancel()
+        else:
+            print("Ctrl-C again: the cleanup is still running and will finish", file=sys.stderr)
+
+    loop.add_signal_handler(signal.SIGINT, on_sigint)
+    try:
+        await work
+    finally:
+        loop.remove_signal_handler(signal.SIGINT)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+
+def run_one_verb(options: Options, verb: Verb) -> int:
+    """protocol.md "One-verb mode": print every status read, the verdict, the cleanup and ``RESULT: …``."""
+
+    def out(line: str) -> None:
+        print(line, flush=True)
+
+    target = f"{options.host}:{options.port} unit {options.unit}"
+    print(f"generic-axis-check --command {verb} on {target}", file=sys.stderr, flush=True)
+    produced: list[VerbResult] = []
+
+    async def one() -> None:
+        produced.append(await run_verb(options, verb, out))
+
+    try:
+        asyncio.run(_first_ctrl_c_cancels(one()))
+    except KeyboardInterrupt:
+        if not produced:
+            print("interrupted before the verb's cleanup finished", file=sys.stderr)
+            return INTERRUPTED_EXIT
+    finally:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+    result = produced[0]
+    out(result.message)
+    for line in result.cleanup:
+        out(f"cleanup: {line}")
+    out(f"RESULT: {result.result}")
+    return result.exit_code
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         invocation = parse(sys.argv[1:] if argv is None else argv)
@@ -158,35 +259,16 @@ def main(argv: list[str] | None = None) -> int:
 
     if invocation.dump:
         return asyncio.run(run_dump(invocation.options, invocation.watch))
+    if invocation.verb is not None:
+        return run_one_verb(invocation.options, invocation.verb)
     print(BANNER, file=sys.stderr)
     produced: list[Report] = []
 
     async def checklist() -> None:
-        # Review #26: the first Ctrl-C cancels the run (its cleanup still runs); any further Ctrl-C only says so.
-        # asyncio.run's own handler raises KeyboardInterrupt on the second one, which aborted cleanup mid-way.
-        loop = asyncio.get_running_loop()
-        task = asyncio.current_task()
-        interrupts = 0
-
-        def on_sigint() -> None:
-            nonlocal interrupts
-            interrupts += 1
-            if interrupts == 1 and task is not None:
-                task.cancel()
-            else:
-                print("Ctrl-C again: the cleanup is still running and will finish; the report follows", file=sys.stderr)
-
-        loop.add_signal_handler(signal.SIGINT, on_sigint)
-        try:
-            produced.append(
-                await run(invocation.options, progress=lambda line: print(line, file=sys.stderr, flush=True))
-            )
-        finally:
-            loop.remove_signal_handler(signal.SIGINT)
-            signal.signal(signal.SIGINT, signal.SIG_IGN)
+        produced.append(await run(invocation.options, progress=lambda line: print(line, file=sys.stderr, flush=True)))
 
     try:
-        asyncio.run(checklist())
+        asyncio.run(_first_ctrl_c_cancels(checklist()))
     except KeyboardInterrupt:
         # A Ctrl-C after the run finished (asyncio.run re-raises it once the task is done), or a second Ctrl-C.
         if not produced:

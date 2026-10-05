@@ -92,7 +92,8 @@ def _bits(value: int, names: Sequence[tuple[int, str]], width: int = 16) -> str:
     return " | ".join(set_names) if set_names else "none"
 
 
-def _decode(name: str, value: int) -> str:
+def decode(name: str, value: int) -> str:
+    """A register value as the dump shows it: ``State``/``FaultCode`` by name, ``Flags``/``Command`` bits by name."""
     match name:
         case "Command":
             return _bits(value, _COMMAND_BITS)
@@ -162,7 +163,7 @@ def _rows(table: str, base: int, words: dict[tuple[str, int], int | None]) -> li
             elif is_int32:
                 decoded = "high word"
             else:
-                decoded = _decode(name, raw)
+                decoded = decode(name, raw)
             rows.append(f"{address:<18} {label:<22} 0x{raw:04X}  {decoded}")
     return rows
 

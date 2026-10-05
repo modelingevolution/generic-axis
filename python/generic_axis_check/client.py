@@ -127,6 +127,8 @@ class PlcClient:
         """Reconnect-and-retries performed so far; each check reports its own delta (§ Observed values)."""
         self._generation = 0
         self._reconnect_lock = asyncio.Lock()
+        self.status_listener: Callable[[StatusBlock], None] | None = None
+        """Called with every status block read (one-verb mode prints each one, protocol.md "One-verb mode" step 5)."""
         self.guard: Callable[[], None] | None = None
         """Called before every request while a check runs: the runner sets the beat's ``raise_if_failed`` so every
         wait (a poll, a trip watch, a read after a sleep) reports a dead beat as Transport (review #7)."""
@@ -296,4 +298,7 @@ class PlcClient:
 
     async def read_status(self, registers: RegisterMap) -> StatusBlock:
         """One FC04 of S+0…S+14 (protocol.md § Transport, "Consistency")."""
-        return StatusBlock.parse(await self.read_input(registers.status, STATUS_LENGTH))
+        status = StatusBlock.parse(await self.read_input(registers.status, STATUS_LENGTH))
+        if self.status_listener is not None:
+            self.status_listener(status)
+        return status

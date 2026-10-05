@@ -112,6 +112,9 @@ class CheckContext:
     session_lease: bool = False
     """CHK-06 established the lease; every later check restores it."""
     caused_trip: bool = False
+    found_enabled: bool = False
+    """C+0 already held Enable when the tool attached (one-verb mode): cleanup's Enable 0 is only for an Enable this run
+    set, so a run leaves the axis no more energised than it found it, and no less (protocol.md "One-verb mode" step 6)."""
     foreign_trip: bool = False
     """Pre-flight found a dead lease holder's watchdog trip: it is left for its operator, never cleared (#35)."""
     connect_ms: int | None = None
