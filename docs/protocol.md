@@ -217,10 +217,37 @@ compares its ids with this table.
 | `--allow-motion` | off | Runs CHK-12…CHK-16. Without it they are SKIPPED. **Only with an operator at the machine and the travel clear.** |
 | `--tolerance X` | 0.1 | Position check threshold in axis units (CHK-13). This is a checker threshold, not a machine number. |
 | `--dump` [`--watch`] | off | Prints the decoded register dump (§ Errors and debugging, rule 4) and runs no checks. |
+| `--command <verb> [args]` [`--for S`] | off | Runs one verb instead of the checks (One-verb mode, below): `enable`, `disable`, `home`, `stop`, `reset`, `move <target> [--speed <pct>]`, `jog <signed velocity>`. `home`, `move` and `jog` need `--allow-motion`. `--for S` ends a jog after S seconds. |
 | `--report PATH` | none | `*.md`: writes the Markdown report there and the JSON report next to it as `*.json`. `*.json`: writes the JSON report only. Any other extension is a usage error (exit 2). The Markdown report always goes to stdout. |
 
 Exit codes: 0 = no FAIL (SKIPPED allowed) · 1 = at least one FAIL · 2 = usage error · 3 = refused to start (another commander
 is beating — rw2, a station, or a second tool; see Pre-flight; stop it first) · 4 = interrupted by the operator (Ctrl-C / SIGINT).
+
+**One-verb mode (`--command`)**, for commissioning: send one verb and watch it, with no checklist. It writes no report;
+`--command` with `--dump` or `--report` is a usage error. Both tools do exactly this:
+1. Run the pre-flight of § Rules for every run (exit 3, `RESULT: REFUSED`, if another commander beats). After a dead
+   holder's trip, proceed as the driver does at attach: take the lease and write `WatchdogFault = 0`, leaving
+   ErrorStop and `FaultCode = 4` for `reset`.
+2. Read the status block. `MapVersion ≠ 1` or limits not sane → Protocol error, exit 1, nothing written. Take the lease
+   under the tool's id and beat every 100 ms.
+3. Guards, before any write (Commander class, exit 2, nothing written; the message names the register and its
+   value): `move` needs `Homed` and a target inside `TravelMin..TravelMax`; `--speed` defaults to 10 % of
+   `MaxVelocity` and must be 0 < pct ≤ 100; `jog` needs 0 < |v| ≤ `MaxVelocity`, v in axis units/s. Unpublished
+   limits (all zero) refuse `move` and `jog`.
+4. Send the verb through the handshake of § Command semantics: parameters in one FC16, then `Command` + `CommandSeq`
+   in a second FC16; ack ≤ 500 ms; the edge cleared after the ack. `home`, `move` and `jog` from Disabled set Enable
+   first, as the driver's Home does. `reset` writes `WatchdogFault = 0` if set and Enable 0 before the Reset edge.
+5. Print every status read at 20 ms (`State`, `Flags`, `ActualPosition`, `ActualVelocity`, `FaultCode`, `CommandAck`)
+   until the verb completes: enable → Standstill (5 s) · disable → Disabled (5 s) · home → Standstill + `Homed`
+   (120 s) · stop → Standstill or Disabled (5 s) · reset → not ErrorStop (5 s) · move → Standstill + `InPosition`
+   (2 × |Δ| ÷ v + 5 s) · jog → ContinuousMotion observed (500 ms after the ack), then printing continues until
+   `--for` elapses or Ctrl-C, and the tool sends Stop.
+6. Clean up as § Rules for every run: Stop if moving, clear edges, Enable 0 only if this run set Enable 1, release
+   the lease. A run leaves the axis no more energised than it found it: `enable` proves the handshake and ends Disabled.
+
+Exit codes: 0 = the verb completed (a jog ended by `--for` or Ctrl-C after ContinuousMotion was observed included) ·
+1 = the PLC failed it (Transport, Protocol or Machine, in the shape of § Errors and debugging rule 1) · 2 = usage error
+or a guard refused · 3 = refused by pre-flight · 4 = interrupted by the operator before the verb completed.
 
 ### Rules for every run
 
