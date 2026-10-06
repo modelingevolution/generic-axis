@@ -20,11 +20,12 @@ feed is unreachable from Windows and from GitHub runners; everything needed is o
 - **PackageReference only** across repos. The plugin is loaded standalone by rw2's `PluginLoader`.
 - **No version numbers in csprojs.** `src/Directory.Build.props` holds `1.0.0` placeholders the release workflow
   rewrites from the git tag.
-- **Never publish from a workstation.** Push a `vX.Y.Z` tag; `.github/workflows/release.yml` packs and publishes.
+- **Never publish from a workstation.** Push a `vX.Y.Z` tag; `.github/workflows/publish-nuget.yml` packs and publishes.
   nuget.org is pushed via Trusted Publishing (OIDC, no stored key) and needs two owner-set prerequisites: the
-  repository variable `NUGET_USER` (the nuget.org profile owning the policy), and a nuget.org Trusted Publishing
-  policy — Repository Owner `modelingevolution`, Repository `generic-axis`, Workflow File `release.yml`, no
-  environment, new packages allowed, glob `ModelingEvolution.GenericAxis*`.
+  repository variable `NUGET_USER` (the nuget.org profile owning the policy, org `ModelingEvolution`), and the
+  nuget.org Trusted Publishing policy — owner org `ModelingEvolution`, Repository Owner `modelingevolution`,
+  Repository `generic-axis`, Workflow File `publish-nuget.yml` (the org convention; renaming the file breaks the
+  OIDC exchange), no environment, new packages and versions allowed, glob `*`.
 - **Limits come from the machine** (`TravelMin/Max`, `MaxVelocity` registers) — the driver refuses, it never clamps
   and never invents a number.
 - **A dry run is a station run**: nothing here knows about welding; an axis moves the same way in a dry run.

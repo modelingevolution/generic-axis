@@ -4,7 +4,7 @@
     Single source of version metadata for the repo.
 
     The three 1.0.0 values below are PLACEHOLDERS that the release workflow rewrites from the git
-    tag (.github/workflows/release.yml, "Inject version into csproj"). They are never bumped by
+    tag (.github/workflows/publish-nuget.yml, "Inject version into csproj"). They are never bumped by
     hand and never committed at a real version — a version in a committed csproj is a version that
     disagrees with the tag the moment anyone forgets to change it.
 
