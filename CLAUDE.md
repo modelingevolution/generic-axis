@@ -22,7 +22,10 @@ feed is unreachable from Windows and from GitHub runners; everything needed is o
   rewrites from the git tag.
 - **Never publish from a workstation.** Push a `vX.Y.Z` tag; `.github/workflows/publish-nuget.yml` packs and publishes.
   nuget.org is pushed via Trusted Publishing (OIDC, no stored key) and needs two owner-set prerequisites: the
-  repository variable `NUGET_USER` (the nuget.org profile owning the policy, org `ModelingEvolution`), and the
+  repository variable `NUGET_USER` — the nuget.org username of the person who CREATED the policy (today
+  `rafal.maciag`), NOT the owning org `ModelingEvolution` (nuget.org: "use the username of the policy creator, not the
+  policy owner" — the first run 401'd on the org name; if the creator leaves the org the policy goes inactive, and a
+  member must recreate it and update the variable) — and the
   nuget.org Trusted Publishing policy — owner org `ModelingEvolution`, Repository Owner `modelingevolution`,
   Repository `generic-axis`, Workflow File `publish-nuget.yml` (the org convention; renaming the file breaks the
   OIDC exchange), no environment, new packages and versions allowed, glob `*`.
