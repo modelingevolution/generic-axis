@@ -8,10 +8,30 @@ on:
 # Publishes BOTH packages (ADR-17): the driver ModelingEvolution.GenericAxis, a NuGet library in its
 # own right, and the rw2 plugin ModelingEvolution.GenericAxis.Plugin, whose nuspec depends on it.
 # The staged plugin zip carries both dlls, so a cell that installs from the zip needs no feed.
+#
+# nuget.org is pushed via Trusted Publishing (GitHub OIDC -> NuGet/login -> a 1-hour API key); this
+# repo holds no long-lived nuget.org key. Two prerequisites, both owner-set, outside this file:
+#   1. Repository variable NUGET_USER: the nuget.org USERNAME of the person who CREATED the policy
+#      below (today `rafal.maciag`) -- NOT the owning organization `ModelingEvolution`. nuget.org's
+#      rule, from the 401 on the first run: "Make sure you are using the username of the policy
+#      creator, not the policy owner." If the creator leaves the org the policy goes inactive; a
+#      member must recreate it and set NUGET_USER to their own username. The push step refuses by
+#      name if it is unset.
+#   2. The nuget.org Trusted Publishing policy, as created: owner organization `ModelingEvolution`,
+#      Repository Owner `modelingevolution`, Repository `generic-axis`, Workflow File
+#      `publish-nuget.yml` (this file's name; the OIDC exchange is refused on a mismatch, so never
+#      rename this file without changing the policy), no environment, scope push new packages and
+#      versions, package glob `*`.
+# The internal feed (nuget.modelingevolution.com, secret NUGET_API_KEY_ME) is unaffected.
 
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # Setting any permission drops the rest to none, so this is the job's whole need: checkout reads
+    # contents, the GitHub release writes contents, NuGet/login requests the OIDC token.
+    permissions:
+      contents: write
+      id-token: write
     env:
       PLUGIN_ID: ModelingEvolution.GenericAxis.Plugin
       DRIVER_ID: ModelingEvolution.GenericAxis
@@ -202,19 +222,32 @@ jobs:
               --timeout 60 --skip-duplicate
           done
 
-      - name: Push to NuGet.org
+      # Checked explicitly: an unset variable otherwise reaches NuGet/login as an empty user and comes
+      # back as an opaque token-exchange failure, which reads like a broken policy rather than a missing
+      # setting.
+      - name: Require NUGET_USER
         env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+          NUGET_USER: ${{ vars.NUGET_USER }}
         run: |
-          # Checked explicitly: an unset secret otherwise reaches nuget.org as an empty --api-key and
-          # comes back as a bare 401, which reads like a revoked key rather than a missing one.
-          if [ -z "$NUGET_API_KEY" ]; then
-            echo "::error::NUGET_API_KEY is not set on this repository. The release zip is already published; only the NuGet push is missing. Add the secret and re-run this job."
+          if [ -z "$NUGET_USER" ]; then
+            echo "::error::Repository variable NUGET_USER is not set (the nuget.org username of the person who CREATED this repo's Trusted Publishing policy, not the owning org). The release zip is already published; only the nuget.org push is missing. Set the variable and re-run this job."
             exit 1
           fi
+
+      # Immediately before the push: the key it returns lives one hour, one OIDC token buys one key.
+      - name: NuGet login (Trusted Publishing)
+        id: login
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1 (v1.2.0)
+        with:
+          user: ${{ vars.NUGET_USER }}
+
+      - name: Push to NuGet.org
+        env:
+          NUGET_ORG_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+        run: |
           # Driver first: the plugin's nuspec depends on it, so a consumer resolving the plugin the
           # moment it indexes must find the driver already there.
           dotnet nuget push "./nupkg/$DRIVER_ID.${{ steps.ver.outputs.version }}.nupkg" \
-            --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
+            --api-key "$NUGET_ORG_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
           dotnet nuget push "./nupkg/$PLUGIN_ID.${{ steps.ver.outputs.version }}.nupkg" \
-            --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
+            --api-key "$NUGET_ORG_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate

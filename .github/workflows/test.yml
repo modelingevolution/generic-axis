@@ -32,7 +32,7 @@ jobs:
             --results-directory TestResults --logger trx
 
       # #43: CI does not fail on INCONCLUSIVE (a starved runner is not a defect), but says so on the
-      # job summary with each reason. release.yml refuses them.
+      # job summary with each reason. publish-nuget.yml refuses them.
       - name: Report INCONCLUSIVE results
         if: success() || failure()
         run: python3 .github/scripts/inconclusive.py report TestResults "$(find src -name '*.Tests.csproj' | wc -l)"
