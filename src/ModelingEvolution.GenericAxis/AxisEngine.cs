@@ -289,6 +289,34 @@ internal sealed class AxisEngine : IDisposable
         RaiseStatus(status);
     }
 
+    /// <summary>Attached and not disconnecting: the device may re-attach in place (issue #7).</summary>
+    public bool IsCommanding
+    {
+        get { lock (_sync) return _attached && !_detaching; }
+    }
+
+    /// <summary>
+    /// Issue #7: re-attach in place after the PLC dropped the lease (<c>LeaseOwner = 0</c>, a PLC restart or a clean
+    /// release). A verb in flight fails with CommunicationLost naming <paramref name="reason"/> and writes nothing
+    /// more; then <see cref="AttachAsync"/> runs on <paramref name="fresh"/> — sequence from <c>CommandAck</c>, Enable
+    /// from the PLC state, stale edges cleared, overlays dropped (the axis is attached anew).
+    /// </summary>
+    /// <returns><see langword="false"/> when the engine is detached or detaching — nothing was written.</returns>
+    public async Task<bool> ReattachAsync(PlcSnapshot fresh, string reason, CancellationToken ct)
+    {
+        Running? running;
+        lock (_sync)
+        {
+            if (!_attached || _detaching) return false;
+            running = _running;
+            running?.MarkDetached(reason);
+        }
+
+        running?.Cancel();
+        await AttachAsync(fresh, ct).ConfigureAwait(false);
+        return true;
+    }
+
     /// <summary>
     /// The start of a clean disconnect (review #8): the verb in flight — which the disconnect's Stop is about to
     /// cancel — fails with CommunicationLost "detached during &lt;verb&gt;", not a bare cancellation, and no new verb
@@ -984,7 +1012,7 @@ internal sealed class AxisEngine : IDisposable
         {
             // Review #8: from the verb's point of view the link is gone — the caller did not cancel.
             var lost = Error(MotionError.CommunicationLost,
-                $"the device was detached during {verb}; {verb} did not complete");
+                $"{running.DetachReason ?? "the device was detached"} during {verb}; {verb} did not complete");
             _logger?.LogWarning("{Message}", lost.Message);
             throw lost;
         }
@@ -1248,7 +1276,14 @@ internal sealed class AxisEngine : IDisposable
 
         private int _detached;
 
-        public void MarkDetached() => Volatile.Write(ref _detached, 1);
+        /// <summary>Why the verb was cut off, when it was not a disconnect (issue #7: the PLC dropped the lease).</summary>
+        public string? DetachReason { get; private set; }
+
+        public void MarkDetached(string? reason = null)
+        {
+            DetachReason ??= reason;
+            Volatile.Write(ref _detached, 1);
+        }
 
         public void Cancel()
         {

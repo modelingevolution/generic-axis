@@ -157,6 +157,27 @@ internal sealed class MiniPlc : IAsyncDisposable
     public void Teleport(double position) => _actions.Enqueue(() => { _p = position; _v = 0; });
 
     /// <summary>Runs an action on the scan thread before the next scan.</summary>
+    /// <summary>
+    /// A PLC restart (issue #7): the PLC comes back with its command block cleared (<c>LeaseOwner = 0</c>,
+    /// <c>WatchdogFault = 0</c>, <c>Heartbeat = 0</c>), State Disabled, <c>Homed</c> off, <c>CommandAck = 0</c> and the
+    /// trip counter at 0 (it counts since power-up). The TCP server stays up, as when the link reconnects
+    /// transparently. Applied at the start of the next scan.
+    /// </summary>
+    public void PowerCycle() => _actions.Enqueue(() =>
+    {
+        for (var offset = 0; offset <= 11; offset++) Set(C(offset), 0);
+        _state = 0;
+        _fault = 0;
+        _ack = 0;
+        _v = 0;
+        _homed = false;
+        _inPosition = false;
+        _armed = false;
+        _needFreshEnable = false;
+        _lastBeat = 0;
+        _trips = 0;
+    });
+
     public void OnScan(Action action) => _actions.Enqueue(action);
 
     /// <summary>

@@ -192,6 +192,68 @@ public class LeaseAndHeartbeatTests
         rig.Plc.CommandWritesSince(0).Count.Should().Be(writes, "a refusal writes nothing");
     }
 
+    [Fact(DisplayName = "GA-U-12b An unowned lease seen in a tick is re-taken in place, along the attach path (issue #7)")]
+    public async Task Tick_LeaseOwnerZero_RetakesLeaseClearsWatchdogContinuesFromAck()
+    {
+        await using var rig = await new DriverRig().ConnectAsync();
+        rig.BehaveLikePlc();
+        await rig.TickAsync();
+        rig.Axis.State.Should().Be(AxisState.Standstill, "anchor: healthy before the restart");
+
+        // The PLC restarts: command block cleared, Disabled, not homed, CommandAck 0.
+        rig.Plc.Set(p =>
+        {
+            p.LeaseOwner = 0;
+            p.WatchdogFault = 0;
+            p.State = 0;
+            p.Flags = StatusFlags.DriveReady;
+            p.CommandAck = 0;
+        });
+        var from = rig.Plc.OpCount;
+        await rig.TickAsync();
+
+        var writes = rig.Plc.Ops.Skip(from).Where(o => o.IsWrite && o.Address != rig.Plc.Map.Heartbeat).ToArray();
+        writes.Select(w => (w.Address, w.Values[0])).Should().Equal(
+            [(rig.Plc.Map.LeaseOwner, DriverRig.Owner), (rig.Plc.Map.WatchdogFault, 0), (rig.Plc.Map.Command, 0)],
+            "own id, then WatchdogFault 0, then the attach's [Command = 0 (Disabled), CommandSeq = CommandAck]");
+        writes[2].Values.Should().Equal([(ushort)0, (ushort)0]);
+        rig.Plc.LeaseOwner.Should().Be(DriverRig.Owner);
+        rig.Device.IsConnected.Should().BeTrue();
+        rig.Axis.State.Should().Be(AxisState.Disabled);
+        rig.Axis.Status.Error.Should().BeNull();
+        rig.Device.Engine.Sequence.Should().Be(0, "the sequence continues from the restarted PLC's CommandAck");
+        rig.LogsAt(LogLevel.Warning).Should().ContainSingle(r => r.Message.Contains("LeaseOwner (C+9 = holding 9) = 0"));
+        rig.LogsAt(LogLevel.Error).Should().BeEmpty();
+
+        await rig.TickAsync(3);
+        rig.Plc.Writes.Count(w => w.Address == rig.Plc.Map.LeaseOwner).Should().Be(2, "taken at attach, re-taken once");
+    }
+
+    [Fact(DisplayName = "GA-U-12c A re-take onto a PLC with another map version writes nothing and latches ProtocolMismatch")]
+    public async Task Tick_LeaseOwnerZeroWrongMapVersion_RefusedNothingWritten()
+    {
+        await using var rig = await new DriverRig().ConnectAsync();
+        rig.BehaveLikePlc();
+        await rig.TickAsync();
+        var failures = 0;
+        rig.Device.Heartbeat.TickFailed += (_, _) => Interlocked.Increment(ref failures);
+
+        rig.Plc.Set(p =>
+        {
+            p.LeaseOwner = 0;
+            p.MapVersion = 2;
+        });
+        var from = rig.Plc.OpCount;
+        rig.Time.Advance(rig.Options.HeartbeatInterval);
+        await DriverRig.Until(() => Volatile.Read(ref failures) == 1);
+        await DriverRig.Settle();
+
+        rig.Plc.Ops.Skip(from).Where(o => o.IsWrite && o.Address != rig.Plc.Map.Heartbeat).Should().BeEmpty();
+        rig.Plc.LeaseOwner.Should().Be(0);
+        rig.Axis.Status.Error.Should().Be(MotionError.ProtocolMismatch);
+        rig.LogsAt(LogLevel.Error).Should().Contain(r => r.Message.Contains("lease re-take refused; nothing was written"));
+    }
+
     /// <summary>Advances fake time one interval at a time, waiting for the loop's next read before the next step.</summary>
     private static async Task Pump(FakeTimeProvider time, FakePlcChannel plc, Func<bool> done)
     {

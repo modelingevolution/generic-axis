@@ -76,6 +76,14 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
     /// <summary>Raised when a tick fails after the channel's retry.</summary>
     public event EventHandler<MotionException>? TickFailed;
 
+    /// <summary>
+    /// Issue #7: run inside the tick when it reads <c>LeaseOwner = 0</c> while this driver holds the lease — a PLC
+    /// restart or a clean release, never another commander (protocol § FR-11 "Advisory lease"). It re-attaches in
+    /// place and returns the snapshot the tick then reports, or <see langword="null"/> when the device is not attached
+    /// for commanding (the tick then reports what it read). A throw fails the tick like a channel failure.
+    /// </summary>
+    internal Func<PlcSnapshot, CancellationToken, Task<PlcSnapshot?>>? UnownedLease { get; set; }
+
     // ═══════════════════════ lease ═══════════════════════
 
     /// <summary>
@@ -140,6 +148,15 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
         var words = await _channel.ReadHoldingAsync(_unit, _map.Heartbeat, 2, "read heartbeat and lease owner",
             ChannelPriority.Heartbeat, ct).ConfigureAwait(false);
         return (words[0], words[1]);
+    }
+
+    /// <summary>Re-takes an unowned lease while attached (issue #7): writes own id into <c>LeaseOwner</c>, no
+    /// watching — 0 is "take it" in the advisory-lease rule.</summary>
+    internal async Task RetakeAsync(CancellationToken ct)
+    {
+        await _channel.WriteRegisterAsync(_unit, _map.LeaseOwner, OwnerId, "re-take unowned lease",
+            ChannelPriority.Heartbeat, ct).ConfigureAwait(false);
+        _leaseHeld = true;
     }
 
     /// <summary>Writes <c>WatchdogFault = 0</c> on the stop lane (design § Device lifecycle step 4).</summary>
@@ -226,6 +243,10 @@ internal sealed class AxisHeartbeat : IAsyncDisposable
             + "ActualPosition {Position}, CommandAck {Ack}",
             _axis, snapshot.LeaseOwner, snapshot.WatchdogFault, snapshot.WatchdogTrips, snapshot.Status.State,
             (ushort)snapshot.Status.Flags, snapshot.Status.ActualPosition, snapshot.Status.CommandAck);
+
+        if (_leaseHeld && snapshot.LeaseOwner == AdvisoryLease.Unowned && UnownedLease is { } retake
+            && await retake(snapshot, ct).ConfigureAwait(false) is { } reattached)
+            snapshot = reattached;
 
         if (snapshot.WatchdogFault != 0 && _lastWatchdogFault == 0)
             _logger?.LogError("{Message}", AxisErrors.Message(_axis, MotionError.WatchdogTripped,

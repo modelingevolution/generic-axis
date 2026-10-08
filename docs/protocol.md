@@ -118,7 +118,9 @@ dead commander is indistinguishable from an idle one. Therefore:
   Watching continuously rather than in discrete 1 s samples lets a successor attach ≤ 1.1 s after the incumbent's
   last beat. "Advisory" is stated plainly: Modbus has no compare-and-swap, so two drivers starting in the same window
   can both pass; the watchdog bounds the consequence. On a clean disconnect the driver writes `LeaseOwner = 0` if it
-  still holds it.
+  still holds it. A tick that reads `LeaseOwner = 0` while attached (a PLC restart or a clean release, never another
+  commander) makes the driver re-take the lease in place along the attach path: map and limits checked, own id
+  written, `WatchdogFault = 0` written, sequence continued from `CommandAck`; only a foreign non-zero owner is `LeaseHeld`.
 - **At attach** the driver writes `WatchdogFault = 0` after winning the lease: a latched trip then belongs to a dead
   predecessor, and leaving it latched would leave the network disarmed for the new commander. `FaultCode = 4` and
   ErrorStop stay until a Reset, so the trip remains visible and distinguishable from a drive fault.
