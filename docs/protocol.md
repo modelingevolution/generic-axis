@@ -191,7 +191,7 @@ Example messages:
 carriage: Protocol/ProtocolMismatch: attach refused. Read MapVersion (S+14 = input 14) = 2, expected 1.
 carriage: Protocol/NotAcknowledged: Home not accepted. CommandSeq 42 written, CommandAck 41 read after 500 ms, State 0 read.
 carriage: Machine/WatchdogTripped: Read FaultCode (S+6 = input 6) = 4, WatchdogFault (C+10 = holding 10) = 1, WatchdogTrips (C+11 = holding 11) = 3.
-carriage: Transport/CommunicationLost: FC04 read S+0…S+14 on 192.168.58.20:502 unit 1 failed twice (reconnected once): Connection refused.
+carriage: Transport/CommunicationLost: FC04 read S+0…S+14 on 192.168.58.10:502 unit 1 failed twice (reconnected once): Connection refused.
 carriage: Protocol/ProtocolMismatch: FC04 read S+0…S+14 = input 0…14 refused: Modbus exception 02 (illegal data address) — the PLC does not serve the status block as input registers.
 CHK-06: Protocol/NotAcknowledged: Enable 1 not accepted. CommandSeq 7 written, CommandAck 6 read after 500 ms, State 0 read.
 ```
@@ -397,7 +397,7 @@ JSON (`schema: "generic-axis-conformance/1"`). Both tools emit exactly these fie
   "schema": "generic-axis-conformance/1",
   "mapVersion": 1,
   "tool": { "name": "generic-axis-check", "language": "python", "version": "1.0.0" },
-  "target": { "host": "192.168.58.20", "port": 502, "unit": 1, "commandBase": 0, "statusBase": 0 },
+  "target": { "host": "192.168.58.10", "port": 502, "unit": 1, "commandBase": 0, "statusBase": 0 },
   "allowMotion": false,
   "startedAt": "2026-09-29T10:15:02Z",
   "finishedAt": "2026-09-29T10:15:31Z",
