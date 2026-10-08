@@ -691,4 +691,42 @@ public class DriverIntegrationTests(ITestOutputHelper output)
         positions.Should().NotBeEmpty();
         positions.Should().OnlyContain(p => rig.Plc.WasPublished((int)Math.Round(p * 1000, MidpointRounding.AwayFromZero)));
     }
+
+    [Fact(DisplayName = "GA-I-25 A PLC restart under a live session: the unowned lease is re-taken in place (issue #7)")]
+    public async Task PlcRestart_LeaseOwnerZero_LeaseRetakenAndAxisReportsThePlcState()
+    {
+        await using var rig = new LiveRig();
+        var track = await rig.ConnectedTrack(power: true);
+        await track.Carriage.MoveAbsoluteAsync(new Mm(1000), new MmPerS(500)).WaitAsync(T);
+        rig.Plc.Truth.Homed.Should().BeTrue("anchor: homed and moving before the restart");
+        rig.Plc.Truth.CommandAck.Should().BeGreaterThan(0, "anchor: commands were acknowledged");
+        var warningsBefore = rig.Logs.GetSnapshot().Count(r => r.Level == LogLevel.Warning);
+
+        rig.Plc.PowerCycle();
+        await rig.Plc.WaitFor(t => t is { LeaseOwner: 0, State: 0, Homed: false }, T, "the PLC restarted");
+
+        await rig.Plc.WaitFor(t => t.LeaseOwner == 1, T, "the driver re-takes the unowned lease");
+        await rig.Plc.WaitFor(t => t.WatchdogArmed, T, "the next beat re-arms the watchdog");
+        await DriverRig.Until(() => track.LastSnapshot is { LeaseOwner: 1 }, "the driver sees its lease again");
+        await Task.Delay(300); // three more ticks: a latched LeaseHeld would show by now
+
+        track.IsConnected.Should().BeTrue();
+        rig.Plc.Truth.WatchdogFault.Should().Be(0);
+        track.Carriage.Status.Error.Should().BeNull("an unowned lease is not another commander");
+        track.Carriage.State.Should().Be(AxisState.Disabled, "the state is whatever the restarted PLC reports");
+        track.Carriage.Status.Position.Should().BeNull("not homed after the restart");
+        var logs = rig.Logs.GetSnapshot();
+        logs.Where(r => r.Level == LogLevel.Warning && r.Message.Contains("LeaseOwner (C+9 = holding 9) = 0"))
+            .Should().ContainSingle().Which.Message.Should().Contain("PLC restarted or lease released; lease re-taken");
+        logs.Should().NotContain(r => r.Message.Contains("LeaseHeld"));
+        logs.Count(r => r.Level == LogLevel.Warning).Should().Be(warningsBefore + 1, "one Warning for the re-take");
+
+        await track.Carriage.PowerAsync(true).WaitAsync(T);
+        var move = await Throws(() => track.Carriage.MoveAbsoluteAsync(new Mm(2000), new MmPerS(500)));
+        move.Error.Should().Be(MotionError.NotHomed, "the restarted PLC cleared Homed; the host sees it honestly");
+
+        await track.Carriage.HomeAsync().WaitAsync(T);
+        await track.Carriage.MoveAbsoluteAsync(new Mm(2000), new MmPerS(500)).WaitAsync(T);
+        rig.Plc.Truth.Position.Should().BeApproximately(2000, 0.005);
+    }
 }
