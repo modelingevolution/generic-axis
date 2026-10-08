@@ -83,6 +83,12 @@
                 <MudSwitch T="bool" Value="@Host.PublishLimits" ValueChanged="v => Host.PublishLimits = v" Color="Color.Primary" Label="PublishLimits"/>
                 <MudNumericField T="int" Value="@Host.MapVersion" ValueChanged="v => Host.MapVersion = (ushort)Math.Clamp(v, 0, 65535)" Label="MapVersion" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:140px"/>
             </div>
+            <MudText Typo="Typo.caption" Class="mud-text-secondary mt-2 d-block">Drive ramps — the PLC defaults when the Acceleration register (C+6…C+7) is 0; Stop always uses the quick-stop ramp</MudText>
+            <div class="d-flex flex-wrap align-center gap-2">
+                <MudNumericField T="double" Value="@Host.Acceleration" ValueChanged="v => Ramp(v, r => Host.Acceleration = r)" Min="0.001" Label="@($"Acceleration, {unit}/s²")" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:170px" data-testid="sim-acceleration"/>
+                <MudNumericField T="double" Value="@Host.Deceleration" ValueChanged="v => Ramp(v, r => Host.Deceleration = r)" Min="0.001" Label="@($"Deceleration, {unit}/s²")" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:170px" data-testid="sim-deceleration"/>
+                <MudNumericField T="double" Value="@Host.QuickStopDeceleration" ValueChanged="v => Ramp(v, r => Host.QuickStopDeceleration = r)" Min="0.001" Label="@($"Quick stop, {unit}/s²")" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:170px" data-testid="sim-quick-stop"/>
+            </div>
         </MudPaper>
     </MudItem>
     <MudItem xs="12">
@@ -100,6 +106,12 @@
 
 @code {
     private double _teleportTo;
+
+    // A ramp must be > 0: a cleared or zero field keeps the current value instead of throwing on the circuit.
+    private static void Ramp(double value, Action<double> apply)
+    {
+        if (value > 0 && double.IsFinite(value)) apply(value);
+    }
 
     private sealed record FaultSwitch(string Name, Func<SimFaults, bool> Get, Func<SimFaults, bool, SimFaults> Set);
 

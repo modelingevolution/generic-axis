@@ -343,6 +343,75 @@ public sealed class AxisPlcTests
     }
 
     [Fact]
+    public void AMoveRampsUpAtAccelerationAndBrakesAtDeceleration()
+    {
+        // Acceleration register 0 = the PLC defaults: a steep ramp-up (20 per scan) and a gentle braking ramp (5 per scan).
+        using var bench = new PlcBench(new SimulatedAxisOptions { InitialPosition = 0, DefaultAcceleration = 2000, DefaultDeceleration = 500 });
+        bench.Energise();
+        bench.Parameters(target: 1000, velocity: 100);
+        bench.Command(SimCommandBits.Enable | SimCommandBits.MoveAbsolute);
+
+        var (up, down) = RampSteps(bench);
+
+        up.Should().BeApproximately(2000 * 0.010, 1e-9, "the speed grows by a·dt per scan");
+        down.Should().BeApproximately(500 * 0.010, 1e-9, "the speed falls by d·dt per scan, never faster");
+        bench.ActualPositionRaw.Should().Be(1_000_000);
+        bench.Flags.Should().HaveFlag(SimStatusFlags.InPosition);
+    }
+
+    [Fact]
+    public void TheAccelerationRegisterSetsBothRampsOfTheMove()
+    {
+        using var bench = new PlcBench(new SimulatedAxisOptions { InitialPosition = 0, DefaultAcceleration = 2000, DefaultDeceleration = 500 });
+        bench.Energise();
+        bench.Parameters(target: 1000, velocity: 100, acceleration: 1000);
+        bench.Command(SimCommandBits.Enable | SimCommandBits.MoveAbsolute);
+
+        var (up, down) = RampSteps(bench);
+
+        up.Should().BeApproximately(1000 * 0.010, 1e-9, "C+6…C+7 overrides the default ramp-up");
+        down.Should().BeApproximately(1000 * 0.010, 1e-9, "and the default braking ramp");
+    }
+
+    [Fact]
+    public void RampsChangeAtRuntimeAndStopKeepsItsOwn()
+    {
+        using var bench = new PlcBench(new SimulatedAxisOptions { InitialPosition = 0 });
+        bench.Plc.Acceleration = 2000;
+        bench.Plc.Deceleration = 500;
+        bench.Plc.QuickStopDeceleration = 250;
+        bench.Energise();
+        bench.Parameters(target: 9000, velocity: 100);
+        bench.Command(SimCommandBits.Enable | SimCommandBits.MoveAbsolute);
+        bench.TickUntil(() => bench.Snap.Velocity >= 100, TimeSpan.FromSeconds(1)).Should().BeLessThanOrEqualTo(TimeSpan.FromMilliseconds(60), "ramp-up at 2000 takes 5 scans");
+
+        bench.Command(SimCommandBits.Enable | SimCommandBits.Stop);
+        bench.Tick();
+        var halted = bench.TickUntil(() => bench.State == Standstill, TimeSpan.FromSeconds(2));
+
+        halted.Should().BeCloseTo(TimeSpan.FromMilliseconds(400), TimeSpan.FromMilliseconds(20), "100 unit/s at 250 unit/s² is the quick-stop ramp, not the move's");
+        var act = () => bench.Plc.Deceleration = 0;
+        act.Should().Throw<ArgumentOutOfRangeException>("a ramp must be > 0");
+        bench.Plc.Deceleration.Should().Be(500);
+    }
+
+    /// <summary>Runs the move to Standstill; the largest per-scan speed change while speeding up and while braking.</summary>
+    private static (double Up, double Down) RampSteps(PlcBench bench)
+    {
+        var previous = 0.0;
+        double up = 0, down = 0;
+        bench.TickUntil(() =>
+        {
+            var v = bench.Snap.Velocity;
+            if (v > previous) up = Math.Max(up, v - previous);
+            if (v < previous) down = Math.Max(down, previous - v);
+            previous = v;
+            return bench.State == Standstill && bench.Snap.CommandAck == bench.Seq;
+        }, TimeSpan.FromSeconds(30));
+        return (up, down);
+    }
+
+    [Fact]
     public void MoveAbsoluteNeedsHomed()
     {
         using var bench = new PlcBench(new SimulatedAxisOptions { HomedAtPowerUp = false });

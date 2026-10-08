@@ -40,6 +40,7 @@ public sealed class AxisPlc
     private double _target;
     private double _vcmd;
     private double _accel;
+    private double _decel;
     private double _moveStart;
     private bool _followingErrorArmed;
     private bool _homingBackOff;
@@ -67,6 +68,9 @@ public sealed class AxisPlc
         _faults = options.Faults;
         PublishLimits = options.PublishLimits;
         MapVersion = options.MapVersion;
+        _acceleration = options.DefaultAcceleration;
+        _deceleration = options.DefaultDeceleration;
+        _quickStop = options.QuickStopDeceleration;
         _x = options.InitialPosition;
         _homed = options.HomedAtPowerUp;
         _offset = _homed ? 0 : options.UnhomedOffset;
@@ -89,6 +93,37 @@ public sealed class AxisPlc
 
     /// <summary>Value served in S+14.</summary>
     public ushort MapVersion { get; set; }
+
+    private double _acceleration;
+    private double _deceleration;
+    private double _quickStop;
+
+    /// <summary>The PLC's default ramp-up (unit/s²), used when the <c>Acceleration</c> register is 0. Runtime-editable (UI).</summary>
+    public double Acceleration
+    {
+        get => _acceleration;
+        set => _acceleration = Positive(value);
+    }
+
+    /// <summary>The PLC's default braking ramp (unit/s²): arrival, a homed travel limit, homing. Used when the register is 0.</summary>
+    public double Deceleration
+    {
+        get => _deceleration;
+        set => _deceleration = Positive(value);
+    }
+
+    /// <summary>The Stop ramp (unit/s²), independent of the move's ramps.</summary>
+    public double QuickStopDeceleration
+    {
+        get => _quickStop;
+        set => _quickStop = Positive(value);
+    }
+
+    private static double Positive(double value, [System.Runtime.CompilerServices.CallerMemberName] string name = "") =>
+        value > 0 && double.IsFinite(value) ? value : throw new ArgumentOutOfRangeException(name, value, "A ramp must be > 0");
+
+    /// <summary>A non-zero <c>Acceleration</c> register sets both ramps of the move; 0 = the PLC defaults.</summary>
+    private (double Accel, double Decel) Ramps(double register) => register > 0 ? (register, register) : (_acceleration, _deceleration);
 
     private double Published => _x + _offset;
     private bool SensorActive => !_faults.HomeSensorDead && Math.Abs(_x - _o.HomeSensorPosition) <= _o.HomeSensorWidth / 2;
@@ -354,7 +389,7 @@ public sealed class AxisPlc
     {
         if (_state != SimAxisState.Standstill) return Ignored(command, $"Home needs Standstill, state is {_state}");
         _inPosition = false;
-        _accel = _o.DefaultAcceleration;
+        (_accel, _decel) = Ramps(0);
         _homingBackOff = SensorActive; // already on the sensor: leave it first, so the edge is a real one
         SetState(SimAxisState.Homing, _homingBackOff ? "Home (backing off the sensor)" : "Home");
         return true;
@@ -380,7 +415,7 @@ public sealed class AxisPlc
 
         _target = target;
         _vcmd = speed;
-        _accel = accel > 0 ? accel : _o.DefaultAcceleration;
+        (_accel, _decel) = Ramps(accel);
         _moveStart = Published;
         _followingErrorArmed = _faults.FollowingErrorAtHalfway;
         _inPosition = false;
@@ -403,7 +438,7 @@ public sealed class AxisPlc
         if (TowardActiveSwitch(velocity)) return Ignored(command, "motion toward an active limit switch");
 
         _vcmd = velocity;
-        _accel = accel > 0 ? accel : _o.DefaultAcceleration;
+        (_accel, _decel) = Ramps(accel);
         _inPosition = false;
         _motionAcceptedAt = _clock;
         SetState(SimAxisState.ContinuousMotion, $"MoveVelocity {_vcmd} {_o.Unit}/s, a {_accel}");
@@ -442,7 +477,6 @@ public sealed class AxisPlc
     private void Motion(double dt)
     {
         double targetVelocity;
-        var accel = _accel;
 
         // Injected: the drive starts a move only MotionStartDelay after the PLC accepted it (a slow drive).
         if (_state is SimAxisState.DiscreteMotion or SimAxisState.ContinuousMotion && _clock - _motionAcceptedAt < _faults.MotionStartDelay)
@@ -453,7 +487,7 @@ public sealed class AxisPlc
             case SimAxisState.DiscreteMotion:
             {
                 var d = _target - Published;
-                if (Arrived(Math.Abs(d), accel, dt))
+                if (Arrived(Math.Abs(d), _decel, dt))
                 {
                     _x = _target - _offset;
                     _v = 0;
@@ -462,8 +496,8 @@ public sealed class AxisPlc
                     break;
                 }
 
-                targetVelocity = Math.CopySign(Math.Min(_vcmd, BrakingSpeed(Math.Abs(d), accel, dt)), d);
-                Integrate(targetVelocity, accel, dt);
+                targetVelocity = Math.CopySign(Math.Min(_vcmd, BrakingSpeed(Math.Abs(d), _decel, dt)), d);
+                Integrate(targetVelocity, _accel, _decel, dt);
                 if (_followingErrorArmed && Math.Abs(Published - _moveStart) >= Math.Abs(_target - _moveStart) / 2)
                 {
                     _followingErrorArmed = false;
@@ -479,7 +513,7 @@ public sealed class AxisPlc
                     // Homed: TravelMin/Max is a controlled stop, braked so the axis stands exactly on the limit.
                     var limit = _vcmd > 0 ? _o.TravelMax : _o.TravelMin;
                     var ahead = Math.Max(0, (limit - Published) * Math.Sign(_vcmd));
-                    if (Arrived(ahead, accel, dt))
+                    if (Arrived(ahead, _decel, dt))
                     {
                         if (ahead > 0) _x = limit - _offset;
                         _v = 0;
@@ -487,24 +521,24 @@ public sealed class AxisPlc
                         break;
                     }
 
-                    targetVelocity = Math.CopySign(Math.Min(Math.Abs(_vcmd), BrakingSpeed(ahead, accel, dt)), _vcmd);
+                    targetVelocity = Math.CopySign(Math.Min(Math.Abs(_vcmd), BrakingSpeed(ahead, _decel, dt)), _vcmd);
                 }
                 else
                 {
                     targetVelocity = _vcmd;
                 }
 
-                Integrate(targetVelocity, accel, dt);
+                Integrate(targetVelocity, _accel, _decel, dt);
                 break;
 
             case SimAxisState.Stopping:
-                Integrate(0, _o.QuickStopDeceleration, dt);
+                Integrate(0, _quickStop, _quickStop, dt);
                 if (_v == 0) SetState(SimAxisState.Standstill, "stopped");
                 break;
 
             case SimAxisState.Homing:
                 if (_homingBackOff && !SensorActive) _homingBackOff = false;
-                Integrate(_homingBackOff ? _o.HomingVelocity : -_o.HomingVelocity, _o.DefaultAcceleration, dt);
+                Integrate(_homingBackOff ? _o.HomingVelocity : -_o.HomingVelocity, _accel, _decel, dt);
                 break;
 
             default:
@@ -516,9 +550,11 @@ public sealed class AxisPlc
         LimitSwitches();
     }
 
-    private void Integrate(double targetVelocity, double accel, double dt)
+    /// <summary>One scan of the velocity ramp: <paramref name="accel"/> while the speed grows, <paramref name="decel"/> while it falls or reverses.</summary>
+    private void Integrate(double targetVelocity, double accel, double decel, double dt)
     {
-        var step = accel * dt;
+        var speedingUp = _v == 0 || (Math.Sign(targetVelocity) == Math.Sign(_v) && Math.Abs(targetVelocity) > Math.Abs(_v));
+        var step = (speedingUp ? accel : decel) * dt;
         _v += Math.Clamp(targetVelocity - _v, -step, step);
         _x += _v * dt;
         if (_x < HardStopMin || _x > HardStopMax)

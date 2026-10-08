@@ -18,6 +18,8 @@ public sealed class DriverForm
     public SimAxisKind Kind { get; set; } = SimAxisKind.Linear;
     public int OwnerId { get; set; } = 100;
     public double? LeaseTimeoutSeconds { get; set; } = 3;
+    /// <summary>Written to C+6…C+7 with every move; blank = 0 = the PLC's default ramp.</summary>
+    public double? Acceleration { get; set; }
     public double? ConfiguredTravelMin { get; set; }
     public double? ConfiguredTravelMax { get; set; }
     public double? ConfiguredMaxVelocity { get; set; }
@@ -75,6 +77,7 @@ public sealed class DriverSession : IAsyncDisposable
             UnitId = f.Unit,
             Map = new RegisterMap(f.CommandBase, f.StatusBase),
             LeaseTimeout = f.LeaseTimeoutSeconds is { } s ? TimeSpan.FromSeconds(s) : null,
+            Acceleration = f.Acceleration,
             ConfiguredTravelMin = f.ConfiguredTravelMin,
             ConfiguredTravelMax = f.ConfiguredTravelMax,
             ConfiguredMaxVelocity = f.ConfiguredMaxVelocity,

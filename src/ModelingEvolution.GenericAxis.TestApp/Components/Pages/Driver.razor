@@ -33,6 +33,7 @@
                 </MudSelect>
                 <MudNumericField T="int" @bind-Value="Session.Form.OwnerId" Label="Owner id" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="connected" Style="max-width:110px"/>
                 <MudNumericField T="double?" @bind-Value="Session.Form.LeaseTimeoutSeconds" Label="Lease timeout, s" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="connected" Style="max-width:140px"/>
+                <MudNumericField T="double?" @bind-Value="Session.Form.Acceleration" Label="@($"Acceleration, {unit}/s² (blank = PLC default)")" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="connected" Style="max-width:240px" data-testid="driver-acceleration"/>
             </div>
             <MudText Typo="Typo.caption" Class="mud-text-secondary mt-2 d-block">Configured limits — used only when the PLC publishes none</MudText>
             <div class="d-flex flex-wrap gap-2">

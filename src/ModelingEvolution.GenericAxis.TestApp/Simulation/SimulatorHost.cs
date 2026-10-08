@@ -116,6 +116,38 @@ public sealed class SimulatorHost : IDisposable
         }
     }
 
+    /// <summary>The PLC's default ramp-up, unit/s² (UI field). Applies to moves accepted from now on.</summary>
+    public double Acceleration
+    {
+        get => _plc.Acceleration;
+        set => SetRamp(nameof(Acceleration), _plc.Acceleration, value, v => _plc.Acceleration = v);
+    }
+
+    /// <summary>The PLC's default braking ramp, unit/s² (UI field).</summary>
+    public double Deceleration
+    {
+        get => _plc.Deceleration;
+        set => SetRamp(nameof(Deceleration), _plc.Deceleration, value, v => _plc.Deceleration = v);
+    }
+
+    /// <summary>The Stop ramp, unit/s² (UI field).</summary>
+    public double QuickStopDeceleration
+    {
+        get => _plc.QuickStopDeceleration;
+        set => SetRamp(nameof(QuickStopDeceleration), _plc.QuickStopDeceleration, value, v => _plc.QuickStopDeceleration = v);
+    }
+
+    private void SetRamp(string name, double old, double value, Action<double> apply)
+    {
+        lock (_sync)
+        {
+            if (old == value) return;
+            apply(value); // throws on a ramp <= 0, nothing changed
+            _log.LogWarning("{Ramp} {Old} -> {New} {Unit}/s²", name, old, value, Options.Unit);
+            Refresh();
+        }
+    }
+
     /// <summary>Value served in S+14 (UI field; tests).</summary>
     public ushort MapVersion
     {

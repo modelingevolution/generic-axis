@@ -27,7 +27,10 @@ public sealed record SimulatedAxisOptions
     public double TravelMin { get; init; } = 0;
     public double TravelMax { get; init; } = 10_000;
     public double MaxVelocity { get; init; } = 500;
+    /// <summary>Ramp-up when the <c>Acceleration</c> register (C+6…C+7) is 0 = PLC default.</summary>
     public double DefaultAcceleration { get; init; } = 1_000;
+    /// <summary>Braking ramp (arrival, travel limit, homing) when the <c>Acceleration</c> register is 0.</summary>
+    public double DefaultDeceleration { get; init; } = 1_000;
     public double QuickStopDeceleration { get; init; } = 5_000;
     public double HomingVelocity { get; init; } = 50;
     public double HomeSensorPosition { get; init; } = 0;
@@ -60,6 +63,7 @@ public sealed record SimulatedAxisOptions
         if (TravelMin >= TravelMax) throw new ArgumentException($"{nameof(TravelMin)} {TravelMin} must be below {nameof(TravelMax)} {TravelMax}", nameof(TravelMin));
         if (MaxVelocity <= 0) throw new ArgumentException($"{nameof(MaxVelocity)} must be > 0", nameof(MaxVelocity));
         if (DefaultAcceleration <= 0) throw new ArgumentException($"{nameof(DefaultAcceleration)} must be > 0", nameof(DefaultAcceleration));
+        if (DefaultDeceleration <= 0) throw new ArgumentException($"{nameof(DefaultDeceleration)} must be > 0", nameof(DefaultDeceleration));
         if (QuickStopDeceleration <= 0) throw new ArgumentException($"{nameof(QuickStopDeceleration)} must be > 0", nameof(QuickStopDeceleration));
         if (HomingVelocity <= 0) throw new ArgumentException($"{nameof(HomingVelocity)} must be > 0", nameof(HomingVelocity));
         if (HomeSensorWidth <= 0) throw new ArgumentException($"{nameof(HomeSensorWidth)} must be > 0", nameof(HomeSensorWidth));
