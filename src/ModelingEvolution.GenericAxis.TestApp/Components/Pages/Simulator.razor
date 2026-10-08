@@ -72,6 +72,17 @@
                 <Reading Label="LeaseOwner" Value="@s.LeaseOwner.ToString()"/>
             </div>
         </MudPaper>
+        <MudPaper Class="pa-4 mt-4" Elevation="1" data-testid="sim-ramps">
+            <MudText Typo="Typo.subtitle2" Class="mb-2">Ramps</MudText>
+            <div class="d-flex flex-wrap align-center gap-2">
+                <MudNumericField T="double" Value="@Host.Acceleration" ValueChanged="v => Ramp(v, r => Host.Acceleration = r)" Min="0.001" Label="@($"Acceleration, {unit}/s²")" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:200px" data-testid="sim-acceleration"/>
+                <MudNumericField T="double" Value="@Host.Deceleration" ValueChanged="v => Ramp(v, r => Host.Deceleration = r)" Min="0.001" Label="@($"Deceleration, {unit}/s²")" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:200px" data-testid="sim-deceleration"/>
+            </div>
+            <MudText Typo="Typo.caption" Class="mud-text-secondary mt-1 d-block">
+                The PLC defaults for a move whose Acceleration register (C+6…C+7) is 0; a non-zero register sets both.
+                Stop uses the quick-stop ramp (@F(Host.QuickStopDeceleration) @unit/s², configuration).
+            </MudText>
+        </MudPaper>
         <MudPaper Class="pa-4 mt-4" Elevation="1">
             <MudText Typo="Typo.subtitle2" Class="mb-2">Controls</MudText>
             <div class="d-flex flex-wrap align-center gap-2">
@@ -82,12 +93,6 @@
             <div class="d-flex flex-wrap align-center gap-4 mt-2">
                 <MudSwitch T="bool" Value="@Host.PublishLimits" ValueChanged="v => Host.PublishLimits = v" Color="Color.Primary" Label="PublishLimits"/>
                 <MudNumericField T="int" Value="@Host.MapVersion" ValueChanged="v => Host.MapVersion = (ushort)Math.Clamp(v, 0, 65535)" Label="MapVersion" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:140px"/>
-            </div>
-            <MudText Typo="Typo.caption" Class="mud-text-secondary mt-2 d-block">Drive ramps — the PLC defaults when the Acceleration register (C+6…C+7) is 0; Stop always uses the quick-stop ramp</MudText>
-            <div class="d-flex flex-wrap align-center gap-2">
-                <MudNumericField T="double" Value="@Host.Acceleration" ValueChanged="v => Ramp(v, r => Host.Acceleration = r)" Min="0.001" Label="@($"Acceleration, {unit}/s²")" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:170px" data-testid="sim-acceleration"/>
-                <MudNumericField T="double" Value="@Host.Deceleration" ValueChanged="v => Ramp(v, r => Host.Deceleration = r)" Min="0.001" Label="@($"Deceleration, {unit}/s²")" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:170px" data-testid="sim-deceleration"/>
-                <MudNumericField T="double" Value="@Host.QuickStopDeceleration" ValueChanged="v => Ramp(v, r => Host.QuickStopDeceleration = r)" Min="0.001" Label="@($"Quick stop, {unit}/s²")" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:170px" data-testid="sim-quick-stop"/>
             </div>
         </MudPaper>
     </MudItem>
