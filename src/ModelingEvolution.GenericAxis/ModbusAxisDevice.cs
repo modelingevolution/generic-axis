@@ -43,6 +43,7 @@ public abstract class ModbusAxisDevice : IMotionDevice, IAsyncDisposable
         _engine = new AxisEngine(options, _channel, ownerId, _logger, clock);
         _heartbeat.Ticked += (_, snapshot) => _engine.OnTick(snapshot);
         _heartbeat.TickFailed += (_, error) => _engine.OnTickFailed(error);
+        _heartbeat.UnownedLease = RetakeLeaseAsync;
 
         Axis = leafFactory(_engine);
         Axes = [Axis];
@@ -178,12 +179,70 @@ public abstract class ModbusAxisDevice : IMotionDevice, IAsyncDisposable
     }
 
     /// <summary>
+    /// Issue #7, protocol § FR-11 "Advisory lease": a tick read <c>LeaseOwner = 0</c> while attached. Unowned is a PLC
+    /// restart or a clean release by someone else, never another commander, so the lease is re-taken in place along
+    /// the initial attach path: the status block the tick read is checked before any write (map version, limit
+    /// publication, reading range) → <c>LeaseOwner</c> = own id → <c>WatchdogFault = 0</c> → a fresh read checked
+    /// again → engine re-attach (sequence continues from <c>CommandAck</c>, Enable from the PLC state, a verb in
+    /// flight fails CommunicationLost). The axis then shows whatever the PLC reports — typically Disabled, not Homed.
+    /// A failure throws into the tick: Transport is CommunicationLost, a refusal is ProtocolMismatch / OutOfRange.
+    /// </summary>
+    /// <returns>The fresh snapshot, or <see langword="null"/> when the device is not attached for commanding (attach
+    /// still running, or a disconnect under way) — then nothing is written.</returns>
+    private async Task<PlcSnapshot?> RetakeLeaseAsync(PlcSnapshot seen, CancellationToken ct)
+    {
+        if (!_connected || !_engine.IsCommanding) return null;
+
+        var o = Options;
+        ThrowIfRefused(seen.Status, null);
+        await _heartbeat.RetakeAsync(ct).ConfigureAwait(false);
+        await _heartbeat.ClearWatchdogFaultAsync(ct).ConfigureAwait(false);
+        var fresh = await _heartbeat.ReadSnapshotAsync(ChannelPriority.Heartbeat, ct).ConfigureAwait(false);
+        ThrowIfRefused(fresh.Status, $"LeaseOwner = {OwnerId} and WatchdogFault = 0");
+        var reason = $"the PLC dropped the lease (LeaseOwner ({o.Map.Describe(RegisterField.LeaseOwner)}) = 0)";
+        if (!await _engine.ReattachAsync(fresh, reason, ct).ConfigureAwait(false)) return null;
+
+        _lastRetakeRefusal = null;
+        _logger?.LogWarning(
+            "{Axis}: LeaseOwner ({Register}) = 0 while attached as {Owner} — PLC restarted or lease released; lease "
+            + "re-taken. The axis now reports the PLC's state {State}{Homed}",
+            o.Name, o.Map.Describe(RegisterField.LeaseOwner), OwnerId, AxisEngine.MapState(fresh.Status.State),
+            fresh.Status.Homed ? "" : ", not homed");
+        return fresh;
+    }
+
+    /// <summary>The re-take's refusal, logged at Error once per distinct cause (the tick retries every interval).</summary>
+    private void ThrowIfRefused(StatusBlock s, string? written)
+    {
+        if (MapRefusal(s, "lease re-take", written) is not { } refusal) return;
+        if (refusal.Message != _lastRetakeRefusal)
+            _logger?.LogError("{Message}", refusal.Message);
+        _lastRetakeRefusal = refusal.Message;
+        throw refusal;
+    }
+
+    private string? _lastRetakeRefusal; // tick loop only
+
+    /// <summary>
     /// Map version (S+14) and limit publication (S+8…S+13) before any write — both <c>ProtocolMismatch</c>, the PLC
     /// answering outside the protocol (ADR-35) — and the configured reading range against the effective travel
     /// (<c>OutOfRange</c>: the configuration contradicts the machine). Every refusal logs at Error as well as throwing.
     /// </summary>
     private void CheckMap(StatusBlock s)
     {
+        if (MapRefusal(s) is not { } refusal) return;
+        _logger?.LogError("{Message}", refusal.Message);
+        _refusalLogged = refusal;
+        throw refusal;
+    }
+
+    /// <summary>The checks of <see cref="CheckMap"/>, returning the refusal instead of logging and throwing it.</summary>
+    /// <param name="s">The status block read.</param>
+    /// <param name="act">What is refused: "attach" or "lease re-take".</param>
+    /// <param name="written">What was already written, or <see langword="null"/> for nothing.</param>
+    private MotionException? MapRefusal(StatusBlock s, string act = "attach", string? written = null)
+    {
+        var tail = written is null ? "nothing was written" : $"{written} already written";
         var o = Options;
         var m = o.Map;
         MotionException? refusal = null;
@@ -191,8 +250,8 @@ public abstract class ModbusAxisDevice : IMotionDevice, IAsyncDisposable
         {
             refusal = AxisErrors.Create(o.Name, MotionError.ProtocolMismatch,
                 mapVersion
-                    ? "attach refused; nothing was written"
-                    : "attach refused: the limit publication is partial or not sane; nothing was written",
+                    ? $"{act} refused; {tail}"
+                    : $"{act} refused: the limit publication is partial or not sane; {tail}",
                 violation);
         }
         else
@@ -203,21 +262,18 @@ public abstract class ModbusAxisDevice : IMotionDevice, IAsyncDisposable
                 var plc = limits.Source == LimitSource.Plc;
                 if (o.ReadMin is { } rmin && rmin > limits.TravelMin)
                     refusal = AxisErrors.Create(o.Name, MotionError.OutOfRange,
-                        $"attach refused: configured ReadMin {Fmt(rmin)} is above TravelMin {Fmt(limits.TravelMin)} "
+                        $"{act} refused: configured ReadMin {Fmt(rmin)} is above TravelMin {Fmt(limits.TravelMin)} "
                         + $"({limits.SourceText}), expected ReadMin ≤ TravelMin",
                         plc ? [AxisErrors.Read(m, RegisterField.TravelMin, s.TravelMin)] : []);
                 else if (o.ReadMax is { } rmax && rmax < limits.TravelMax)
                     refusal = AxisErrors.Create(o.Name, MotionError.OutOfRange,
-                        $"attach refused: configured ReadMax {Fmt(rmax)} is below TravelMax {Fmt(limits.TravelMax)} "
+                        $"{act} refused: configured ReadMax {Fmt(rmax)} is below TravelMax {Fmt(limits.TravelMax)} "
                         + $"({limits.SourceText}), expected ReadMax ≥ TravelMax",
                         plc ? [AxisErrors.Read(m, RegisterField.TravelMax, s.TravelMax)] : []);
             }
         }
 
-        if (refusal is null) return;
-        _logger?.LogError("{Message}", refusal.Message);
-        _refusalLogged = refusal;
-        throw refusal;
+        return refusal;
     }
 
     /// <summary>The attach refusal <see cref="CheckMap"/> already logged, so the attach path does not log it twice.</summary>
