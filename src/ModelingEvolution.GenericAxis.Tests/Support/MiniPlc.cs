@@ -415,6 +415,9 @@ internal sealed class MiniPlc : IAsyncDisposable
         }
     }
 
+    /// <summary>The raw <c>Acceleration</c> register (C+6…C+7) as the driver last wrote it.</summary>
+    public int AccelerationRegister => GetInt(C(6));
+
     private double AccelerationOrDefault()
     {
         var a = GetInt(C(6)) / 1000.0;

@@ -903,8 +903,27 @@ internal sealed class AxisEngine : IDisposable
         : _snapshot is { } s ? $"{MotionErrorClasses.Of(FaultError(s.Status))}/{FaultError(s.Status)}"
         : "no status";
 
+    private double? _acceleration;
+    private bool _accelerationSet;
+
+    /// <summary>
+    /// The ramp written to <c>Acceleration</c> (C+6…C+7) with every move, in unit/s²; <see langword="null"/> writes 0 = the
+    /// PLC's default. Starts as <see cref="GenericAxisOptions.Acceleration"/>; a commissioning panel changes it between moves.
+    /// </summary>
+    public double? Acceleration
+    {
+        get => _accelerationSet ? _acceleration : _options.Acceleration;
+        set
+        {
+            if (value is { } a && !(a > 0 && double.IsFinite(a)))
+                throw new ArgumentOutOfRangeException(nameof(Acceleration), a, $"{Name}: Acceleration must be > 0 when set");
+            _acceleration = value;
+            _accelerationSet = true;
+        }
+    }
+
     private int RawAcceleration() =>
-        _options.Acceleration is { } a ? Words.ToRaw(a, "Acceleration", Name) : 0;
+        Acceleration is { } a ? Words.ToRaw(a, "Acceleration", Name) : 0;
 
     // ═══════════════════════ verb runner ═══════════════════════
 

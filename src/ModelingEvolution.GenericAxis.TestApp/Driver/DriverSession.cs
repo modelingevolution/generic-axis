@@ -92,6 +92,18 @@ public sealed class DriverSession : IAsyncDisposable
 
     public Task DisconnectAsync() => Run("Disconnect", async _ => await DisposeDeviceAsync());
 
+    /// <summary>The ramp for the next moves (unit/s²); blank = 0 in C+6…C+7 = the PLC's default. Applies at once when connected.</summary>
+    public double? Acceleration
+    {
+        get => Form.Acceleration;
+        set
+        {
+            if (value is { } a && !(a > 0 && double.IsFinite(a))) return; // a cleared or zero field means the PLC default
+            Form.Acceleration = value;
+            if (_device is { } d) d.Acceleration = value;
+        }
+    }
+
     public Task PowerAsync(bool on) => Axis(on ? "Power on" : "Power off", (a, ct) => a.PowerAsync(on, ct));
     public Task HomeAsync() => Axis("Home", (a, ct) => a.HomeAsync(ct));
     public Task ResetAsync() => Axis("Reset", (a, ct) => a.ResetAsync(ct));

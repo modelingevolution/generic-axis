@@ -55,6 +55,13 @@ public abstract class ModbusAxisDevice : IMotionDevice, IAsyncDisposable
     /// <summary>The axis options, validated.</summary>
     public GenericAxisOptions Options { get; }
 
+    /// <summary>The ramp sent with every move (unit/s²); <see langword="null"/> = the PLC's default. See <see cref="AxisEngine.Acceleration"/>.</summary>
+    public double? Acceleration
+    {
+        get => _engine.Acceleration;
+        set => _engine.Acceleration = value;
+    }
+
     /// <summary>This station's owner id in <c>LeaseOwner</c>.</summary>
     public ushort OwnerId { get; }
 

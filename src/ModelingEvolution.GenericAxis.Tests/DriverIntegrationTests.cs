@@ -54,6 +54,28 @@ public class DriverIntegrationTests(ITestOutputHelper output)
                                    && r.Message.Contains("10000") && r.Message.Contains("published by the PLC"));
     }
 
+    [Fact(DisplayName = "Acceleration set on the device between moves is written to C+6…C+7; null writes 0 = PLC default")]
+    public async Task Acceleration_SetBetweenMoves_WrittenWithTheNextMove()
+    {
+        await using var rig = new LiveRig();
+        var track = await rig.ConnectedTrack();
+        await track.Carriage.PowerAsync(true).WaitAsync(T);
+        await track.Carriage.MoveAbsoluteAsync(new Mm(1000), new MmPerS(500)).WaitAsync(T);
+        rig.Plc.AccelerationRegister.Should().Be(0, "no Acceleration configured means the PLC's default ramp");
+
+        track.Acceleration = 250;
+        await track.Carriage.MoveAbsoluteAsync(new Mm(1500), new MmPerS(500)).WaitAsync(T);
+        rig.Plc.AccelerationRegister.Should().Be(250_000, "unit/s² × 1000");
+
+        track.Acceleration = null;
+        await track.Carriage.MoveAbsoluteAsync(new Mm(1000), new MmPerS(500)).WaitAsync(T);
+        rig.Plc.AccelerationRegister.Should().Be(0);
+
+        var zero = () => track.Acceleration = 0;
+        zero.Should().Throw<ArgumentOutOfRangeException>("a ramp must be > 0 when set");
+        track.Acceleration.Should().BeNull();
+    }
+
     [Fact(DisplayName = "GA-I-02 Home from Disabled")]
     public async Task Home_UnhomedDisabled_StandstillAtHomeSensor()
     {
