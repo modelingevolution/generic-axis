@@ -103,7 +103,7 @@ public sealed record GenericAxisOptions
     /// <summary>
     /// How much the reported position may change between two readings taken at standstill before the host
     /// refuses a capture, in the axis's unit; reported as the SDK's <c>RestTolerance</c>. A host-side reading
-    /// rule, not a register. ≥ 0; 0 = exact equality (a drive that holds a quantised register).
+    /// rule, not a register. Finite and ≥ 0; 0 = exact equality (a drive that holds a quantised register).
     /// Default <see cref="DefaultRestTolerance"/> (bug-034 owner ruling 2026-10-19).
     /// </summary>
     public double RestTolerance { get; init; } = DefaultRestTolerance;
@@ -175,11 +175,12 @@ public sealed record GenericAxisOptions
             throw new ArgumentException($"{Name}: DefaultSpeed must be above 0 %", nameof(DefaultSpeed));
         if (Acceleration is { } a && a <= 0)
             throw new ArgumentException($"{Name}: Acceleration {a} must be > 0 when set", nameof(Acceleration));
-        if (Tolerance <= 0)
-            throw new ArgumentException($"{Name}: Tolerance {Tolerance} must be > 0", nameof(Tolerance));
-        if (!(RestTolerance >= 0))
+        if (!double.IsFinite(Tolerance) || Tolerance <= 0)
+            throw new ArgumentException($"{Name}: Tolerance {Tolerance} must be a finite number > 0", nameof(Tolerance));
+        if (!double.IsFinite(RestTolerance) || RestTolerance < 0)
             throw new ArgumentException(
-                $"{Name}: RestTolerance {RestTolerance} must be ≥ 0 (0 = exact equality)", nameof(RestTolerance));
+                $"{Name}: RestTolerance {RestTolerance} must be a finite number ≥ 0 (0 = exact equality)",
+                nameof(RestTolerance));
         if (EnableTimeout <= TimeSpan.Zero)
             throw new ArgumentException($"{Name}: EnableTimeout must be > 0", nameof(EnableTimeout));
         if (StopTimeout <= TimeSpan.Zero)

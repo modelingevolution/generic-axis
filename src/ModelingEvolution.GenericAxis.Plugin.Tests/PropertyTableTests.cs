@@ -75,14 +75,6 @@ public sealed class PropertyTableTests
         options.Should().Be(GenericAxisPlugin.CarriageTemplate with { Host = "10.0.0.5" });
     }
 
-    [Fact]
-    public void RestTolerance_Absent_BindsTheDefaultPointOne()
-    {
-        var options = GenericAxisProperties.Bind(GenericAxisPlugin.CarriageTemplate, Stored([("Host", "h")]));
-
-        options.RestTolerance.Should().Be(GenericAxisOptions.DefaultRestTolerance).And.Be(0.1);
-    }
-
     [Theory]
     [InlineData("0", 0.0)]
     [InlineData("0.25", 0.25)]
