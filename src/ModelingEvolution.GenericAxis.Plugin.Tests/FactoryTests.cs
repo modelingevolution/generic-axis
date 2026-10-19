@@ -44,6 +44,7 @@ public sealed class FactoryTests
     [InlineData("DefaultSpeedPercent", "0")]
     [InlineData("DefaultSpeedPercent", "150")]
     [InlineData("Tolerance", "0")]
+    [InlineData("RestTolerance", "-0.1")]
     [InlineData("HomingTimeoutSeconds", "99999999999")]
     [InlineData("StatusBase", "65530")]   // S+14 past input register 65535
     [InlineData("CommandBase", "65530")]  // C+11 past holding register 65535
@@ -126,6 +127,32 @@ public sealed class FactoryTests
         device["turntable"].Should().BeAssignableTo<IRotaryAxis>();
         device["turntable"].DisplayName.Should().Be("Headstock");
         device.OwnerId.Should().Be((ushort)GenericAxisOwnerIdProperty.Default);
+    }
+
+    [Fact]
+    public void The_Carriage_Reports_Its_Rest_Tolerance_Through_The_Sdk_Leaf()
+    {
+        var stored = PluginHarness.Build(PluginHarness.Track, PluginHarness.ConfigFor(PluginHarness.Track,
+            (PluginHarness.CarriageKey("Host"), UnreachableHost),
+            (PluginHarness.CarriageKey("RestTolerance"), "0.25")));
+        var absent = PluginHarness.Build(PluginHarness.Track, PluginHarness.ConfigFor(PluginHarness.Track,
+            (PluginHarness.CarriageKey("Host"), UnreachableHost)));
+
+        ((ILinearAxis)stored["carriage"]).RestTolerance.Value.Should().Be(0.25);
+        ((ILinearAxis)absent["carriage"]).RestTolerance.Value.Should().Be(0.1);
+    }
+
+    [Fact]
+    public void The_Turntable_Reports_Its_Rest_Tolerance_Through_The_Sdk_Leaf()
+    {
+        var stored = PluginHarness.Build(PluginHarness.Positioner, PluginHarness.ConfigFor(PluginHarness.Positioner,
+            (PluginHarness.TurntableKey("Host"), UnreachableHost),
+            (PluginHarness.TurntableKey("RestTolerance"), "0")));
+        var absent = PluginHarness.Build(PluginHarness.Positioner, PluginHarness.ConfigFor(PluginHarness.Positioner,
+            (PluginHarness.TurntableKey("Host"), UnreachableHost)));
+
+        ((double)((IRotaryAxis)stored["turntable"]).RestTolerance).Should().Be(0);
+        ((double)((IRotaryAxis)absent["turntable"]).RestTolerance).Should().Be(0.1);
     }
 
     [Fact]

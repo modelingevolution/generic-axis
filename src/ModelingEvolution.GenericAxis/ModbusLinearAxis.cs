@@ -52,6 +52,9 @@ public sealed class ModbusLinearAxis : ILinearAxis
     public Length<double, Millimetre<double>> Tolerance => new(_engine.Options.Tolerance);
 
     /// <inheritdoc/>
+    public Length<double, Millimetre<double>> RestTolerance => new(_engine.Options.RestTolerance);
+
+    /// <inheritdoc/>
     public Speed<double, MillimetrePerSecond<double>> MinSpeed => new(Words.Quantum);
 
     /// <inheritdoc/>

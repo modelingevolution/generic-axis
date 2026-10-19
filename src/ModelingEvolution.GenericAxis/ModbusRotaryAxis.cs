@@ -53,6 +53,9 @@ public sealed class ModbusRotaryAxis : IRotaryAxis
     public Degree<double> Tolerance => Degree<double>.Create(_engine.Options.Tolerance);
 
     /// <inheritdoc/>
+    public Degree<double> RestTolerance => Degree<double>.Create(_engine.Options.RestTolerance);
+
+    /// <inheritdoc/>
     public AngularSpeed<double, DegreePerSecond<double>> MinSpeed => new(Words.Quantum);
 
     /// <inheritdoc/>
