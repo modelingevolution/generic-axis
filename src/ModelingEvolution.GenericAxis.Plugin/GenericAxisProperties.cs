@@ -125,6 +125,12 @@ internal static class GenericAxisProperties
             o => Num(o.Tolerance),
             (o, v) => o with { Tolerance = ParseDouble(v) }),
 
+        new("RestTolerance", nameof(GenericAxisOptions.RestTolerance),
+            k => $"Rest tolerance ({Unit(k)}) — allowed change between two capture readings", "double", GroupMotion,
+            Required: false,
+            o => Num(o.RestTolerance),
+            (o, v) => o with { RestTolerance = ParseDouble(v) }),
+
         new("HomingTimeoutSeconds", nameof(GenericAxisOptions.HomingTimeout),
             _ => "Homing budget (s)", "int", GroupSupervision, Required: false,
             o => Int((int)o.HomingTimeout.TotalSeconds),

@@ -91,6 +91,7 @@ public sealed class DeclarationTests
             ("DefaultSpeedPercent", "double", "100"),
             ("Acceleration", "double", null),
             ("Tolerance", "double", "0.001"),
+            ("RestTolerance", "double", "0.1"),
             ("HomingTimeoutSeconds", "int", "120"));
     }
 
@@ -112,5 +113,20 @@ public sealed class DeclarationTests
         schemas.Single(s => s.Name == PluginHarness.CarriageKey("StatusBase")).DisplayName
             .Should().Be("Status block base (input registers)", "ADR-36: the status block is input registers");
         turntable.Group.Should().Be("Turntable — Machine limits");
+    }
+
+    [Fact]
+    public void The_Rest_Tolerance_Row_Is_Labelled_In_The_Axis_Unit_Under_Motion()
+    {
+        var carriage = PluginHarness.Track.Axes.Single().PropertySchemas
+            .Single(s => s.Name == PluginHarness.CarriageKey("RestTolerance"));
+        var turntable = PluginHarness.Positioner.Axes.Single().PropertySchemas
+            .Single(s => s.Name == PluginHarness.TurntableKey("RestTolerance"));
+
+        carriage.DisplayName.Should().Be("Rest tolerance (mm) — allowed change between two capture readings");
+        turntable.DisplayName.Should().Be("Rest tolerance (°) — allowed change between two capture readings");
+        carriage.Group.Should().Be("Carriage — Motion");
+        carriage.Required.Should().BeFalse();
+        turntable.Default.Should().Be("0.1");
     }
 }

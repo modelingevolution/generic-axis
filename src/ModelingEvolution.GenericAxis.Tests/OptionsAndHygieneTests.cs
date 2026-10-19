@@ -28,6 +28,8 @@ public class OptionsAndHygieneTests
         { nameof(GenericAxisOptions.DefaultSpeed), o => o with { DefaultSpeed = new Percentage(0f) } },
         { nameof(GenericAxisOptions.Acceleration), o => o with { Acceleration = 0 } },
         { nameof(GenericAxisOptions.Tolerance), o => o with { Tolerance = 0 } },
+        { nameof(GenericAxisOptions.RestTolerance), o => o with { RestTolerance = -0.1 } },
+        { nameof(GenericAxisOptions.RestTolerance), o => o with { RestTolerance = double.NaN } },
         { nameof(GenericAxisOptions.EnableTimeout), o => o with { EnableTimeout = TimeSpan.Zero } },
         { nameof(GenericAxisOptions.StopTimeout), o => o with { StopTimeout = TimeSpan.Zero } },
         { nameof(GenericAxisOptions.HomingTimeout), o => o with { HomingTimeout = TimeSpan.Zero } },
@@ -40,6 +42,14 @@ public class OptionsAndHygieneTests
     {
         Valid.Invoking(o => o.Validate()).Should().NotThrow("anchor: the baseline is valid");
         spoil(Valid).Invoking(o => o.Validate()).Should().Throw<ArgumentException>().Which.ParamName.Should().Be(field);
+    }
+
+    [Theory(DisplayName = "GA-U-41 a rest tolerance of 0 (exact equality) or above is accepted (bug-034)")]
+    [InlineData(0.0)]
+    [InlineData(0.25)]
+    public void Validate_RestToleranceZeroOrPositive_IsAccepted(double restTolerance)
+    {
+        (Valid with { RestTolerance = restTolerance }).Invoking(o => o.Validate()).Should().NotThrow();
     }
 
     [Fact(DisplayName = "GA-U-41 the defaults are the protocol's and the design's")]
@@ -56,6 +66,7 @@ public class OptionsAndHygieneTests
         Valid.DefaultSpeed.Value.Should().Be(100f);
         Valid.Acceleration.Should().BeNull();
         Valid.Tolerance.Should().Be(0.001);
+        Valid.RestTolerance.Should().Be(0.1, "bug-034 owner ruling 2026-10-19");
         Valid.EnableTimeout.Should().Be(TimeSpan.FromSeconds(5));
         Valid.StopTimeout.Should().Be(TimeSpan.FromSeconds(5));
         Valid.HomingTimeout.Should().Be(TimeSpan.FromSeconds(120));

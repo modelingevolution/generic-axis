@@ -30,6 +30,13 @@ public sealed record GenericAxisOptions
     /// <summary>ADR-19: one register quantum.</summary>
     public const double DefaultTolerance = Words.Quantum;
 
+    /// <summary>
+    /// bug-034 owner ruling 2026-10-19: a capture may see the reported position change by up to 0.1 (mm or °)
+    /// between its two readings at standstill — a servo in position hold moves in its last digits. Matches the
+    /// SDK's <c>ILinearAxis</c>/<c>IRotaryAxis.RestTolerance</c> default.
+    /// </summary>
+    public const double DefaultRestTolerance = 0.1;
+
     /// <summary>ADR-20: enable/disable and reset confirmation budget.</summary>
     public static readonly TimeSpan DefaultEnableTimeout = TimeSpan.FromSeconds(5);
 
@@ -92,6 +99,14 @@ public sealed record GenericAxisOptions
 
     /// <summary>Reported in-position tolerance. The PLC's <c>InPosition</c> decides arrival.</summary>
     public double Tolerance { get; init; } = DefaultTolerance;
+
+    /// <summary>
+    /// How much the reported position may change between two readings taken at standstill before the host
+    /// refuses a capture, in the axis's unit; reported as the SDK's <c>RestTolerance</c>. A host-side reading
+    /// rule, not a register. ≥ 0; 0 = exact equality (a drive that holds a quantised register).
+    /// Default <see cref="DefaultRestTolerance"/> (bug-034 owner ruling 2026-10-19).
+    /// </summary>
+    public double RestTolerance { get; init; } = DefaultRestTolerance;
 
     /// <summary>Budget for Enable/Disable and Reset to show their state.</summary>
     public TimeSpan EnableTimeout { get; init; } = DefaultEnableTimeout;
@@ -162,6 +177,9 @@ public sealed record GenericAxisOptions
             throw new ArgumentException($"{Name}: Acceleration {a} must be > 0 when set", nameof(Acceleration));
         if (Tolerance <= 0)
             throw new ArgumentException($"{Name}: Tolerance {Tolerance} must be > 0", nameof(Tolerance));
+        if (!(RestTolerance >= 0))
+            throw new ArgumentException(
+                $"{Name}: RestTolerance {RestTolerance} must be ≥ 0 (0 = exact equality)", nameof(RestTolerance));
         if (EnableTimeout <= TimeSpan.Zero)
             throw new ArgumentException($"{Name}: EnableTimeout must be > 0", nameof(EnableTimeout));
         if (StopTimeout <= TimeSpan.Zero)

@@ -27,6 +27,7 @@ public sealed class PropertyTableTests
         ("DefaultSpeedPercent", "20", o => o.DefaultSpeed, new Percentage(20)),
         ("Acceleration", "1500", o => o.Acceleration, 1500.0),
         ("Tolerance", "0.05", o => o.Tolerance, 0.05),
+        ("RestTolerance", "0.25", o => o.RestTolerance, 0.25),
         ("HomingTimeoutSeconds", "90", o => o.HomingTimeout, TimeSpan.FromSeconds(90)),
     ];
 
@@ -72,6 +73,35 @@ public sealed class PropertyTableTests
         var options = GenericAxisProperties.Bind(GenericAxisPlugin.CarriageTemplate, config);
 
         options.Should().Be(GenericAxisPlugin.CarriageTemplate with { Host = "10.0.0.5" });
+    }
+
+    [Fact]
+    public void RestTolerance_Absent_BindsTheDefaultPointOne()
+    {
+        var options = GenericAxisProperties.Bind(GenericAxisPlugin.CarriageTemplate, Stored([("Host", "h")]));
+
+        options.RestTolerance.Should().Be(GenericAxisOptions.DefaultRestTolerance).And.Be(0.1);
+    }
+
+    [Theory]
+    [InlineData("0", 0.0)]
+    [InlineData("0.25", 0.25)]
+    public void RestTolerance_Stored_LandsInTheOptions(string raw, double expected)
+    {
+        var options = GenericAxisProperties.Bind(GenericAxisPlugin.CarriageTemplate,
+            Stored([("Host", "h"), ("RestTolerance", raw)]));
+
+        options.RestTolerance.Should().Be(expected);
+    }
+
+    [Fact]
+    public void RestTolerance_Negative_IsRefusedByValidate_NamingTheHubKey()
+    {
+        var bind = () => GenericAxisProperties.Bind(GenericAxisPlugin.CarriageTemplate,
+            Stored([("Host", "h"), ("RestTolerance", "-0.1")]));
+
+        bind.Should().Throw<ArgumentException>()
+            .WithMessage($"'{PluginHarness.CarriageKey("RestTolerance")}' refused by GenericAxisOptions.Validate:*");
     }
 
     [Fact]
