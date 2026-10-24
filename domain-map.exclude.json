@@ -1,0 +1,1 @@
+{ "exclude": [ { "path": "python", "reason": "Python conformance check script of the test app." } ] }

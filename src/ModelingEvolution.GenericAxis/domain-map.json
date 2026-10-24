@@ -1,0 +1,39 @@
+{
+  "$schema": "https://modelingevolution.com/schemas/domain-map/v1",
+  "repo": "generic-axis",
+  "project": "ModelingEvolution.GenericAxis",
+  "description": "Generic Modbus axis driver: linear axis, track, rotary, positioner.",
+  "domain": "Robotic platform",
+  "subdomain": "Axes",
+  "boundedContext": "robot-motion",
+  "layer": "adapter",
+  "status": "existing",
+  "components": [
+    {
+      "name": "Modbus axes",
+      "kind": "adapter",
+      "types": [
+        "ModbusAxisDevice",
+        "ModbusLinearAxis",
+        "ModbusLinearTrack",
+        "ModbusRotaryAxis",
+        "ModbusPositioner"
+      ],
+      "status": "existing"
+    },
+    {
+      "name": "Advisory lease",
+      "kind": "service",
+      "types": [
+        "AdvisoryLease"
+      ],
+      "status": "existing"
+    }
+  ],
+  "dependsOn": [
+    {
+      "target": "RocketWelder.SDK.Devices.Motion",
+      "pattern": "conformist"
+    }
+  ]
+}

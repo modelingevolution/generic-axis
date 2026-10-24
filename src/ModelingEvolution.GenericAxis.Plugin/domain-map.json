@@ -1,0 +1,41 @@
+{
+  "$schema": "https://modelingevolution.com/schemas/domain-map/v1",
+  "repo": "generic-axis",
+  "project": "ModelingEvolution.GenericAxis.Plugin",
+  "description": "rw2 plugin for the generic axis.",
+  "domain": "Robotic platform",
+  "subdomain": "Axes",
+  "boundedContext": "device-registry",
+  "layer": "adapter",
+  "status": "existing",
+  "components": [
+    {
+      "name": "Generic axis plugin",
+      "kind": "adapter",
+      "types": [
+        "GenericAxisPlugin",
+        "GenericAxisConnector"
+      ],
+      "status": "existing"
+    }
+  ],
+  "dependsOn": [
+    {
+      "target": "ModelingEvolution.GenericAxis",
+      "pattern": "customer-supplier"
+    },
+    {
+      "target": "RocketWelder.SDK.Abstractions",
+      "pattern": "conformist"
+    },
+    {
+      "target": "RocketWelder.SDK.Automation.Abstractions",
+      "pattern": "shared-kernel",
+      "note": "published shared kernel (device lifecycle L-C)"
+    },
+    {
+      "target": "RocketWelder.SDK.Devices.Motion",
+      "pattern": "conformist"
+    }
+  ]
+}
