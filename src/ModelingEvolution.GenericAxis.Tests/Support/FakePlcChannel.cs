@@ -54,6 +54,10 @@ internal sealed class FakePlcChannel : IModbusChannel
     /// <summary>Called under the bank lock after every write.</summary>
     public Action<FakePlcChannel, ChannelOp>? OnWrite { get; set; }
 
+    /// <summary>Called with the caller's token on every read and write, before anything else (bug-076: lets a test
+    /// register a callback on a verb's token).</summary>
+    public Action<CancellationToken>? OnToken { get; set; }
+
     /// <summary>When it returns true for an operation, that operation throws CommunicationLost.</summary>
     public Func<ChannelOp, bool>? FailWhen { get; set; }
 
@@ -205,6 +209,7 @@ internal sealed class FakePlcChannel : IModbusChannel
     private Task<ushort[]> Read(RegisterSpace space, ushort address, ushort count, string what,
         ChannelPriority priority, CancellationToken ct)
     {
+        OnToken?.Invoke(ct);
         ct.ThrowIfCancellationRequested();
         lock (_sync)
         {
@@ -227,6 +232,7 @@ internal sealed class FakePlcChannel : IModbusChannel
     public Task WriteRegistersAsync(byte unit, ushort address, ushort[] values, string what,
         ChannelPriority priority = ChannelPriority.Move, CancellationToken ct = default)
     {
+        OnToken?.Invoke(ct);
         ct.ThrowIfCancellationRequested();
         lock (_sync)
         {

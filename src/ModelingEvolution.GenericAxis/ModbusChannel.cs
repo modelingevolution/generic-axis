@@ -156,6 +156,16 @@ internal sealed class ModbusChannel : IModbusChannel
             throw Disposed(what, range);
         }
 
+        // bug-076 S1: a waiter the gate already claimed is granted even if its token was cancelled meanwhile (the
+        // cancellation callback loses to the claim). A caller cancelled before its frame starts writes nothing: a
+        // verb a Stop pre-empted must never put its command on the wire after the Stop's. Once the frame starts it
+        // is not cancelled (it holds the slot, so the Stop's frame comes after it).
+        if (ct.IsCancellationRequested)
+        {
+            slot.Dispose();
+            ct.ThrowIfCancellationRequested();
+        }
+
         using (slot)
         {
             for (var attempt = 0; ; attempt++)

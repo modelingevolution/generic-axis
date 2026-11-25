@@ -726,7 +726,23 @@ internal sealed class AxisEngine : IDisposable
             }
         }
 
-        running?.Cancel();
+        try
+        {
+            running?.Cancel();
+        }
+        catch (Exception ex)
+        {
+            // N6: a throwing callback on the verb's token must not keep the Stop off the wire, nor leave the published
+            // Stop pending with no runner. The token is cancelled whatever its callbacks throw.
+            _logger?.LogError(ex, "{Axis}: cancelling {Verb} for the Stop threw; the Stop goes out regardless", Name,
+                running?.Verb);
+        }
+        finally
+        {
+            // Runs synchronously up to its first wait: the Stop edge is written before this call returns.
+            if (started is not null) _ = RunStopAsync(started);
+        }
+
         if (stop is null)
         {
             // Review #12 / FR-5: the station STOP fans out to every device; one that is not attached has nothing of
@@ -735,8 +751,6 @@ internal sealed class AxisEngine : IDisposable
             return;
         }
 
-        // Runs synchronously up to its first wait: the Stop edge is written before this call returns.
-        if (started is not null) _ = RunStopAsync(started);
         await stop.WaitAsync(ct).ConfigureAwait(false);
     }
 
@@ -744,16 +758,21 @@ internal sealed class AxisEngine : IDisposable
     /// before the result is published, so a caller that sees the result and stops again sends a new Stop.</summary>
     private async Task RunStopAsync(TaskCompletionSource stop)
     {
+        Exception? failure = null;
         try
         {
             await WriteStopAsync().ConfigureAwait(false);
-            lock (_sync) _stop = null;
-            stop.SetResult();
         }
         catch (Exception ex)
         {
+            failure = ex;
+        }
+        finally
+        {
+            // N6: whatever happened above, the slot is cleared and the result published — never a dead shared Stop.
             lock (_sync) _stop = null;
-            stop.SetException(ex);
+            if (failure is null) stop.TrySetResult();
+            else stop.TrySetException(failure);
         }
     }
 
