@@ -58,6 +58,7 @@ internal sealed class AxisEngine : IDisposable
     private ushort _seq;
     private bool _enable;
     private Running? _running;
+    private TaskCompletionSource? _stop;
     private LimitState _limits = LimitState.None;
     private string? _limitWarning;
     private TaskCompletionSource _changed = NewSignal();
@@ -682,15 +683,10 @@ internal sealed class AxisEngine : IDisposable
 
     /// <summary>
     /// <c>StopAsync</c>: cancels the running verb first — so it cannot issue a write after the Stop — then writes
-    /// the Stop edge on the stop lane, whatever the local state (no G1, no G2).
+    /// the Stop edge on the stop lane, whatever the local state (no G1, no G2). A Stop already pending is joined, not
+    /// written again (bug-076, see <see cref="StopCoreAsync"/>).
     /// </summary>
-    public async Task StopAsync(CancellationToken ct)
-    {
-        Running? running;
-        lock (_sync) running = _running;
-        running?.Cancel();
-        await StopCoreAsync(ct).ConfigureAwait(false);
-    }
+    public Task StopAsync(CancellationToken ct) => StopCoreAsync(ct, preempt: true);
 
     /// <summary>
     /// Disconnect step "Enable 0" (ADR-8): a command write that bypasses the verb guards, because the verb a Stop just
@@ -707,11 +703,31 @@ internal sealed class AxisEngine : IDisposable
             honourOverlay: false).ConfigureAwait(false);
     }
 
-    private async Task StopCoreAsync(CancellationToken ct)
+    /// <summary>
+    /// bug-076: one Stop in flight per axis. The first caller starts the Stop and writes its edge at once; every caller
+    /// that arrives while it is pending joins it and gets its result, success or failure, without a second write on the
+    /// command block. A caller after the Stop finished starts a new one. The Stop runs to its end whatever one caller's
+    /// <paramref name="ct"/> does — a caller's cancellation ends only that caller's wait.
+    /// With <paramref name="preempt"/> the running verb is cancelled; it is read under the same lock that publishes the
+    /// pending Stop, so a verb either is cancelled here or is refused by G2 (it sees the Stop).
+    /// </summary>
+    private async Task StopCoreAsync(CancellationToken ct, bool preempt = false)
     {
-        bool attached;
-        lock (_sync) attached = _attached;
-        if (!attached)
+        Running? running = null;
+        TaskCompletionSource? started = null;
+        Task? stop = null;
+        lock (_sync)
+        {
+            if (preempt) running = _running;
+            if (_attached)
+            {
+                if (_stop is null) _stop = started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                stop = _stop.Task;
+            }
+        }
+
+        running?.Cancel();
+        if (stop is null)
         {
             // Review #12 / FR-5: the station STOP fans out to every device; one that is not attached has nothing of
             // ours moving, so it answers the STOP by saying so — never by throwing into the fan-out.
@@ -719,6 +735,31 @@ internal sealed class AxisEngine : IDisposable
             return;
         }
 
+        // Runs synchronously up to its first wait: the Stop edge is written before this call returns.
+        if (started is not null) _ = RunStopAsync(started);
+        await stop.WaitAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Runs the one pending Stop and publishes its result to every caller; the pending slot is cleared
+    /// before the result is published, so a caller that sees the result and stops again sends a new Stop.</summary>
+    private async Task RunStopAsync(TaskCompletionSource stop)
+    {
+        try
+        {
+            await WriteStopAsync().ConfigureAwait(false);
+            lock (_sync) _stop = null;
+            stop.SetResult();
+        }
+        catch (Exception ex)
+        {
+            lock (_sync) _stop = null;
+            stop.SetException(ex);
+        }
+    }
+
+    private async Task WriteStopAsync()
+    {
+        var ct = CancellationToken.None;
         var (_, ackTick) = await SendCommandAsync("Stop", CommandBits.Stop, null, null, ChannelPriority.Stop, ct,
             honourOverlay: false).ConfigureAwait(false);
         await AwaitAsync(ackTick - 1,
@@ -973,9 +1014,12 @@ internal sealed class AxisEngine : IDisposable
                 if (requireConnection && _overlay is { } overlay)
                     throw new MotionException(overlay.Error, $"{overlay.Message} {verb} refused until it clears.", Name);
 
-                // G2: one verb at a time.
+                // G2: one verb at a time, and none while a Stop is pending (bug-076: one command in flight; a verb
+                // started now would overwrite the Stop's command word before the PLC acknowledged it).
                 if (_running is { } other)
                     throw Error(MotionError.Busy, $"{verb} refused: {other.Verb} is still running");
+                if (_stop is not null)
+                    throw Error(MotionError.Busy, $"{verb} refused: a Stop is in progress");
 
                 guards?.Invoke(_snapshot.Value, StateOf());
                 _running = running;
@@ -1054,16 +1098,37 @@ internal sealed class AxisEngine : IDisposable
                 _map.Describe(RegisterField.Acceleration), parameters[2]);
         }
 
-        ushort seq, word, level;
-        long tickAtWrite;
-        lock (_sync)
+        ushort seq = 0, word = 0, level = 0;
+        long tickAtWrite = 0;
+        while (true)
         {
-            if (enable is { } e) _enable = e;
-            _seq = NextSeq(_seq);
-            seq = _seq;
-            level = (ushort)(_enable ? CommandBits.Enable : CommandBits.None);
-            word = (ushort)(level | (ushort)edge);
-            tickAtWrite = _tickNo;
+            // bug-076: one command in flight. Nothing but the Stop itself writes the command word while a Stop is
+            // pending: a verb the Stop pre-empted ends here (its token is cancelled); the disconnect's Enable 0 goes
+            // after the Stop. Checked under the same lock that takes the sequence, so no Stop can start in between.
+            Task? pending;
+            lock (_sync)
+            {
+                pending = edge == CommandBits.Stop ? null : _stop?.Task;
+                if (pending is null)
+                {
+                    if (enable is { } e) _enable = e;
+                    _seq = NextSeq(_seq);
+                    seq = _seq;
+                    level = (ushort)(_enable ? CommandBits.Enable : CommandBits.None);
+                    word = (ushort)(level | (ushort)edge);
+                    tickAtWrite = _tickNo;
+                }
+            }
+
+            if (pending is null) break;
+            try
+            {
+                await pending.WaitAsync(ct).ConfigureAwait(false);
+            }
+            catch (Exception) when (!ct.IsCancellationRequested)
+            {
+                // The Stop's failure belongs to the Stop's callers; this command only waited for its turn.
+            }
         }
 
         await _channel.WriteRegistersAsync(_unit, _map.Command, [word, seq], verb, lane, ct).ConfigureAwait(false);
@@ -1081,6 +1146,10 @@ internal sealed class AxisEngine : IDisposable
             // protocol § Command semantics › Acknowledge: at the deadline the status block is read once more before
             // NotAcknowledged is declared. The last tick's snapshot may predate the write (a starved host, a late
             // tick); a NotAcknowledged must state a CommandAck read after the write, never a stale one.
+            //
+            // bug-076: the edge is cleared under the command's own token. A Stop that pre-empted this command cancelled
+            // it, and the Stop's command word has already replaced C+0; clearing now would write this command's older
+            // CommandSeq after the Stop — the PLC accepts it as a new command word and the Stop's ack is lost.
             StatusBlock seen;
             try
             {
@@ -1088,13 +1157,14 @@ internal sealed class AxisEngine : IDisposable
             }
             catch
             {
-                await ClearEdgeAsync(verb, level, seq, lane, CancellationToken.None, bestEffort: true).ConfigureAwait(false);
+                await ClearEdgeAsync(verb, level, seq, lane, ct, bestEffort: true).ConfigureAwait(false);
                 throw;
             }
 
             if (seen.CommandAck != seq)
             {
-                await ClearEdgeAsync(verb, level, seq, lane, CancellationToken.None, bestEffort: true).ConfigureAwait(false);
+                ct.ThrowIfCancellationRequested(); // pre-empted: the ack read belongs to the Stop, not to this command
+                await ClearEdgeAsync(verb, level, seq, lane, ct, bestEffort: true).ConfigureAwait(false);
                 throw AxisErrors.Command(Name, MotionError.NotAcknowledged, $"{verb} not accepted", seq, seen.CommandAck,
                     seen.State, $"after {RegisterMap.AckTimeout.TotalMilliseconds.ToString(Inv)} ms");
             }
@@ -1137,6 +1207,13 @@ internal sealed class AxisEngine : IDisposable
         catch (MotionException ex) when (bestEffort)
         {
             _logger?.LogWarning("{Axis}: could not clear the edge after {Verb} — {Message}", Name, verb, ex.Message);
+        }
+        catch (OperationCanceledException) when (bestEffort && ct.IsCancellationRequested)
+        {
+            // Pre-empted by a Stop or cancelled by the caller (who then stops the axis): the next command word
+            // replaces C+0, so there is nothing of ours left to clear (bug-076).
+            _logger?.LogInformation("{Axis}: edge of {Verb} not cleared: cancelled; the Stop's command word replaces it",
+                Name, verb);
         }
     }
 
