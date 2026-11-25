@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using ModelingEvolution.GenericAxis.Tests.Support;
@@ -214,6 +216,94 @@ public class StopStormTests
         (await Outcome(move)).Should().BeAssignableTo<OperationCanceledException>();
         rig.Plc.CommandWritesSince(from).Select(w => (w.Values[0], w.Values[1])).Should().Equal(
             [(0x0011, stopSeq), (0x0001, stopSeq)], "the move does not clear its edge with a stale sequence after the Stop");
+    }
+
+    [Fact(DisplayName = "bug-076 S1 a channel slot granted to a caller whose token is already cancelled writes no frame")]
+    public async Task Channel_SlotGrantedAfterTokenCancelled_NoFrameWrittenSlotReleased()
+    {
+        // The window: the gate claims a waiter for its grant, and the waiter's token is cancelled before the frame
+        // starts (a Stop cancelling the verb whose [Move, k] waits for the slot). The waiter's own cancellation
+        // callback loses to the claim, so only a re-check after the slot is taken keeps [Move, k] off the wire.
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            using var gate = new PriorityGate();
+            using var channel = new ModbusChannel("127.0.0.1", port, null, gate, "carriage", RegisterMap.Default);
+            var held = await gate.AcquireAsync(ChannelPriority.Stop, CancellationToken.None); // the Stop's frame
+            using var cts = new CancellationTokenSource();
+
+            var move = channel.WriteRegistersAsync(1, 0, [0x0005, 7], "MoveAbsolute", ChannelPriority.Move, cts.Token);
+            // Registered after the waiter's own callback, so it runs first on Cancel (LIFO): the Stop's frame ends and
+            // the gate claims the move's waiter before the waiter's callback can cancel it — deterministically.
+            cts.Token.Register(() => held.Dispose());
+            cts.Cancel();
+
+            var outcome = await Outcome(move);
+            outcome.Should().BeAssignableTo<OperationCanceledException>("the caller was cancelled before its frame");
+            listener.Pending().Should().BeFalse("no connection was opened, so no frame reached the PLC");
+            var next = await gate.AcquireAsync(ChannelPriority.Move, CancellationToken.None).AsTask()
+                .WaitAsync(DriverRig.RealTimeout);
+            next.Dispose(); // the slot was released, not leaked
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [Fact(DisplayName = "bug-076 N6 a Stop whose pre-emption throws still runs; the next StopAsync writes a new Stop")]
+    public async Task StopAsync_CancellingTheVerbThrows_StopStillRunsAndIsNotLeftPending()
+    {
+        await using var rig = await new DriverRig().ConnectAsync();
+        rig.Plc.OnCommand = (plc, word, seq) =>
+        {
+            if (seq == plc.CommandAck || (word & (ushort)CommandBits.MoveAbsolute) != 0) return;
+            plc.CommandAck = seq;
+        };
+        var armed = 0;
+        rig.Plc.OnToken = ct =>
+        {
+            // A callback on the move's token that throws when the Stop cancels it.
+            if (ct.CanBeCanceled && Interlocked.Exchange(ref armed, 1) == 0)
+                ct.Register(() => throw new InvalidOperationException("a token callback threw"));
+        };
+        var move = rig.Linear.MoveAbsoluteAsync(new Mm(5000), new MmPerS(100));
+        Volatile.Read(ref armed).Should().Be(1, "anchor: the callback sits on the move's token");
+        rig.Plc.OnToken = null;
+        var from = rig.Plc.OpCount;
+
+        var first = rig.Axis.StopAsync();
+        await Pump(rig, first, move);
+        (await Outcome(first)).Should().BeNull("the Stop ran although cancelling the verb threw");
+        StopWrites(rig, from).Should().ContainSingle();
+
+        var second = rig.Axis.StopAsync();
+        StopWrites(rig, from).Should().HaveCount(2, "the shared Stop was not left pending forever");
+        await Pump(rig, second);
+        (await Outcome(second)).Should().BeNull();
+    }
+
+    [Fact(DisplayName = "bug-076 N6 a Stop whose run throws fails its callers; the next StopAsync writes a new Stop")]
+    public async Task StopAsync_RunThrows_CallersGetTheFailure_NextStopWritesANewOne()
+    {
+        await using var rig = await new DriverRig().ConnectAsync();
+        rig.BehaveLikePlc();
+        var failNext = 1;
+        rig.Plc.ThrowWhen = op => op.IsWrite && op.Address == 0 && (op.Values[0] & StopBit) != 0
+                                   && Interlocked.Exchange(ref failNext, 0) == 1
+            ? new InvalidOperationException("a defect in the Stop's write")
+            : null;
+        var from = rig.Plc.OpCount;
+
+        var first = rig.Axis.StopAsync();
+        (await Outcome(first)).Should().BeOfType<InvalidOperationException>("the Stop's own failure reaches its caller");
+
+        var second = rig.Axis.StopAsync();
+        StopWrites(rig, from).Should().HaveCount(2, "the failed Stop is not left pending");
+        await Pump(rig, second);
+        (await Outcome(second)).Should().BeNull();
     }
 
     [Fact(DisplayName = "bug-076 the disconnect's Enable 0 while a Stop is pending goes after the Stop, never over it")]

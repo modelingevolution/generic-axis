@@ -73,7 +73,10 @@ combination (a partial publication included) makes the driver refuse to attach.
   a command still waiting for its ack, and that command is abandoned. The driver writes nothing more for it, not even
   the edge clear, because the Stop's word has already replaced it. While a Stop waits for its ack and for the axis
   to halt, the driver writes no other command word. A second Stop asked for in that time is not written again; it
-  gets the pending Stop's result. A Stop asked for after that Stop finished is a new Stop.
+  gets the pending Stop's result. A Stop asked for after that Stop finished is a new Stop. Two known exceptions remain
+  and are deferred until observed: a disconnect's `Enable 0` that took its `CommandSeq` just before the Stop, and the
+  edge clear a re-attach writes after the PLC dropped the lease. Either can land after the Stop's word, and neither
+  carries a motion edge.
 - **Sequence at attach**: the driver reads `CommandAck` and continues from `CommandAck + 1`, so a new driver never
   issues a sequence number the PLC already acknowledged.
 - **Enable** (level): `Command.bit0 = 1` → PLC energises the drive; State leaves Disabled for Standstill.
